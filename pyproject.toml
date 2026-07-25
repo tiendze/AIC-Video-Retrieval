@@ -1,0 +1,51 @@
+[project]
+name = "aic-video-retrieval"
+version = "0.1.0"
+description = "Interactive video retrieval đa phương thức cho AI Challenge TP.HCM"
+requires-python = ">=3.10,<3.11"
+dependencies = [
+    "fastapi==0.140.0",
+    "uvicorn[standard]==0.51.0",
+    "pydantic==2.13.4",
+    "pydantic-settings==2.14.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.1.1",
+    "pytest-cov==7.1.0",
+    "pytest-asyncio==1.4.0",
+    "httpx==0.28.1",
+    "black==26.5.1",
+    "isort==8.0.1",
+    "ruff==0.16.0",
+]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*", "pipelines*", "datasets*", "eval*"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.coverage.run]
+source = ["app", "pipelines", "datasets", "eval"]

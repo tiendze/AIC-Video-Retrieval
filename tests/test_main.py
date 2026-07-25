@@ -1,0 +1,35 @@
+import pytest
+from fastapi.testclient import TestClient
+from pydantic import ValidationError
+
+from app.main import create_app
+
+
+def test_create_app_returns_configured_fastapi_instance(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-gemini-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "fake-openai-key")
+
+    app = create_app()
+
+    assert app.title == "AIC Video Retrieval"
+
+
+def test_lifespan_loads_settings_onto_app_state(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-gemini-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "fake-openai-key")
+
+    app = create_app()
+
+    with TestClient(app) as client:
+        assert client.app.state.settings.gemini_api_key.get_secret_value() == "fake-gemini-key"
+
+
+def test_lifespan_raises_clear_error_when_api_key_missing(monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "fake-openai-key")
+
+    app = create_app()
+
+    with pytest.raises(ValidationError):
+        with TestClient(app):
+            pass
