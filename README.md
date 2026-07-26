@@ -34,6 +34,19 @@ Copy-Item .env.example .env   # rồi điền GEMINI_API_KEY / OPENAI_API_KEY th
 
 Thiếu `GEMINI_API_KEY` hoặc `OPENAI_API_KEY` trong `.env` → app báo `ValidationError` rõ ràng ngay lúc khởi động (`Settings()` trong `app/main.py` lifespan), không phải lỗi mơ hồ giữa chừng.
 
+## Hạ tầng lưu trữ (P0.2)
+
+```powershell
+docker compose up -d --build   # lần đầu build image Elasticsearch mất vài phút (compile native lib)
+docker compose ps               # cả 5 container phải "healthy"
+```
+
+Verify `vi_analyzer` tách theo từ ghép (không chạy trong `pytest` mặc định vì cần Docker):
+
+```powershell
+./.venv/Scripts/python.exe -m pytest tests/integration -m integration -v
+```
+
 ## Trạng thái
 
-🚧 P0 — Nền móng đang thực thi. P0.1 (scaffold, config, FastAPI app) đã xong. Xem [`.claude/plans/p0-foundation.plan.md`](./.claude/plans/p0-foundation.plan.md).
+🚧 P0 — Nền móng đang thực thi. P0.1 (scaffold, config, FastAPI app) và P0.2 (docker-compose: Milvus + Elasticsearch `vi_analyzer` + MongoDB) đã xong. Xem [`.claude/plans/p0-foundation.plan.md`](./.claude/plans/p0-foundation.plan.md).
