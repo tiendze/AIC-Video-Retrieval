@@ -21,13 +21,16 @@ dev = [
     "isort==8.0.1",
     "ruff==0.16.0",
 ]
+ingest = [
+    "yt-dlp==2026.7.4",
+]
 
 [build-system]
 requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["app*", "pipelines*", "datasets*", "eval*"]
+include = ["app*", "pipelines*", "datasets*", "eval*", "scripts*"]
 
 [tool.black]
 line-length = 100

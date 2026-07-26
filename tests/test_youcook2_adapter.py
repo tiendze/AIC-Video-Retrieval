@@ -43,3 +43,9 @@ def test_load_ground_truth_excludes_other_splits() -> None:
 
     assert all(s.video_id != "vid003" for s in segments)
     assert len(segments) == 7  # 4 (vid001) + 3 (vid002)
+
+
+def test_video_url_returns_the_youtube_link_for_a_video_id() -> None:
+    adapter = make_adapter()
+
+    assert adapter.video_url("vid001") == "https://www.youtube.com/watch?v=vid001"
