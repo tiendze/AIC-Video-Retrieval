@@ -5,7 +5,7 @@ ES_URL = "http://localhost:9200"
 
 
 @pytest.mark.integration
-def test_vi_analyzer_tokenizes_by_compound_word_not_syllable():
+def test_vi_analyzer_tokenizes_by_compound_word_not_syllable() -> None:
     response = httpx.post(
         f"{ES_URL}/_analyze",
         json={"analyzer": "vi_analyzer", "text": "Cộng hòa Xã hội chủ nghĩa Việt Nam"},

@@ -18,8 +18,16 @@ RUN microdnf install -y --nodocs \
     && microdnf clean all
 
 WORKDIR /tmp
-RUN git clone --depth 1 https://github.com/duydo/coccoc-tokenizer.git \
-    && mkdir coccoc-tokenizer/build
+# Pinned to a specific commit (repo has no version tags) so an upstream change
+# to this native tokenizer can't silently alter Vietnamese tokenization or
+# reintroduce the UnsatisfiedLinkError this Dockerfile was written to fix.
+ARG COCCOC_TOKENIZER_COMMIT=a5294b78a638e107c9adffd7fe2fbd31400f790d
+RUN git init -q coccoc-tokenizer \
+    && cd coccoc-tokenizer \
+    && git remote add origin https://github.com/duydo/coccoc-tokenizer.git \
+    && git fetch --depth 1 origin ${COCCOC_TOKENIZER_COMMIT} \
+    && git checkout -q FETCH_HEAD \
+    && mkdir build
 
 WORKDIR /tmp/coccoc-tokenizer/build
 RUN cmake -DJAVA_HOME=${JAVA_HOME} -DBUILD_JAVA=1 .. && make install

@@ -4,7 +4,7 @@ from pydantic import ValidationError
 from app.config import Settings
 
 
-def test_settings_loads_from_env_vars(monkeypatch):
+def test_settings_loads_from_env_vars(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GEMINI_API_KEY", "fake-gemini-key")
     monkeypatch.setenv("OPENAI_API_KEY", "fake-openai-key")
 
@@ -17,7 +17,7 @@ def test_settings_loads_from_env_vars(monkeypatch):
     assert settings.elasticsearch_url == "http://localhost:9200"
 
 
-def test_settings_raises_when_gemini_api_key_missing(monkeypatch):
+def test_settings_raises_when_gemini_api_key_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.setenv("OPENAI_API_KEY", "fake-openai-key")
 
@@ -25,7 +25,7 @@ def test_settings_raises_when_gemini_api_key_missing(monkeypatch):
         Settings(_env_file=None)
 
 
-def test_settings_raises_when_openai_api_key_missing(monkeypatch):
+def test_settings_raises_when_openai_api_key_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GEMINI_API_KEY", "fake-gemini-key")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
@@ -33,7 +33,7 @@ def test_settings_raises_when_openai_api_key_missing(monkeypatch):
         Settings(_env_file=None)
 
 
-def test_settings_masks_secrets_in_repr(monkeypatch):
+def test_settings_masks_secrets_in_repr(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GEMINI_API_KEY", "fake-gemini-key")
     monkeypatch.setenv("OPENAI_API_KEY", "fake-openai-key")
 

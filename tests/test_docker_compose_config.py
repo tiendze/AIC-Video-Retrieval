@@ -9,11 +9,11 @@ def load_compose() -> dict:
     return yaml.safe_load(COMPOSE_PATH.read_text(encoding="utf-8"))
 
 
-def test_docker_compose_file_exists():
+def test_docker_compose_file_exists() -> None:
     assert COMPOSE_PATH.exists()
 
 
-def test_every_pulled_image_is_pinned_to_an_exact_version():
+def test_every_pulled_image_is_pinned_to_an_exact_version() -> None:
     compose = load_compose()
     services = compose["services"]
 
@@ -30,7 +30,7 @@ def test_every_pulled_image_is_pinned_to_an_exact_version():
         }, f"{name} uses a moving tag '{tag}', pin an exact version instead"
 
 
-def test_elasticsearch_builds_custom_image_with_vietnamese_plugin():
+def test_elasticsearch_builds_custom_image_with_vietnamese_plugin() -> None:
     compose = load_compose()
     es_service = compose["services"]["elasticsearch"]
 
@@ -39,14 +39,14 @@ def test_elasticsearch_builds_custom_image_with_vietnamese_plugin():
     assert (dockerfile_dir / "Dockerfile").exists()
 
 
-def test_elasticsearch_heap_is_hard_capped():
+def test_elasticsearch_heap_is_hard_capped() -> None:
     compose = load_compose()
     es_env = compose["services"]["elasticsearch"]["environment"]
 
     assert es_env.get("ES_JAVA_OPTS") == "-Xms2g -Xmx2g"
 
 
-def test_milvus_standalone_depends_on_etcd_and_minio():
+def test_milvus_standalone_depends_on_etcd_and_minio() -> None:
     compose = load_compose()
     standalone = compose["services"]["standalone"]
 
