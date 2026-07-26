@@ -16,6 +16,7 @@ dev = [
     "pytest-cov==7.1.0",
     "pytest-asyncio==1.4.0",
     "httpx==0.28.1",
+    "pyyaml==6.0.3",
     "black==26.5.1",
     "isort==8.0.1",
     "ruff==0.16.0",
@@ -46,6 +47,10 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+addopts = "-m 'not integration'"
+markers = [
+    "integration: requires the docker-compose stack (Milvus/Elasticsearch/MongoDB) running",
+]
 
 [tool.coverage.run]
 source = ["app", "pipelines", "datasets", "eval"]
