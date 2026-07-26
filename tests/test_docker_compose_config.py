@@ -23,9 +23,11 @@ def test_every_pulled_image_is_pinned_to_an_exact_version():
             continue  # built locally (e.g. elasticsearch), no pulled tag to pin
         assert ":" in image, f"{name} must pin an explicit tag, got '{image}'"
         tag = image.rsplit(":", 1)[1]
-        assert tag not in {"latest", "master", "beta"}, (
-            f"{name} uses a moving tag '{tag}', pin an exact version instead"
-        )
+        assert tag not in {
+            "latest",
+            "master",
+            "beta",
+        }, f"{name} uses a moving tag '{tag}', pin an exact version instead"
 
 
 def test_elasticsearch_builds_custom_image_with_vietnamese_plugin():

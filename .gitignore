@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Docker-compose runtime data (Milvus/etcd/MinIO/Elasticsearch/MongoDB)
+volumes/
