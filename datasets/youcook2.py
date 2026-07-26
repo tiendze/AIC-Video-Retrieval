@@ -42,6 +42,11 @@ class YouCook2Adapter:
                 )
         return segments
 
+    def video_url(self, video_id: str) -> str:
+        """YouTube source link — used by scripts/download_videos.py, not part
+        of the DatasetAdapter Protocol (AIC's adapter may not have a URL)."""
+        return self._load_database()[video_id]["video_url"]
+
     def _load_database(self) -> dict:
         if self._database is None:
             with self._annotations_path.open(encoding="utf-8") as f:

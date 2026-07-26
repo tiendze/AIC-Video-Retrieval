@@ -56,4 +56,4 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["app", "pipelines", "datasets", "eval"]
+source = ["app", "pipelines", "datasets", "eval", "scripts"]
