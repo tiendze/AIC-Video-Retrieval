@@ -1,0 +1,38 @@
+{
+  "database": {
+    "vid001": {
+      "duration": 120.5,
+      "subset": "validation",
+      "recipe_type": "113",
+      "video_url": "https://www.youtube.com/watch?v=vid001",
+      "annotations": [
+        {"segment": [0.0, 10.0], "id": 0, "sentence": "cut the onion"},
+        {"segment": [10.0, 25.0], "id": 1, "sentence": "heat the pan"},
+        {"segment": [25.0, 40.0], "id": 2, "sentence": "add the onion to the pan"},
+        {"segment": [40.0, 60.0], "id": 3, "sentence": "stir until golden"}
+      ]
+    },
+    "vid002": {
+      "duration": 90.0,
+      "subset": "validation",
+      "recipe_type": "201",
+      "video_url": "https://www.youtube.com/watch?v=vid002",
+      "annotations": [
+        {"segment": [0.0, 15.0], "id": 0, "sentence": "boil water"},
+        {"segment": [15.0, 45.0], "id": 1, "sentence": "add pasta"},
+        {"segment": [45.0, 90.0], "id": 2, "sentence": "drain and serve"}
+      ]
+    },
+    "vid003": {
+      "duration": 60.0,
+      "subset": "training",
+      "recipe_type": "113",
+      "video_url": "https://www.youtube.com/watch?v=vid003",
+      "annotations": [
+        {"segment": [0.0, 20.0], "id": 0, "sentence": "chop garlic"},
+        {"segment": [20.0, 40.0], "id": 1, "sentence": "fry garlic"},
+        {"segment": [40.0, 60.0], "id": 2, "sentence": "add tomato sauce"}
+      ]
+    }
+  }
+}
