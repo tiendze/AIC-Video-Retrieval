@@ -43,38 +43,112 @@ Thanh-Danh Luu, Le-Vu Nguyen Dinh, Duc-Thien Tran, Duy-Bao Bui, Nam-Tien Le, Tin
 
 ---
 
-## 2. Dataset — YouCook2
+## 2. Dataset — AIC 2025 (dữ liệu công khai)
 
-- Trang chính thức: http://youcook2.eecs.umich.edu/
-- README kỹ thuật: http://youcook2.eecs.umich.edu/static/YouCookII/youcookii_readme.pdf
-- Paper gốc: [*Towards Automatic Learning of Procedures from Web Instructional Videos*](https://arxiv.org/abs/1703.09788)
+> Số liệu dưới đây **đo trực tiếp trên đĩa ngày 2026-07-29**, không phải ước lượng.
 
-**Thống kê:** 2.000 video YouTube nấu ăn · 176 giờ · 89 công thức · trung bình 5,26 phút/video · trung bình 7,7 procedure segment/video · caption tiếng Anh dạng mệnh lệnh ~8,8 từ.
+- Nguồn: Kaggle `aresusayhi/ai-challenge-2025`, version **2** — tải bằng `download.py` (`kagglehub`)
+- Gốc dữ liệu trên máy: `data/datasets/aresusayhi/ai-challenge-2025/versions/2/`
+- Dung lượng: **123 GB**
+- Nội dung: video **tin tức tiếng Việt** (HTV — *60 Giây Official*, …), có tiếng nói và **chữ trên màn hình**
 
-**Schema `youcookii_annotations_trainval.json`:**
+### 2.1 Thống kê
+
+| Thuộc tính | Giá trị đo được |
+|---|---|
+| Số `video_id` duy nhất | **873** (batch `L21` … `L30`) |
+| Số file `.mp4` | 961 — chênh 88 file vì `Videos_L25_a1` và `Videos_L25_b` là **bản sao trùng id** của `Videos_L25_a` |
+| Tổng thời lượng | **470.428 giây ≈ 130,7 giờ** (tổng trường `length` của `media-info`) |
+| Thời lượng trung bình | ~9,0 phút/video |
+| Keyframe **BTC trích sẵn** | **177.321** ảnh JPG **1280×720** (~203 ảnh/video, ~1 ảnh mỗi 2,65 giây) |
+
+**Bẫy khi đếm video:** đếm file `.mp4` sẽ ra 961 và tính trùng 88 video. Luôn khử trùng theo `video_id` — `DatasetAdapter` phải đảm bảo điều này, và mọi báo cáo metric lấy mẫu số từ số `video_id` duy nhất.
+
+### 2.2 Bố cục thư mục
+
+```
+versions/2/
+├── Videos/Videos/Videos_<batch>/video/<video_id>.mp4    # 961 file, 873 id duy nhất
+├── Keyframes_<batch>/keyframes/<video_id>/NNN.jpg       # 177.321 ảnh 1280×720
+└── features/
+    ├── map-keyframes/<video_id>.csv        # n,pts_time,fps,frame_idx
+    ├── clip-features-32/<video_id>.npy     # (n_keyframes, 512) float16 — CLIP ViT-B/32
+    ├── media-info/<video_id>.json          # metadata YouTube
+    └── objects/<video_id>/NNN.json         # object detection từng keyframe
+```
+
+`<batch>` gồm: `L21` `L22` `L23` `L24` `L25` `L26_a`…`L26_e` `L27` `L28` `L29` `L30`. Tên thư mục **không nhất quán** — thư mục video dùng tiền tố `Videos_` trừ `Video_L30_a` (số ít), thư mục keyframe dùng `Keyframes_`. Adapter phải **glob** chứ không dựng đường dẫn bằng chuỗi định dạng.
+
+### 2.3 Bốn nhánh `features/`
+
+**`map-keyframes/<video_id>.csv`** — cầu nối giữa chỉ số keyframe và thời gian:
+
+```csv
+n,pts_time,fps,frame_idx
+1,0.0,30.0,0
+2,3.0,30.0,90
+3,8.7,30.0,261
+```
+
+`n` khớp **1-1** với tên file `NNN.jpg` (đã verify: `L21_V001` 307 ảnh ↔ 307 dòng; `L26_V050` 149 ↔ 149; `L30_V090` 86 ↔ 86). `pts_time` là timestamp giây — nguồn `timestamp` miễn phí cho keyframe của BTC.
+
+**`clip-features-32/<video_id>.npy`** — `shape = (n_keyframes, 512)`, `dtype = float16`. 512 chiều ⇒ **CLIP ViT-B/32**.
+
+✅ **Đã xác nhận L2-normalize** (đo 2026-07-29 trên `L21_V001`, `L26_V050`, `L30_V090`): norm mỗi hàng ∈ [0,9995 · 1,0005], trung bình 1,0000 — sai lệch đúng bằng mức làm tròn của float16. Dùng được trực tiếp với `COSINE` / `IP`.
+
+⚠️ **Checkpoint và preprocessing chính xác không được công bố** — không biết là bản OpenAI gốc hay bản `open_clip` huấn luyện trên LAION. Nên feature này chỉ dùng để **đối chứng**, không dùng làm vector chính (PRD §10/Q8b).
+
+**`media-info/<video_id>.json`** — metadata YouTube của video gốc:
 
 ```json
 {
-  "database": {
-    "<video_id>": {
-      "duration": 316.0,
-      "subset": "validation",
-      "recipe_type": "115",
-      "video_url": "https://www.youtube.com/watch?v=<video_id>",
-      "annotations": [
-        { "segment": [12.5, 47.0], "id": 0, "sentence": "add the oil to the pan" }
-      ]
-    }
-  }
+  "author": "60 Giây Official",
+  "channel_id": "UCRjzfa1E0gA50lvDQipbDMg",
+  "channel_url": "https://www.youtube.com/channel/UCRjzfa1E0gA50lvDQipbDMg",
+  "description": "...",
+  "keywords": ["..."],
+  "length": 1262,
+  "publish_date": "01/08/2024",
+  "thumbnail_url": "https://i.ytimg.com/vi/<yt_id>/sddefault.jpg",
+  "title": "60 Giây Sáng - Ngày 01082024 - HTV Tin Tức Mới Nhất 2024",
+  "watch_url": "https://youtube.com/watch?v=<yt_id>"
 }
 ```
 
-**File đi kèm:** `train_list.txt` / `val_list.txt` / `test_list.txt` · `*_duration_totalframe.txt` · `label_foodtype.csv` (ánh xạ recipe ID → tên món).
+Đây là nguồn cho `VideoRef.duration_sec` (trường `length`, đơn vị **giây**) và cho các trường lọc metadata trong MongoDB/Milvus.
 
-**Lưu ý khi dùng:**
-- Nhãn của **test split bị giữ kín** → benchmark offline chạy trên **val split**
-- Dataset chỉ cung cấp **URL YouTube**, không phải file video → phải tự tải, và một phần link đã bị gỡ (rủi ro R5 trong PRD)
-- Ba điểm lệch so với dữ liệu AIC (caption tiếng Anh, không có chữ trên màn hình, không có nhãn QA) — xem §1.4 của [`PRD.md`](./PRD.md)
+⚠️ Hai bẫy định dạng: `publish_date` là chuỗi **`DD/MM/YYYY`** (`01/08/2024` = 1 tháng 8), **không** phải ISO-8601 — phải parse tường minh, đừng để thư viện đoán. Và **không có trường nào tương đương `recipe_type`** của YouCook2 — trường phân nhóm thay thế là `author` (kênh) và `batch` (`L21`…`L30`).
+
+**`objects/<video_id>/NNN.json`** — object detection cho **từng** keyframe của BTC:
+
+```json
+{
+  "detection_scores": ["0.79673874", "0.6866252"],
+  "detection_class_entities": ["Lantern", "Skyscraper"],
+  "detection_class_names": ["/m/01jfsr", "/m/079cl"],
+  "detection_boxes": [["0.46860334", "0.36642352", "0.63618606", "0.46714845"]],
+  "detection_class_labels": ["84", "379"]
+}
+```
+
+Nhãn theo bộ **Open Images** (`/m/...`). ⚠️ Mọi giá trị lưu dưới dạng **chuỗi** kể cả số — phải ép kiểu khi đọc. `detection_boxes` chuẩn hoá theo thứ tự `[ymin, xmin, ymax, xmax]`.
+
+### 2.4 Không có ground truth trong dataset
+
+**Dataset không chứa bất kỳ file nhãn truy vấn nào** — không có caption↔segment, không có chuỗi sự kiện TRAKE, không có cặp QA. Đã quét toàn bộ cây thư mục: không có file `.csv`/`.json`/`.txt`/`.md` nào ở cấp gốc.
+
+Đây là đặc thù của cuộc thi: phần công khai chỉ dùng để **xây index và truy hồi**; đáp án của bộ truy vấn thi **chỉ biết được qua việc nộp bài** lên hệ thống BTC. Hệ quả trực tiếp: mọi metric offline của dự án phải chạy trên **bộ eval tự sinh** — giao thức sinh nhãn nằm ở §6.1 của [`PRD.md`](./PRD.md).
+
+### 2.5 Quan hệ với pipeline của dự án
+
+Dự án **tự trích keyframe bằng TransNetV2** theo đúng baseline (quyết định của chủ dự án, 2026-07-29), **không** dùng `Keyframes_<batch>/` làm nguồn ingest. Dữ liệu BTC trích sẵn vẫn có bốn công dụng:
+
+| Tài nguyên BTC | Dùng làm gì |
+|---|---|
+| `Keyframes_<batch>/` + `map-keyframes/` | **Đối chứng** chất lượng shot detection của mình (metric phụ tIoU, PRD §6.2); phương án rút lui nếu TransNetV2 không dựng được |
+| `clip-features-32/` | Sanity-check. ⚠️ **Không** so trực tiếp với hệ thống chính ở mức segment — chúng gắn với keyframe của BTC, không phải keyframe của mình. Baseline CLIP ViT-B/32 trong PRD §6.3 phải chạy **bằng encoder của mình trên keyframe của mình** thì so sánh mới công bằng |
+| `media-info/` | Nguồn metadata video, nạp thẳng vào MongoDB |
+| `objects/` | Kênh truy hồi bổ sung tiềm năng (**chưa cam kết**) — gắn với keyframe BTC nên cần ánh xạ theo timestamp |
 
 ---
 
@@ -446,7 +520,16 @@ recipe = Recipe.model_validate_json(interaction.output_text)
 
 > *"Larger images are tiled into 768x768 pixel tiles, each costing 258 tokens."* Ảnh nhỏ hơn 384×384 tính 258 token.
 
-Với ước tính 240k–500k keyframe của YouCook2, gọi OCR trên **mọi** keyframe tốn khoảng **62–130 triệu token đầu vào**. Đây chính là cơ sở của rủi ro R2 trong PRD và lý do phải lọc + dedupe trước khi gọi.
+Keyframe của AIC 2025 là **1280×720** ⇒ cắt thành **2 tile** 768×768 ⇒ **516 token/ảnh**. Hạ về ≤ 384×384 trước khi gửi thì còn **258 token/ảnh** — đây là đòn bẩy chi phí rẻ nhất, nhưng phải kiểm chứng chữ nhỏ trên màn hình có còn đọc được không.
+
+Quy đổi trên số keyframe **BTC trích sẵn** (mốc tham chiếu — số keyframe do TransNetV2 của dự án sinh ra ⚠️ **[Cần đo]**, xem PRD §8/R2):
+
+| Phạm vi | Keyframe | @516 token | @258 token |
+|---|---|---|---|
+| Pilot `L21`–`L24` (128 video) | 26.003 | ~13,4 triệu | ~6,7 triệu |
+| Toàn bộ (873 video) | 177.321 | ~91,5 triệu | ~45,8 triệu |
+
+Đây chính là cơ sở của rủi ro R2 trong PRD và lý do phải lọc frame có chữ + dedupe **trước** khi gọi. Khác YouCook2 ở một điểm quan trọng: video tin tức có **tỉ lệ frame chứa chữ rất cao**, nên bước lọc [1] sẽ cắt được ít hơn kỳ vọng — bước dedupe [2] mới là chỗ tiết kiệm chính (bản tin giữ nguyên khung đồ hoạ suốt nhiều giây liền).
 
 **Trang khác cần dùng:**
 - Batch API (giảm chi phí ingest hàng loạt): https://ai.google.dev/gemini-api/docs/batch-api.md.txt
@@ -603,12 +686,12 @@ Ràng buộc kỹ thuật (độc lập với thiết kế): virtualized renderi
 | **Vector search** | [FAISS](https://github.com/facebookresearch/faiss), [Qdrant](https://qdrant.tech) | Nếu Milvus quá nặng cho một máy. FAISS in-process bỏ được hẳn một service |
 | **Encoder** | [SigLIP](https://huggingface.co/docs/transformers/model_doc/siglip), [open_clip](https://github.com/mlfoundations/open_clip), [jina-clip-v2](https://huggingface.co/jinaai/jina-clip-v2) | **Cũng là phương án rút lui khẩn cấp cho R1.** jina-clip-v2 đa ngôn ngữ — có thể hợp hơn với truy vấn tiếng Việt |
 | **OCR** | [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR), [EasyOCR](https://github.com/JaidedAI/EasyOCR) | Thay Gemini OCR để **cắt chi phí R2**. Chạy cục bộ, không quota, nhưng chất lượng tiếng Việt thường kém hơn |
-| **Kênh ASR** | [faster-whisper](https://github.com/SYSTRAN/faster-whisper), [WhisperX](https://github.com/m-bain/whisperX) | Thêm một kênh truy hồi hoàn toàn mới từ lời thoại. **Đặc biệt giá trị với YouCook2** vì video nấu ăn có người thuyết minh nhưng không có chữ trên màn hình |
+| **Kênh ASR** | [faster-whisper](https://github.com/SYSTRAN/faster-whisper), [WhisperX](https://github.com/m-bain/whisperX) | Thêm một kênh truy hồi hoàn toàn mới từ lời thoại. **Rất giá trị với AIC 2025**: bản tin có lời dẫn dày đặc, nói ra nhiều thứ **không** hiện thành chữ trên màn hình (tên người, địa danh, số liệu) — bổ trợ chứ không trùng lặp với kênh OCR |
 | **Reranking** | Cross-encoder / ColBERT-style | Khi Recall@100 cao nhưng Recall@1 thấp — nghĩa là đáp án có trong tầm với, chỉ xếp hạng sai |
 | **Tăng tốc inference** | ONNX Runtime, TensorRT | Khi ingest là nút thắt |
 | **Nén vector** | Product Quantization, scalar quantization | Khi index không vừa RAM |
 
-**Thứ tự ưu tiên đề xuất:** ASR (mở ra kênh mới, giá trị cao nhất trên YouCook2) → reranking → nén vector → tăng tốc inference.
+**Thứ tự ưu tiên đề xuất:** ASR (mở ra kênh mới, giá trị cao nhất trên video tin tức) → reranking → nén vector → tăng tốc inference.
 
 ---
 

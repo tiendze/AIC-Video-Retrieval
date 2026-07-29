@@ -21,8 +21,8 @@ dev = [
     "isort==8.0.1",
     "ruff==0.16.0",
 ]
-ingest = [
-    "yt-dlp==2026.7.4",
+data = [
+    "kagglehub==1.0.2",
 ]
 
 [build-system]

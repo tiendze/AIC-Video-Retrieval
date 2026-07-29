@@ -2,18 +2,20 @@
 
 System instructions cho AI coding agent làm việc trên **AIC-Video-Retrieval** — interactive video retrieval đa phương thức cho AI Challenge TP.HCM.
 
-Nguồn sự thật: [`docs/PRD.md`](docs/PRD.md) · [`docs/architecture.md`](docs/architecture.md) · [`docs/references.md`](docs/references.md). File này chỉ chứa **quy tắc**; chi tiết sơ đồ, schema, công thức, API snippet nằm trong docs. Mâu thuẫn giữa hai bên ⇒ **docs thắng**, và phải báo mâu thuẫn ra.
+Nguồn sự thật: [`docs/PRD.md`](docs/PRD.md) · [`docs/architecture.md`](docs/architecture.md) · [`docs/references.md`](docs/references.md). File này chỉ chứa **quy tắc** — sơ đồ, schema, công thức, thống kê dataset, API snippet đều nằm trong docs, **đừng chép lại vào đây**. Mâu thuẫn giữa hai bên ⇒ **docs thắng**, và phải báo mâu thuẫn ra.
 
 **Tradeoff:** thiên về *đúng và đo được* hơn *nhanh*. Task nhỏ (typo, log message) thì dùng phán đoán.
 
 ---
 
-## 1. Bối cảnh
+## 1. Bối cảnh — bốn điều quyết định mọi lựa chọn
 
-- 4 task thi: `Textual KIS` · `Video KIS` · `QA (VQA)` · `TRAKE`. Điểm **giảm theo thời gian trả lời và số lần nộp sai** → latency là yêu cầu chức năng.
-- Hệ thống **interactive**: con người chốt đáp án cuối. Đừng tự động hoá chỗ paper cố ý để người vận hành quyết định.
-- Ràng buộc cứng: **một máy, RTX 3070 8GB VRAM**. Dataset P1 là **YouCook2 val split**, dữ liệu AIC vào sau.
-- Baseline [arXiv:2512.13169](https://arxiv.org/abs/2512.13169) đóng góp **QUEST** (Out-of-Knowledge query) và **DANTE** (temporal alignment, `O(NT)`) — nhưng **không công bố metric định lượng nào**. Vì vậy `eval/` là điều kiện để mọi tuyên bố "cải thiện" có nghĩa.
+1. **4 task thi:** `Textual KIS` · `Video KIS` · `QA (VQA)` · `TRAKE`. Điểm **giảm theo thời gian trả lời và số lần nộp sai** ⇒ latency là yêu cầu *chức năng*, không phải "tối ưu sau".
+2. **Hệ thống interactive** — con người chốt đáp án cuối. Đừng tự động hoá chỗ paper cố ý để người vận hành quyết định.
+3. **Ràng buộc cứng:** một máy, **RTX 3070 8GB VRAM**.
+4. **Không có ground truth thật.** Dataset AIC 2025 công khai (chi tiết: `references.md` §2) **không kèm nhãn nào**; đáp án chỉ biết qua nộp bài. Bộ eval là **nhãn tự sinh** (giao thức: PRD §6.1) ⇒ mọi con số là **tương đối**, và phải hiệu chỉnh qua nộp bài BTC (PRD §6.9).
+
+Baseline [arXiv:2512.13169](https://arxiv.org/abs/2512.13169) đóng góp **QUEST** và **DANTE**, nhưng **không công bố metric định lượng nào**. Vì vậy `eval/` là điều kiện để mọi tuyên bố "cải thiện" có nghĩa.
 
 ---
 
@@ -24,7 +26,7 @@ Nguồn sự thật: [`docs/PRD.md`](docs/PRD.md) · [`docs/architecture.md`](do
 - Nói rõ assumption trước khi implement. Không chắc thì hỏi.
 - Nhiều cách hiểu → trình bày cả hai, đừng im lặng chọn một.
 - Có cách đơn giản hơn → nói ra. Được phép phản biện.
-- Code lệch docs → sửa docs trong cùng change, không để hai bên trôi khỏi nhau.
+- Code lệch docs → sửa docs trong **cùng** change, không để hai bên trôi khỏi nhau.
 - Mỗi thay đổi ảnh hưởng kết quả phải trả lời được: *"đo bằng metric nào trong PRD §6?"*
 
 ---
@@ -35,12 +37,14 @@ Nguồn sự thật: [`docs/PRD.md`](docs/PRD.md) · [`docs/architecture.md`](do
 
 - **Một encoder duy nhất.** Vector lúc `ingest` và lúc `query` phải sinh từ cùng model + cùng preprocessing.
 - **L2-normalize mọi embedding ngay tại encoder**, không rải rác ở nơi gọi.
-- **`model_id` nằm trong tên Milvus collection.** Đổi embedding model ⇒ tạo collection MỚI, không ghi đè.
-- **`global_index`, `s_v`, `e_v` là bắt buộc**, không phải metadata tuỳ chọn — thiếu là DANTE không chạy được.
+- **`model_id` nằm trong tên Milvus collection.** Đổi embedding model ⇒ collection MỚI, không ghi đè.
+- **`global_index`, `s_v`, `e_v` là bắt buộc** — thiếu là DANTE không chạy được.
 - **DANTE giữ ràng buộc thứ tự `τ < t`.** Chuỗi trả về không bao giờ đảo thứ tự thời gian.
-- **VQA phải qua grounding gate**: `evidence_keyframe_ids` phải nằm trong tập keyframe thực sự truy hồi được, không thì trả "không đủ căn cứ".
+- **VQA phải qua grounding gate**: `evidence_keyframe_ids` nằm ngoài tập keyframe truy hồi được ⇒ trả "không đủ căn cứ".
 - **Filter chạy trong engine** (tham số `filter` của Milvus), không lọc sau khi lấy kết quả về.
 - **Ingest idempotent + resume được**: chạy lại không tạo bản ghi trùng, bỏ qua video đã `complete`.
+- **Khử trùng `video_id` khi liệt kê video.** Dataset có nhiều file `.mp4` trùng id (`references.md` §2.1) — đếm file thay vì đếm id sẽ ingest lặp và thổi phồng mẫu số của mọi báo cáo metric.
+- **Model sinh nhãn ≠ model bị đánh giá.** Gemini sinh caption/câu hỏi, BEiT-3 (hoặc SigLIP) đi tìm. Để cùng một model làm cả hai vai là hệ thống tự chấm chính nó — số đo vô nghĩa.
 
 ---
 
@@ -48,17 +52,18 @@ Nguồn sự thật: [`docs/PRD.md`](docs/PRD.md) · [`docs/architecture.md`](do
 
 **Ảnh và chữ nằm trong CÙNG một không gian vector — mọi thứ khác là hệ quả.** Sơ đồ đầy đủ: `architecture.md` §3.
 
-Ingest — 3 nhánh (VISION → Milvus · TEXT → Elasticsearch · METADATA → MongoDB), trên 8GB VRAM **chạy tuần tự an toàn hơn song song**:
+**Ingest** — 3 nhánh (VISION → Milvus · TEXT → Elasticsearch · METADATA → MongoDB). Trên 8GB VRAM **chạy tuần tự an toàn hơn song song**.
 
-- Trích **4 keyframe mỗi shot** đúng công thức paper (`PRD.md` §F1). Gán `global_index` liên tục + ghi `s_v` / `e_v` cùng lúc với việc ghi keyframe.
-- **Luôn lọc frame có chữ + dedupe perceptual hash TRƯỚC khi gọi Gemini OCR.** Gọi trên mọi keyframe là ~62–130 triệu input token (risk R2).
+- **Tự trích keyframe bằng TransNetV2** + công thức 4-keyframe/shot (`PRD.md` §F1) — bám baseline. Keyframe BTC trích sẵn **chỉ dùng làm đối chứng**, không phải nguồn ingest.
+- Gán `global_index` liên tục + ghi `s_v` / `e_v` **cùng lúc** với việc ghi keyframe.
+- **Luôn lọc frame có chữ + dedupe perceptual hash TRƯỚC khi gọi Gemini OCR** (risk R2 — chi phí token, quy đổi ở `references.md` §5). Với video tin tức, **dedupe mới là bước tiết kiệm chính**, không phải lọc chữ.
 - Video lỗi → error list riêng + `ingest_status = "failed"`, **pipeline chạy tiếp**. Checkpoint theo `video_id`.
 
-Retrieval:
+**Retrieval:**
 
 - Ba mode `semantic` · `ocr` · `hybrid` là **tham số**, không phải ba code path sao chép nhau.
 - **Hybrid (RRF, `k = 60`) không được kém hơn kênh đơn tốt nhất** trên bộ eval. Kém thì chỉnh trọng số hoặc bỏ hẳn.
-- **QUEST giữ người trong vòng lặp**: hiển thị cả `q₀` lẫn `q_r` cho nhánh rewrite; người dùng **tự chọn** ảnh mẫu `I*` ở nhánh 2, không auto-pick. Cả hai có timeout → fallback về search thường, không treo UI.
+- **QUEST giữ người trong vòng lặp**: hiển thị cả `q₀` lẫn `q_r`; người dùng **tự chọn** ảnh mẫu `I*` ở nhánh 2, không auto-pick. Cả hai nhánh có timeout → fallback về search thường, không treo UI.
 - **DANTE** dùng bản `running max` + có **backtracking** để trả đúng N keyframe. `λ` là config, không hard-code.
 - **Degraded mode phải chạy được**: tắt Elasticsearch ⇒ `semantic-only`; mất mạng ⇒ semantic search và DANTE vẫn đủ, chỉ QUEST / OCR / VQA ngừng.
 
@@ -77,19 +82,20 @@ Retrieval:
 | MongoDB (`pymongo`) | **bulk write** + unique index `keyframe_id` / `video_id` | insert từng document; client đồng bộ trong `async def` |
 
 - **OpenAI structured output phải xử lý nhánh `item.type == "refusal"`** trước khi đọc `item.parsed`.
-- **Structured output cho cả OCR và VQA** qua `model_json_schema()` — không parse text tự do bằng regex.
+- **Structured output cho cả OCR, VQA và sinh nhãn** qua `model_json_schema()` — không parse text tự do bằng regex.
 - **TransNetV2**: bản `inference-pytorch/`, input `torch.uint8` shape `[B, T, 27, 48, 3]` → resize frame về **48×27**.
 - **BEiT-3**: dùng `beit3_base_itc`. **Timebox 1 ngày** — quá thì chuyển `SigLIPEncoder` qua Protocol và ghi nhận là sai lệch so với baseline.
 - **PyTorch trên 8GB VRAM**: `torch.no_grad()` + autocast fp16, batch size configurable, giải phóng cache giữa các giai đoạn.
+- **Đọc dữ liệu BTC:** mọi giá trị trong `objects/*.json` là **chuỗi** kể cả số; `publish_date` là **`DD/MM/YYYY`** không phải ISO-8601; tên thư mục **không nhất quán** nên phải glob. Chi tiết: `references.md` §2.
 - Model ID (`gemini-3.6-flash`, `gpt-5.6`) **xác nhận lại lúc implement**. Cần API chưa có trong `references.md` → fetch `llms.txt` rồi cập nhật `references.md` trong cùng change.
 
 ---
 
 ## 6. Kiến trúc & Code Style
 
-**Hai Protocol là hàng rào chống rủi ro, không được bypass:** `MultimodalEncoder` (chống risk R1 — BEiT-3 khó cài) và `DatasetAdapter` (YouCook2 → AIC chỉ thêm class, không sửa pipeline). Pipeline chỉ gọi qua interface, không import implementation trực tiếp.
+**Hai Protocol là hàng rào chống rủi ro, không được bypass:** `MultimodalEncoder` (chống risk R1 — BEiT-3 khó cài) và `DatasetAdapter` (đổi/mở rộng dataset chỉ thêm class, không sửa pipeline). Pipeline chỉ gọi qua interface, không import implementation trực tiếp.
 
-- Ranh giới tầng: `app/api/` routers **mỏng** (validate + uỷ quyền) · `app/services/` chứa toàn bộ business logic · `app/stores/` chỉ nói chuyện với DB · `eval/run.py` là entry point **duy nhất** của evaluation. Cây thư mục đầy đủ: `architecture.md` §6.
+- Ranh giới tầng: `app/api/` routers **mỏng** (validate + uỷ quyền) · `app/services/` chứa toàn bộ business logic · `app/stores/` chỉ nói chuyện với DB · `eval/run.py` là entry point **duy nhất** của evaluation. Cây thư mục: `architecture.md` §6.
 - FastAPI: `create_app()`, model nạp qua **lifespan**, client inject qua `Depends` (không khởi tạo trong route), `async def` + async client cho endpoint I/O, mọi endpoint khai báo `response_model`, lỗi theo schema `{detail, error_code, request_id}`.
 - Python: **PEP 8 + type annotation trên mọi chữ ký hàm**. Format `black` · `isort` · lint `ruff`.
 - Immutable trước: `@dataclass(frozen=True)` cho value object. Không mutate tham số đầu vào.
@@ -105,6 +111,7 @@ Retrieval:
 - Mọi lời gọi API ngoài (Gemini, OpenAI, image search): **timeout + retry exponential backoff + fallback rõ ràng**.
 - Lỗi nhánh phụ thuộc mạng **không được giết request chính**: VQA lỗi → vẫn trả keyframe grid kèm thông báo.
 - **`except Exception: pass` bị cấm.** Bắt exception cụ thể, log kèm `video_id` / `keyframe_id` / `request_id`, rồi quyết định retry / skip / raise.
+- **Thiếu dữ liệu phải fail rõ ràng, không trả rỗng.** Ví dụ: bộ nhãn chưa tồn tại ⇒ raise, đừng trả list rỗng khiến `eval/` in bảng metric toàn số 0 trông như "hệ thống hỏng".
 - Lỗi hiện ra UI phải đọc được bởi người đang bị tính giờ — không dump traceback.
 - API key nạp qua `pydantic-settings` từ `.env`, **validate ngay lúc khởi động**, không bao giờ commit. Log phải **che** key / token / authorization header.
 - CORS theo môi trường, không kết hợp wildcard với credentials. Ảnh upload: giới hạn size, check MIME type, không lưu vĩnh viễn.
@@ -118,10 +125,14 @@ Retrieval:
 - "Thêm hybrid search" → *"viết test chứng minh hybrid ≥ kênh đơn tốt nhất, rồi làm nó pass"*.
 - "Fix bug DANTE" → *"viết test tái hiện chuỗi bị đảo thứ tự, rồi làm nó pass"*.
 - TDD: RED → GREEN → refactor. Coverage **≥ 80%**. Tên test mô tả hành vi: `test_encoder_output_is_l2_normalized`.
-- **Không sửa bộ eval để cải thiện số.** Đổi bộ eval ⇒ tăng version và chạy lại toàn bộ baseline.
-- Báo cáo metric luôn kèm: git SHA, model checkpoint, version index, **số video thực tế đánh giá được**, seed.
 - **Không sang phase sau khi phase trước chưa có số đo** — bài học trực tiếp từ khoảng trống của paper.
 - Metric chính: `Recall@K` / `MRR` (báo cáo **cả** video-level và segment-level) · `Sequence Exact-Match` + `Kendall's tau` (TRAKE) · `Grounded Accuracy` + `Hallucination Rate` (VQA). Mục tiêu cụ thể: PRD §6.7.
+
+**Kỷ luật riêng vì nhãn là nhãn tự sinh:**
+
+- **Không sửa bộ eval để cải thiện số.** Đổi bộ eval ⇒ tăng version và chạy lại toàn bộ baseline. Ranh giới giữa *"sửa nhãn sai"* và *"sửa nhãn cho số đẹp"* rất mỏng ⇒ lý do sửa phải viết ra **trước** khi nhìn số mới.
+- Báo cáo metric luôn kèm: git SHA · model checkpoint · version index · **`eval_set_version` + hash bộ nhãn** · **số `video_id` duy nhất đánh giá được** · số truy vấn · seed.
+- **BM25 cao bất thường ⇒ nghi bộ nhãn rò rỉ, không phải hệ thống giỏi** (caption sinh từ chính keyframe đáp án). Điều tra trước khi ăn mừng.
 
 **Bắt buộc: báo cáo sau mỗi phase.** Kết thúc một phase (P0–P4 trong PRD §4) hoặc một bước lớn trong plan, **dừng lại giải thích trước khi đi tiếp** — viết bằng tiếng Việt, đủ để người đọc hiểu mà không cần mở code:
 
@@ -136,7 +147,7 @@ Còn thiếu   — phần chưa xong, giả định đang treo, rủi ro đã ph
 - Giải thích **luồng dữ liệu**, không liệt kê diff. Người đọc cần hiểu *dữ liệu biến đổi thế nào*, không cần đọc lại code.
 - Số liệu phải là **kết quả chạy thật**. Chưa chạy được thì ghi rõ "chưa đo", không suy đoán.
 
-> Build / run commands chưa chốt (repo mới có `docs/`). Khi scaffold xong thì ghi vào `README.md`, **không** đưa vào file này.
+> Build / run commands: ghi vào `README.md` khi scaffold xong, **không** đưa vào file này.
 
 ---
 
@@ -150,14 +161,15 @@ Mô tả UI trong paper và PRD §F9 chỉ là **danh sách năng lực chức n
 
 ## 10. Surgical Changes & Khi không chắc
 
-- **Lệnh quan trọng/tốn tài nguyên (Docker: `build`/`up`/`down`; train/inference model; tải dataset lớn) → chuẩn bị sẵn (Dockerfile, docker-compose.yml, script), nhưng để người chủ dự án tự chạy.** Đưa ra lệnh cụ thể cần chạy, không tự ý thực thi.
+- **Lệnh tốn tài nguyên (Docker `build`/`up`/`down`; train/inference model; ingest hàng loạt) → chuẩn bị sẵn script, nhưng để người chủ dự án tự chạy.** Đưa ra lệnh cụ thể, không tự ý thực thi.
+- **Server không cho cài thư viện trên host — mọi lệnh cần thư viện phải chạy trong container đã cài sẵn.** Không tự cài package vào host, không tự exec vào container. Chỉ chuẩn bị script/lệnh (kèm ghi chú "chạy trong container").
 - Chỉ đụng thứ cần đụng. Không "cải thiện" code/comment/format lân cận. Dead code có sẵn thì **báo**, đừng tự xoá.
 - Commit `<type>: <description>` (`feat` · `fix` · `refactor` · `docs` · `test` · `chore` · `perf` · `ci`), atomic, không commit khi test đỏ.
 - Không chắc **con số** → `[Cần điền]` / `⚠️ [Cần đo]`, đừng bịa. Câu hỏi đang treo: PRD §10.
 - Không chắc **API thư viện** → fetch docs / `llms.txt`.
-- Không chắc **quyết định sản phẩm** (format file nộp, thiết kế UI) → hỏi.
+- Không chắc **quyết định sản phẩm** (format file nộp, thiết kế UI, giao thức sinh nhãn) → hỏi.
 - Không chắc paper nói gì → `architecture.md` §10 phân biệt 📄 **[Paper]** với 🔧 **[Giả định]**. Sửa 🔧 thoải mái; sửa 📄 phải nêu lý do.
 
 ---
 
-**Các quy tắc này đang phát huy tác dụng nếu:** không có vector nào bị trộn giữa hai model · mọi tuyên bố "cải thiện" dẫn được về một con số trong PRD §6 · ingest đứt giữa chừng chạy lại được · và câu hỏi làm rõ xuất hiện **trước** khi code.
+**Các quy tắc này đang phát huy tác dụng nếu:** không có vector nào bị trộn giữa hai model · mọi tuyên bố "cải thiện" dẫn được về một con số trong PRD §6 · ingest đứt giữa chừng chạy lại được · không có model nào tự chấm chính nó · và câu hỏi làm rõ xuất hiện **trước** khi code.

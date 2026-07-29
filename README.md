@@ -17,7 +17,7 @@ Baseline: [arXiv:2512.13169 — *Integrated Semantic and Temporal Alignment for 
 **Pipeline:** TransNetV2 (shot detection) → BEiT-3 (multimodal embedding) → Gemini (OCR)
 **Lưu trữ:** Milvus (vector) · Elasticsearch + `vi_analyzer` (OCR text) · MongoDB (metadata)
 **Ứng dụng:** FastAPI + Pydantic · React + Vite + TypeScript
-**Dataset giai đoạn 1:** YouCook2 (2.000 video, 176 giờ) — dữ liệu AIC bổ sung sau
+**Dataset:** AIC 2025 công khai (Kaggle `aresusayhi/ai-challenge-2025` v2) — **873 video, 130,7 giờ**, tin tức tiếng Việt. Tải bằng `python download.py` vào `data/`. P0 chạy pilot `L21`–`L24` (128 video), mở rộng đủ 873 ở P4. ⚠️ Dataset **không kèm nhãn truy vấn** — bộ eval là nhãn tự sinh, xem PRD §6.1
 
 ## Cài đặt & chạy (P0.1)
 

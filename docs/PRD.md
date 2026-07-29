@@ -1,9 +1,11 @@
 # PRD — Hệ thống Truy vấn & Hỏi đáp Video Đa phương thức
 
 > **Tên dự án:** AIC-Video-Retrieval
-> **Phiên bản:** 0.1 (bản khởi tạo)
-> **Ngày:** 2026-07-25
+> **Phiên bản:** 0.2 — đổi dataset sang **AIC 2025 công khai**
+> **Ngày:** 2026-07-29 (bản khởi tạo 0.1: 2026-07-25)
 > **Trạng thái:** Draft — chờ review
+>
+> **Thay đổi 0.1 → 0.2:** dataset thay thế YouCook2 được bỏ, dùng thẳng dữ liệu AIC 2025 công khai đã tải về `data/`. Ảnh hưởng: §1.4 · §4 · §6.1 (nguồn nhãn — **viết lại toàn bộ**) · §6.2 · §6.3 · §6.6 · §6.9 (mục mới) · §8 (R4/R5 đóng, R6/R9 đổi nghĩa, R10 mới) · §9 · §10.
 > **Baseline:** [arXiv:2512.13169 — *Integrated Semantic and Temporal Alignment for Interactive Video Retrieval*](https://arxiv.org/abs/2512.13169) (team AIO_Owlgorithms, HCMC AI Challenge 2025)
 
 ---
@@ -60,29 +62,33 @@ Paper chỉ báo cáo xếp hạng **định tính** ở vòng chung kết: TRAK
 
 ### 1.4 Tình trạng dữ liệu hiện tại
 
-Chưa có dữ liệu chính thức từ ban tổ chức. Giai đoạn 1 dùng **YouCook2** làm dataset thay thế:
+Dự án dùng **dữ liệu công khai AIC 2025** (Kaggle `aresusayhi/ai-challenge-2025` v2), đã tải xong về `data/` ngày 2026-07-28. Thống kê chi tiết và bố cục thư mục: [`references.md`](./references.md) §2.
 
-| Thuộc tính | Giá trị |
+| Thuộc tính | Giá trị **đo được** |
 |---|---|
-| Số video | 2.000 video YouTube nấu ăn |
-| Tổng thời lượng | 176 giờ |
-| Số công thức (category) | 89 |
-| Thời lượng trung bình | 5,26 phút/video |
-| Segment trung bình mỗi video | 7,7 procedure segment |
-| Caption | Tiếng Anh, dạng mệnh lệnh, ~8,8 từ |
-| File nhãn | `youcookii_annotations_trainval.json` |
-| Split | train / val / test — **nhãn của test bị giữ kín** |
+| Số `video_id` duy nhất | **873** (batch `L21` … `L30`) |
+| Số file `.mp4` | 961 — 88 file là **bản sao trùng id** (`Videos_L25_a1`, `Videos_L25_b`) |
+| Tổng thời lượng | **130,7 giờ** (470.428 s) |
+| Thời lượng trung bình | ~9,0 phút/video |
+| Nội dung | Video **tin tức tiếng Việt** (HTV — *60 Giây Official*, …) |
+| Dung lượng | 123 GB |
+| Keyframe BTC trích sẵn | 177.321 ảnh 1280×720 |
+| Feature BTC kèm theo | CLIP ViT-B/32 `(n, 512)` float16 · `map-keyframes` · `media-info` · `objects` |
+| **File nhãn truy vấn** | ❌ **không có** |
 
-**Vì sao YouCook2 phù hợp:** mỗi video được annotate sẵn một chuỗi *procedure segment có thứ tự thời gian*, kèm caption. Đây là ground truth miễn phí cho hai thứ khó kiếm nhất:
-- Chuỗi segment có thứ tự → ground truth cho **TRAKE / DANTE**
-- Caption từng segment → ground truth cho **Textual KIS**
-- `recipe_type` → nhãn để kiểm thử bộ lọc metadata
+**Đây là dữ liệu đúng miền thi** — cùng ngôn ngữ, cùng thể loại, cùng phân bố với dữ liệu sẽ dùng khi thi. Không còn khoảng cách miền như phương án YouCook2 trước đây. Hệ quả tốt: `vi_analyzer` và nhánh OCR **kiểm chứng được ngay từ P0**, vì video tin tức đầy chữ trên màn hình.
 
-**Ba điểm lệch so với dữ liệu AIC — phải ghi nhớ khi diễn giải kết quả:**
+**Vấn đề lớn nhất: không có ground truth.** Phần công khai chỉ dùng để xây index và truy hồi; đáp án của bộ truy vấn thi **chỉ biết được qua việc nộp bài** lên hệ thống BTC. Không có caption↔segment, không có chuỗi sự kiện TRAKE, không có cặp QA.
 
-1. **Caption tiếng Anh**, còn AIC là tiếng Việt → `vi_analyzer` của Elasticsearch chưa phát huy tác dụng ở giai đoạn 1.
-2. **Video nấu ăn gần như không có chữ trên màn hình**, khác hẳn video tin tức của AIC → nhánh OCR/Elasticsearch sẽ ở trạng thái *"đã xây nhưng chưa kiểm chứng được"*.
-3. **Không có nhãn QA** → phải sinh bộ câu hỏi bằng LLM từ caption, kèm vòng review thủ công.
+→ **Quyết định (chủ dự án, 2026-07-29):** tự sinh một bộ nhãn đơn giản làm bộ eval offline. Giao thức sinh nhãn ở §6.1. Điều này giữ được nguyên tắc *"không sang phase sau khi chưa có số đo"*, nhưng kèm một cái giá phải luôn nhớ khi đọc kết quả:
+
+**Ba điểm lệch của nhãn tự sinh — phải ghi nhớ khi diễn giải mọi con số:**
+
+1. **Nhãn do LLM sinh, không phải người viết.** Phân bố truy vấn sẽ "sạch" và mô tả trực quan hơn truy vấn thật của BTC. Số đo là **tương đối**, dùng để so sánh giữa các cấu hình, **không** phải dự đoán điểm thi (rủi ro R9).
+2. **Rủi ro tự chấm mình.** Model sinh nhãn **phải khác** model được đánh giá — Gemini sinh caption, BEiT-3/SigLIP đi tìm. Để cùng một model làm cả hai vai thì con số vô nghĩa.
+3. **Không có nhãn âm.** Chỉ biết keyframe nào *đúng*, không biết keyframe nào *chắc chắn sai* → `mAP` và `nDCG` phải đọc dè dặt hơn `Recall@K`.
+
+Kênh hiệu chỉnh duy nhất chống lại ba điểm lệch trên là **nộp thử lên hệ thống BTC** khi mở — xem §6.9.
 
 ---
 
@@ -103,7 +109,7 @@ Chưa có dữ liệu chính thức từ ban tổ chức. Giai đoạn 1 dùng *
 |---|---|
 | **T1** | Pipeline ingest **idempotent và resume được** — đứt giữa chừng chạy lại không hỏng dữ liệu, không xử lý lại phần đã xong |
 | **T2** | Backbone embedding **thay được** mà không sửa pipeline (qua `MultimodalEncoder` Protocol) |
-| **T3** | Dataset **thay được** mà không sửa pipeline (qua `DatasetAdapter`) — chuyển YouCook2 → AIC chỉ cần thêm một adapter |
+| **T3** | Dataset **thay được** mà không sửa pipeline (qua `DatasetAdapter`) — nạp thêm batch mới của BTC, hoặc đổi hẳn dataset, chỉ cần thêm một adapter |
 | **T4** | Toàn bộ tham số ảnh hưởng kết quả nằm trong file config, không hard-code |
 | **T5** | Hệ thống vẫn phục vụ được truy vấn semantic khi mất mạng (Gemini/OpenAI không khả dụng) |
 
@@ -126,7 +132,7 @@ Ghi rõ để tránh trôi phạm vi:
 | Persona | Mô tả | Điều họ quan tâm nhất |
 |---|---|---|
 | **P1 — Người vận hành khi thi** (chính) | Thí sinh ngồi trước màn hình lúc thi, đọc truy vấn của BTC và thao tác công cụ | Tốc độ. Mỗi giây đều mất điểm. Cần shortcut bàn phím, grid load nhanh, đổi mode tức thì |
-| **P2 — Kỹ sư pipeline** | Người chạy ingest, quản lý index, theo dõi log | Ingest không đứt, resume được, biết đang ở đâu trong 176 giờ video |
+| **P2 — Kỹ sư pipeline** | Người chạy ingest, quản lý index, theo dõi log | Ingest không đứt, resume được, biết đang ở đâu trong 130,7 giờ video |
 | **P3 — Người đánh giá** | Người chạy benchmark, so sánh cấu hình | Chạy eval một lệnh, kết quả tái lập được, so sánh được giữa các lần chạy |
 
 ### 3.2 User stories
@@ -148,11 +154,13 @@ Ghi rõ để tránh trôi phạm vi:
 
 | Phase | Nội dung | Điều kiện hoàn thành (exit criteria) |
 |---|---|---|
-| **P0 — Nền móng** | Dựng `docker-compose` (Milvus + ES + MongoDB); `MultimodalEncoder` + `DatasetAdapter`; ingest **val split YouCook2 (457 video)** | Search một truy vấn bất kỳ ra kết quả từ đầu đến cuối; `eval/` chạy được và in ra Recall@k dù số còn thấp |
-| **P1 — Tìm kiếm cơ bản** | Semantic search (text→image, image→image); OCR search qua ES; hybrid fusion (RRF); UI tối thiểu | Đạt mục tiêu Recall@10 trong §6.7; UI dùng được để thao tác thật |
+| **P0 — Nền móng** | Dựng `docker-compose` (Milvus + ES + MongoDB); `MultimodalEncoder` + `DatasetAdapter`; ingest **đủ ba nhánh** (VISION + **TEXT/OCR** + METADATA) trên **pilot `L21`–`L24` (128 video, 27,9 giờ)**; sinh bộ eval v1; search `semantic` + `ocr` | Search một truy vấn bất kỳ ra kết quả từ đầu đến cuối; `eval/` chạy được và in ra Recall@k dù số còn thấp; **hai kênh báo cáo tách riêng** |
+| **P1 — Tìm kiếm cơ bản** | image→image search; **hybrid fusion (RRF)**; đo chi phí/lợi ích kênh OCR; UI tối thiểu | Đạt mục tiêu Recall@10 trong §6.7; UI dùng được để thao tác thật |
 | **P2 — Hai đóng góp của paper** | QUEST (2 nhánh); DANTE (TRAKE) + ablation `λ` | TRAKE `Sequence Exact-Match` đạt mục tiêu §6.7; có bảng ablation `λ` |
 | **P3 — VQA & nộp bài** | VQA answering qua Gemini có grounding; submission exporter | `Grounded Accuracy` đạt mục tiêu §6.7; file nộp qua validate |
-| **P4 — Dữ liệu thật & tối ưu** | Nạp dữ liệu AIC; kích hoạt `vi_analyzer`; đo lại toàn bộ; tối ưu theo số đo | Toàn bộ metrics chạy lại trên dữ liệu AIC; báo cáo so sánh |
+| **P4 — Mở rộng toàn kho & tối ưu** | Ingest nốt **745 video còn lại** (đủ 873); đo lại toàn bộ ở quy mô đầy đủ; tối ưu theo số đo; hiệu chỉnh với hệ thống nộp bài của BTC | Toàn bộ metrics chạy lại trên đủ 873 video; báo cáo so sánh pilot ↔ full |
+
+**Thay đổi so với bản 0.1:** trước đây P0–P3 chạy trên YouCook2 và P4 mới là "nạp dữ liệu AIC". Nay dữ liệu AIC đã có từ đầu, nên trục của P4 chuyển từ *đổi dataset* sang **mở rộng quy mô** (128 → 873 video). Lợi ích: mọi số đo từ P0 đã nằm đúng miền thi. Cái giá: không còn bộ nhãn người viết ở bất kỳ phase nào — xem §1.4 và §6.1.
 
 **Nguyên tắc xuyên suốt:** không sang phase sau khi phase trước chưa có số đo. Đây là bài học trực tiếp từ khoảng trống của paper.
 
@@ -190,17 +198,19 @@ Tìm kiếm trong không gian embedding chung.
 
 **Acceptance criteria:**
 - [ ] Hai chế độ dùng **chung một không gian vector** — đây là điều kiện để multimodal hoạt động
-- [ ] Hỗ trợ lọc theo `video_id` / `recipe_type` ngay trong truy vấn Milvus (không lọc sau)
+- [ ] Hỗ trợ lọc theo `video_id` / `author` / `batch` ngay trong truy vấn Milvus (không lọc sau)
 - [ ] Trả về `score`, `video_id`, `timestamp`, `keyframe_id`, đường dẫn thumbnail
 
-### F3 — OCR / keyword search *(P1)*
+### F3 — OCR / keyword search *(P0)*
 
 Tìm theo chữ xuất hiện trên màn hình, qua Elasticsearch.
 
 **Acceptance criteria:**
 - [ ] Index dùng `vi_analyzer` từ plugin `elasticsearch-analysis-vietnamese`
 - [ ] Có `asciifolding` với `preserve_original` để khớp cả khi người dùng gõ không dấu
-- [ ] ⚠️ Trên YouCook2 nhánh này gần như vô dụng (không có chữ trên màn hình) — chỉ đo thật khi có dữ liệu AIC
+- [ ] ✅ Nhánh này **đo được thật ngay từ P0**: video tin tức AIC đầy chữ trên màn hình (tiêu đề bản tin, chạy chữ, tên nhân vật, địa danh) và truy vấn là tiếng Việt — đúng điều kiện `vi_analyzer` được thiết kế cho. Đây là thay đổi so với bản 0.1, khi dataset còn là YouCook2
+- [ ] Đặt **trần chi phí OCR trong `configs/`** — vượt trần thì dừng và báo, không đốt tiếp (R2)
+- [ ] Báo cáo tỉ lệ frame bị cắt ở **từng** bước lọc riêng biệt, không gộp — đây là bằng chứng R2 đã được giảm thiểu
 
 ### F4 — Hybrid fusion *(P1)*
 
@@ -291,28 +301,71 @@ Xuất file kết quả theo định dạng BTC.
 ### 6.0 Nguyên tắc
 
 1. **Mọi metric phải chỉ ra được nguồn ground truth cụ thể.** Metric nào không có nguồn nhãn thì phải ghi rõ *"cần sinh nhãn"* kèm cách sinh.
-2. **Bộ đánh giá cố định và phiên bản hoá.** Dùng **val split YouCook2** (nhãn test bị giữ kín). Danh sách truy vấn eval lưu trong repo, có hash để phát hiện thay đổi.
-3. **Luôn báo cáo cùng baseline.** Một con số đơn độc không có ý nghĩa.
-4. **Báo cáo kèm mẫu số thực tế.** Video YouCook2 tải hỏng thì ghi rõ đánh giá trên bao nhiêu video, không im lặng bỏ qua.
+2. **Bộ đánh giá cố định và phiên bản hoá.** Dataset AIC 2025 **không kèm nhãn nào** (§1.4), nên bộ eval là **nhãn tự sinh, đóng băng theo phiên bản**, lưu trong repo kèm hash để phát hiện thay đổi.
+3. **Luôn báo cáo cùng baseline.** Một con số đơn độc không có ý nghĩa — càng đúng khi nhãn là nhãn tự sinh.
+4. **Báo cáo kèm mẫu số thực tế.** Ghi rõ đánh giá trên bao nhiêu `video_id` **duy nhất** (không đếm 88 file `.mp4` trùng id), bao nhiêu truy vấn, không im lặng bỏ qua.
+5. **Nhãn tự sinh không bao giờ được coi là chân lý.** Mọi bảng metric phải mang nhãn `eval_set_version` và một dòng cảnh báo về ba điểm lệch ở §1.4.
 
-### 6.1 Nguồn ground truth
+### 6.1 Nguồn ground truth — bộ eval tự sinh
 
-Từ `youcookii_annotations_trainval.json`, cấu trúc:
+⚠️ **Dataset không có nhãn.** Toàn bộ mục này mô tả **giao thức sinh nhãn** của dự án, không phải nhãn có sẵn. 🔧 **[Giả định]** — đây là quyết định của dự án (chủ dự án chốt 2026-07-29), paper baseline không đề cập.
+
+**Nguyên tắc chống tự chấm mình:** model sinh nhãn **phải khác** model được đánh giá. Gemini sinh caption/câu hỏi → BEiT-3 (hoặc SigLIP) đi tìm. Nếu về sau muốn đánh giá chính Gemini làm encoder, phải sinh lại bộ nhãn bằng model khác.
+
+#### 6.1.1 Đơn vị nhãn
+
+Sau khi ingest, mỗi keyframe đã có `keyframe_id`, `video_id`, `timestamp`, `global_index`, và thuộc về một **shot** `[start_sec, end_sec]` do TransNetV2 cắt ra. Shot chính là đơn vị thay thế cho *procedure segment* của YouCook2 — nó là khoảng thời gian tự nhiên và có sẵn từ pipeline, không cần gán tay.
 
 ```
-database → { video_id: {
-    duration, subset, recipe_type, video_url,
-    annotations: [ { segment: [start_sec, end_sec], id, sentence } ]
-} }
+GroundTruthSegment = {
+    video_id, start_sec, end_sec,   # ranh giới shot từ TransNetV2
+    order_index,                    # thứ tự shot trong video — nhãn TRAKE
+    caption                         # do Gemini sinh — nhãn Textual KIS
+}
 ```
 
-| Trường | Dùng làm ground truth cho |
+Chữ ký này **giữ nguyên** so với bản 0.1, nên `DatasetAdapter` Protocol không phải đổi — chỉ đổi implementation. Đây là bằng chứng đầu tiên cho thấy T3 được thiết kế đúng.
+
+#### 6.1.2 Giao thức sinh nhãn
+
+| Bước | Làm gì | Ghi chú |
+|---|---|---|
+| 1 | **Lấy mẫu shot** có seed cố định, phân tầng theo `batch` và `author` để không dồn hết vào một kênh | Quy mô v1: ~600 shot từ pilot `L21`–`L24` |
+| 2 | **Gemini sinh caption tiếng Việt** cho keyframe giữa của shot, kèm ngữ cảnh từ `media-info.title` và `objects[].detection_class_entities` | Structured output qua `model_json_schema()`, **không** parse regex |
+| 3 | **Lọc tự động** caption quá chung chung (*"một người đang nói"*) — chúng khớp hàng nghìn shot nên vô dụng làm truy vấn | Ngưỡng đặt trong `configs/`, không hard-code |
+| 4 | **Review thủ công ≥ 100 mẫu** — loại caption sai nội dung hoặc mơ hồ; ước lượng tỉ lệ lỗi của phần chưa review | Bắt buộc, xem §6.1.3 |
+| 5 | **Đóng băng** thành `configs/eval/aic_eval_v1.json` + hash | Đây là **mẫu số chính thức** của mọi báo cáo về sau |
+
+**Nhãn cho từng task:**
+
+| Task | Cách dựng từ bước trên |
 |---|---|
-| `annotations[].sentence` | Truy vấn Textual KIS |
-| `annotations[].segment` | Đáp án đúng (khoảng thời gian) |
-| Thứ tự `annotations[]` | Chuỗi sự kiện cho TRAKE |
-| `recipe_type` | Nhãn kiểm thử bộ lọc metadata |
-| `video_url` | Truy vết video nguồn |
+| **Textual KIS** | `caption` là truy vấn; shot nguồn là đáp án đúng |
+| **TRAKE** | Lấy N shot **liên tiếp** trong cùng video (N ∈ {3,5,7}); caption của chúng là N sự kiện; thứ tự thời gian là nhãn thứ tự — miễn phí và **không thể sai**, vì thứ tự shot là dữ kiện khách quan chứ không phải phán đoán của LLM |
+| **Video KIS** | Cắt clip ≤ 20 s quanh shot làm truy vấn; đáp án là chính shot đó |
+| **QA / VQA** | Gemini sinh 1–2 câu hỏi **chỉ trả lời được bằng thông tin thị giác** trong shot, kèm đáp án tham chiếu (§6.5) |
+
+**Điểm mạnh cần nhận ra:** nhãn TRAKE là phần **đáng tin nhất** trong cả bộ, vì thứ tự thời gian của shot không do LLM quyết định. Ngược lại nhãn Textual KIS và VQA phụ thuộc hoàn toàn vào chất lượng caption của Gemini.
+
+#### 6.1.3 Đo chất lượng chính bộ nhãn
+
+Không đo cái thước thì không biết số đo đáng tin đến đâu. Bắt buộc báo cáo kèm bộ eval:
+
+| Chỉ số của bộ nhãn | Cách đo |
+|---|---|
+| **Tỉ lệ caption bị loại khi review** | Trên ≥ 100 mẫu review tay; ngoại suy cho phần còn lại |
+| **Độ đồng thuận giữa 2 người review** | Trên ≥ 30 mẫu chồng nhau — thấp nghĩa là chính định nghĩa "đúng" đang mơ hồ |
+| **Tỉ lệ caption "chung chung"** | Số caption khớp > X shot khác nhau khi tìm ngược |
+
+#### 6.1.4 Trường metadata thay thế `recipe_type`
+
+YouCook2 có `recipe_type` làm nhãn kiểm thử bộ lọc metadata. Dataset AIC **không có trường tương đương**. Thay bằng hai trường có thật trong `media-info` / đường dẫn:
+
+| Trường | Nguồn | Dùng làm |
+|---|---|---|
+| `author` | `media-info.author` (tên kênh) | Nhãn phân nhóm chính; kiểm thử bộ lọc metadata |
+| `batch` | Tên thư mục `L21` … `L30` | Phân nhóm phụ; cũng là đơn vị chia shard khi ingest |
+| `publish_date` | `media-info.publish_date`, định dạng **`DD/MM/YYYY`** | Lọc theo thời gian. ⚠️ Không phải ISO-8601 — parse tường minh |
 
 ### 6.2 Định nghĩa "hit" — nền tảng của mọi metric
 
@@ -325,10 +378,13 @@ Ground truth là một **khoảng thời gian**, còn hệ thống trả về m�
 
 **Vì sao chọn cách này thay vì tIoU(shot, segment) ≥ 0.5:**
 - Sản phẩm trả về *keyframe*, không trả về *đoạn*. Đo trực tiếp thứ hệ thống thực sự sinh ra.
-- Ranh giới shot của TransNetV2 và ranh giới procedure segment là hai khái niệm khác nhau — một bước nấu ăn có thể trải qua nhiều shot. Ép tIoU giữa chúng sẽ phạt oan hệ thống.
 - Khớp cách chấm của cuộc thi: BTC kiểm tra frame nộp lên có nằm trong đoạn đúng hay không.
 
-**Metric phụ trợ (báo cáo kèm, không dùng để chấm chính):** `tIoU(shot(k), g)` — dùng để chẩn đoán chất lượng shot segmentation, không phải chất lượng retrieval.
+⚠️ **Một cảnh báo riêng cho bộ nhãn tự sinh.** Ở YouCook2, `segment` là *procedure segment* do người annotate — độc lập với shot của TransNetV2. Ở đây `g` **chính là** một shot do TransNetV2 cắt ra (§6.1.1). Nghĩa là ranh giới đáp án và ranh giới hệ thống sinh ra **đến từ cùng một thuật toán**. Hệ quả phải nhớ:
+
+- Lỗi shot detection **không bị metric phạt** — cắt sai chỗ thì cả nhãn lẫn kết quả cùng sai chỗ, `Recall` vẫn đẹp. Con số này *không* chứng minh shot detection tốt.
+- Vì vậy `tIoU` **không còn là metric phụ tuỳ chọn mà là phép kiểm tra bắt buộc**: so shot của TransNetV2 với **keyframe/`map-keyframes` mà BTC trích sẵn** (`references.md` §2.5). Đây là nguồn đối chứng **độc lập** duy nhất hiện có cho chất lượng cắt shot.
+- Shot rất ngắn làm `Recall` segment-level dễ ảo. Báo cáo kèm **phân bố độ dài shot** (trung vị + p10/p90).
 
 **Hai mức đo — bắt buộc báo cáo cả hai:**
 
@@ -341,7 +397,7 @@ Chênh lệch giữa hai mức chỉ ra bệnh cụ thể: video-level cao mà s
 
 ### 6.3 Nhóm A — Metrics truy hồi (Textual KIS / Video KIS)
 
-**Bộ đánh giá:** mỗi `sentence` trong val split là một truy vấn; ground truth là `segment` tương ứng.
+**Bộ đánh giá:** mỗi `caption` trong `aic_eval_v1.json` (§6.1) là một truy vấn; ground truth là shot tương ứng.
 
 | Metric | Công thức / định nghĩa | Vì sao cần |
 |---|---|---|
@@ -350,21 +406,25 @@ Chênh lệch giữa hai mức chỉ ra bệnh cụ thể: video-level cao mà s
 | **mAP** | Trung bình Average Precision | Xét mọi kết quả đúng, không chỉ cái đầu tiên |
 | **nDCG@10** | Discounted cumulative gain chuẩn hoá | Có tính đến thứ hạng của nhiều kết quả đúng |
 | **Median Rank** | Trung vị thứ hạng của hit đầu tiên | Không bị kéo lệch bởi outlier như Mean Rank |
-| **Recall@K theo nhóm** | Recall@10 tách theo `recipe_type` | Phát hiện hệ thống yếu ở loại nội dung nào |
+| **Recall@K theo nhóm** | Recall@10 tách theo `author` (kênh) và `batch` | Phát hiện hệ thống yếu ở loại nội dung nào (§6.1.4) |
 
 **Baselines bắt buộc so sánh:**
 
 | Baseline | Mục đích |
 |---|---|
 | Random | Sàn tuyệt đối — nếu không vượt xa cái này thì có bug |
-| BM25 trên caption | Kiểm tra bài toán có bị "rò rỉ" giải được bằng từ khoá thuần hay không |
-| CLIP ViT-B/32 | Baseline multimodal phổ biến, dễ chạy |
+| BM25 trên caption | ⚠️ Ở bộ nhãn tự sinh đây là phép thử **quan trọng nhất**: caption do Gemini sinh **từ chính keyframe đáp án**, nên nếu OCR/metadata chứa lại đúng từ ngữ đó, bài toán "rò rỉ" và giải được bằng từ khoá thuần. BM25 cao bất thường ⇒ bộ nhãn hỏng, không phải hệ thống giỏi |
+| CLIP ViT-B/32 | Baseline multimodal phổ biến, dễ chạy. **Phải chạy bằng encoder của mình trên keyframe của mình** — `clip-features-32/` của BTC gắn với keyframe BTC nên không so được ở mức segment (`references.md` §2.5) |
 | **BEiT-3** | Hệ thống chính |
 | BEiT-3 + Hybrid (RRF) | Đo đóng góp riêng của fusion |
 
 ### 6.4 Nhóm B — Metrics TRAKE / DANTE
 
-**Bộ đánh giá:** mỗi video val có ≥ 3 segment → lấy N segment liên tiếp làm chuỗi truy vấn (N ∈ {3, 5, 7}), caption của chúng là N sự kiện đầu vào.
+**Bộ đánh giá:** mỗi video có ≥ 3 shot đã gán caption → lấy N shot **liên tiếp** làm chuỗi truy vấn (N ∈ {3, 5, 7}), caption của chúng là N sự kiện đầu vào.
+
+✅ **Đây là nhóm metric đáng tin nhất của dự án.** Nhãn thứ tự không do LLM quyết định — thứ tự thời gian của shot là dữ kiện khách quan (§6.1.2). Chỉ có *nội dung* caption mới là nhãn tổng hợp. Nên khi nhãn tự sinh làm ta nghi ngờ mọi con số khác, `Kendall's tau` vẫn giữ nguyên giá trị.
+
+⚠️ Ngược lại, video tin tức có đặc thù riêng: nhiều bản tin là **chuỗi phóng sự rời rạc**, không có quan hệ nhân quả theo thời gian như các bước nấu ăn của YouCook2. Hình phạt khoảng cách `λ` vì thế có thể đóng góp **ít hơn** kỳ vọng — càng làm trường hợp `λ = 0` trong ablation dưới đây trở nên quan trọng.
 
 | Metric | Định nghĩa | Vì sao cần |
 |---|---|---|
@@ -385,11 +445,13 @@ Báo cáo `Sequence Exact-Match` và `Kendall's tau` cho từng giá trị, tác
 
 ### 6.5 Nhóm C — Metrics QA / VQA
 
-⚠️ **YouCook2 không có nhãn QA.** Cách sinh bộ đánh giá:
+⚠️ **Dataset AIC không có nhãn QA** (cũng như không có nhãn nào khác — §1.4). Cách sinh bộ đánh giá:
 
-1. Với mỗi segment, dùng LLM sinh 1–2 câu hỏi **chỉ trả lời được bằng thông tin thị giác** trong segment đó (ví dụ *"Nguyên liệu nào được cho vào chảo ở bước này?"*), kèm đáp án tham chiếu.
+1. Với mỗi shot đã gán caption, dùng LLM sinh 1–2 câu hỏi **chỉ trả lời được bằng thông tin thị giác** trong shot đó (ví dụ *"Biển hiệu phía sau người dẫn ghi tên cơ quan nào?"*), kèm đáp án tham chiếu.
 2. **Review thủ công ít nhất 100 mẫu** — loại câu hỏi trả lời được bằng kiến thức nền mà không cần nhìn video.
 3. Đóng băng bộ QA đã review làm bộ đánh giá chính thức; bộ chưa review chỉ dùng để dò lỗi.
+
+⚠️ **Bẫy riêng của video tin tức:** rất nhiều câu trả lời hiện thành **chữ trên màn hình**. Câu hỏi kiểu *"tỉnh nào đang được nhắc tới?"* có thể trả lời bằng OCR mà không cần hiểu hình ảnh. Đó **không** phải lỗi — nhưng khi đọc `Grounded Accuracy` phải tách được phần công của kênh OCR khỏi phần công của VLM, nếu không sẽ quy nhầm công lao.
 
 | Metric | Định nghĩa |
 |---|---|
@@ -432,16 +494,22 @@ Báo cáo `Sequence Exact-Match` và `Kendall's tau` cho từng giá trị, tác
 | Metric | Mục tiêu |
 |---|---|
 | Ingest throughput | ⚠️ ≥ 100 keyframe/s ở bước embedding (BEiT-3 base, fp16, RTX 3070) |
-| Thời gian ingest val split (457 video) | ⚠️ ≤ 6 giờ |
-| Thời gian ingest toàn bộ YouCook2 (2.000 video) | ⚠️ ≤ 24 giờ |
-| Dung lượng vector index | ⚠️ ~1,2 GB (giả định 400k keyframe × 768 chiều × 4 byte) |
-| Dung lượng thumbnail | ⚠️ ~16 GB (400k × ~40 KB) |
+| Thời gian ingest pilot `L21`–`L24` (128 video, 27,9 giờ) | ⚠️ ≤ 6 giờ |
+| Thời gian ingest toàn bộ (873 video, 130,7 giờ) | ⚠️ ≤ 24 giờ |
+| Dung lượng vector index | ⚠️ ~0,55 GB (giả định 180k keyframe × 768 chiều × 4 byte) |
+| Dung lượng thumbnail | ⚠️ ~7 GB (180k × ~40 KB) |
 | RAM lúc phục vụ truy vấn | ≤ 12 GB cho cả Milvus + ES + MongoDB |
-| Chi phí Gemini OCR | Token/1.000 keyframe — Gemini tính **258 token cho mỗi tile 768×768** |
+| Chi phí Gemini OCR | Keyframe 1280×720 ⇒ **2 tile** ⇒ **516 token/ảnh**; hạ về ≤ 384×384 còn 258. Quy đổi chi tiết: `references.md` §5 |
+
+⚠️ **Mọi con số keyframe ở trên đều là ước lượng dựa trên mốc BTC (177.321 ảnh cho 873 video).** Số keyframe **thật** do TransNetV2 + công thức 4-keyframe/shot (§F1) sinh ra **chưa đo được** — nó phụ thuộc số shot mà TransNetV2 tìm thấy, và video tin tức cắt cảnh rất dày nên **hoàn toàn có thể vượt xa** mốc này. Đây là việc đầu tiên phải đo ở P0.7; đo xong thì cập nhật lại bảng này.
+
+**Đĩa:** dữ liệu gốc đã chiếm **123 GB**. Cộng keyframe JPEG tự trích + thumbnail + index, ngân sách đĩa phải tính từ 123 GB trở lên, không phải ~40 GB như bản 0.1.
 
 ### 6.7 Bảng mục tiêu v1
 
-🔧 **[Giả định]** Paper không công bố số nào, nên các mốc dưới đây là mục tiêu tự đặt dựa trên kết quả thường thấy của retrieval video trên YouCook2. **Sẽ hiệu chỉnh lại sau lần đo đầu tiên ở P0.**
+🔧 **[Giả định]** Paper không công bố số nào, nên các mốc dưới đây là mục tiêu tự đặt. **Sẽ hiệu chỉnh lại sau lần đo đầu tiên ở P0.**
+
+⚠️ Bản 0.1 đặt các mốc này dựa trên kết quả thường thấy của retrieval video **trên YouCook2**. Chúng nay áp lên một bài toán khác hẳn — nhãn tự sinh, video tin tức tiếng Việt — nên độ tin cậy còn thấp hơn nữa. Cụ thể có hai lực kéo ngược chiều nhau: nhãn tự sinh khiến truy vấn *dễ* hơn thực tế (đẩy số lên), còn kho 873 video toàn bản tin cùng một kênh khiến các keyframe *giống nhau* hơn nhiều so với 89 loại món ăn (kéo số xuống). **Không suy diễn tiếp — chờ số đo P0.**
 
 | Metric | Sàn (phải đạt) | Mục tiêu v1 | Kỳ vọng |
 |---|---|---|---|
@@ -461,11 +529,24 @@ Báo cáo `Sequence Exact-Match` và `Kendall's tau` cho từng giá trị, tác
 
 Để kết quả tái lập được và so sánh được giữa các lần chạy:
 
-1. **Một lệnh:** `python -m eval.run --config configs/eval/youcook2_val.yaml`
+1. **Một lệnh:** `python -m eval.run --config configs/eval/aic_pilot.yaml`
 2. **Đầu ra:** `reports/<timestamp>_<git_sha>/` gồm `metrics.json`, `report.md`, `per_query.csv`
-3. **Bắt buộc ghi kèm mọi báo cáo:** git SHA, tên checkpoint model, phiên bản index, số video thực tế đánh giá được, seed
-4. **Cố định seed** cho mọi bước có ngẫu nhiên (lấy mẫu bộ eval, sinh QA)
-5. **Không sửa bộ eval để cải thiện số.** Đổi bộ eval thì tăng phiên bản và chạy lại toàn bộ baseline
+3. **Bắt buộc ghi kèm mọi báo cáo:** git SHA · tên checkpoint model · phiên bản index · **`eval_set_version` + hash của bộ nhãn** · số `video_id` duy nhất thực tế đánh giá được · số truy vấn · seed
+4. **Cố định seed** cho mọi bước có ngẫu nhiên (lấy mẫu shot, sinh caption, sinh QA)
+5. **Không sửa bộ eval để cải thiện số.** Đổi bộ eval thì tăng phiên bản và chạy lại toàn bộ baseline. Quy tắc này **nghiêm ngặt gấp đôi** khi nhãn do chính dự án sinh ra: ranh giới giữa *"sửa nhãn sai"* và *"sửa nhãn cho số đẹp hơn"* rất mỏng. Mọi lần sửa bộ nhãn phải ghi lý do vào changelog của bộ eval, và lý do phải viết **trước** khi nhìn số mới
+
+### 6.9 Hiệu chỉnh với hệ thống nộp bài của BTC
+
+🔧 **[Giả định]** Bộ nhãn tự sinh có ba điểm lệch cố hữu (§1.4). Kênh duy nhất kiểm chứng được chúng là **nộp thử lên hệ thống chấm của BTC** — nơi giữ đáp án thật.
+
+Khi hệ thống nộp bài mở:
+
+1. Chạy hệ thống trên bộ truy vấn công khai của BTC, nộp, ghi lại kết quả đúng/sai.
+2. Chạy **cùng cấu hình đó** trên bộ eval tự sinh.
+3. Báo cáo **độ chênh** giữa hai bên. Chênh lớn ⇒ bộ nhãn tự sinh đang đo sai thứ cần đo, phải sửa giao thức §6.1 chứ không phải sửa hệ thống.
+4. Mọi kết luận "cải thiện" rút ra **chỉ** từ bộ nhãn tự sinh, mà không sống sót qua bước 3, phải bị rút lại.
+
+Đây là phiên bản thực dụng của nguyên tắc *"luôn báo cáo cùng baseline"* (§6.0): baseline đáng tin nhất là hệ thống chấm thật, kể cả khi chỉ tiếp cận được vài lần.
 
 ---
 
@@ -483,7 +564,7 @@ Báo cáo `Sequence Exact-Match` và `Kendall's tau` cho từng giá trị, tác
 | VRAM | ≤ 8 GB → dùng `beit3_base_itc` thay vì `large`; inference fp16; batch size cấu hình được |
 | RAM hệ thống | Tối thiểu 16 GB, **khuyến nghị 32 GB** — ba store chạy cùng máy là sức ép lên RAM chứ không phải VRAM |
 | JVM heap của Elasticsearch | Giới hạn cứng (≤ 2 GB ở môi trường dev) |
-| Đĩa | ⚠️ ~40 GB cho thumbnail + index + video đã tải (chưa tính video gốc) |
+| Đĩa | Dữ liệu gốc đã chiếm **123 GB** (đo thật). Cộng keyframe tự trích + thumbnail + index ⇒ ⚠️ dự trù **≥ 160 GB** |
 | Chế độ suy giảm | Phải chạy được ở chế độ **semantic-only** khi tắt Elasticsearch |
 
 ### 7.3 Độ tin cậy
@@ -521,14 +602,15 @@ Báo cáo `Sequence Exact-Match` và `Kendall's tau` cho từng giá trị, tác
 | # | Rủi ro | Mức | Giảm thiểu |
 |---|---|---|---|
 | **R1** | **BEiT-3 khó cài** — không có trong HuggingFace Transformers, phải clone `microsoft/unilm`, cần `torchscale` + `timm` bản pin + tokenizer SentencePiece `beit3.spm`. Rất dễ xung đột với torch mới trên Windows | 🔴 Cao | Thiết kế `MultimodalEncoder` Protocol **ngay từ ngày đầu**; chuẩn bị sẵn implementation SigLIP/open_clip làm phương án thay thế; **timebox 1 ngày** cho việc dựng BEiT-3, quá thì chuyển phương án và ghi nhận là sai lệch so với baseline |
-| **R2** | **Chi phí & rate-limit của Gemini OCR** — ước tính 240k–500k keyframe cho toàn bộ YouCook2; gọi OCR từng frame là không khả thi cả về tiền lẫn quota | 🔴 Cao | (a) Dedupe keyframe gần trùng bằng perceptual hash trước khi gọi; (b) lọc sơ bộ bằng bộ phát hiện chữ rẻ tiền, chỉ gửi frame **có** chữ; (c) dùng Batch API; (d) giai đoạn 1 chỉ OCR trên val split |
+| **R2** | **Chi phí & rate-limit của Gemini OCR** — mốc BTC là 177k keyframe cho 873 video (⚠️ số keyframe tự trích chưa đo, có thể cao hơn); ở 1280×720 mỗi ảnh tốn **516 token** ⇒ ~91,5 triệu token nếu gọi trên mọi keyframe. Video tin tức có tỉ lệ frame chứa chữ **rất cao** nên bước lọc cắt được ít | 🔴 Cao | (a) **Dedupe perceptual hash là đòn bẩy chính** — bản tin giữ nguyên khung đồ hoạ nhiều giây liền; (b) lọc frame có chữ; (c) hạ ảnh về ≤ 384×384 để còn 258 token, **sau khi** kiểm chứng chữ nhỏ vẫn đọc được; (d) Batch API; (e) P0 chỉ OCR trên pilot `L21`–`L24` |
 | **R3** | **RAM khi chạy Milvus + Elasticsearch + MongoDB trên cùng một máy** | 🟡 Trung bình | Giới hạn JVM heap của ES; yêu cầu RAM ≥ 16 GB; hỗ trợ chế độ semantic-only để tắt hẳn ES khi cần |
-| **R4** | **YouCook2 không có chữ trên màn hình** → không kiểm chứng được nhánh OCR | 🟡 Trung bình | Đánh dấu rõ nhánh OCR là *"đã xây, chưa kiểm chứng"*; **không** báo cáo metric OCR trên YouCook2; chuẩn bị bộ test nhỏ có chữ để smoke test |
-| **R5** | **Link YouTube của YouCook2 bị gỡ** → thiếu video, mẫu số đánh giá teo dần | 🟡 Trung bình | Log video tải hỏng; **mọi báo cáo metric ghi kèm số video thực tế đánh giá được**; đóng băng danh sách video đã tải thành công làm bộ eval chuẩn |
-| **R6** | **Không có nhãn QA** cho YouCook2 | 🟡 Trung bình | Sinh bằng LLM + review thủ công ≥ 100 mẫu (§6.5); ghi rõ đây là nhãn tổng hợp, không phải nhãn người |
-| **R7** | **Ingest 176 giờ video đứt giữa chừng** | 🟡 Trung bình | Checkpoint theo `video_id`; ingest idempotent (T1); chia shard chạy song song nhiều tiến trình |
+| **R4** | ~~YouCook2 không có chữ trên màn hình~~ → **ĐÃ GỠ 2026-07-29.** Dataset AIC là video tin tức tiếng Việt, đầy chữ trên màn hình. Nhánh OCR + `vi_analyzer` kiểm chứng được **ngay từ P0** | ✅ Đóng | Rủi ro đảo dấu thành cơ hội: OCR nay là kênh **có giá trị thật**, không còn là "đã xây, chưa kiểm chứng". Hệ quả tiêu cực duy nhất là R2 nặng thêm |
+| **R5** | ~~Link YouTube của YouCook2 bị gỡ~~ → **ĐÃ GỠ 2026-07-29.** Dataset phát hành **file `.mp4` trực tiếp**, không phải URL. Không còn khâu tải, không còn link chết | ✅ Đóng | Rủi ro thay thế (nhỏ): 88 file `.mp4` **trùng `video_id`** (`Videos_L25_a1`, `Videos_L25_b`). Đếm file thay vì đếm `video_id` sẽ thổi phồng mẫu số — adapter phải khử trùng |
+| **R6** | **Không có nhãn nào cho bất kỳ task nào** (không chỉ QA) — dataset công khai không kèm ground truth; đáp án thật chỉ biết qua nộp bài | 🔴 Cao | Sinh nhãn theo giao thức §6.1 + review thủ công ≥ 100 mẫu; **đo chất lượng chính bộ nhãn** (§6.1.3); model sinh nhãn khác model bị đánh giá; hiệu chỉnh bằng nộp thử lên BTC (§6.9) |
+| **R7** | **Ingest 130,7 giờ video đứt giữa chừng** | 🟡 Trung bình | Checkpoint theo `video_id`; ingest idempotent (T1); chia shard theo `batch` chạy song song nhiều tiến trình |
 | **R8** | **Định dạng file nộp của BTC chưa công bố** | 🟡 Trung bình | Tách formatter khỏi dữ liệu kết quả (F8); giả định format sai chỉ tốn công sửa một module |
-| **R9** | **Dữ liệu AIC thật có phân bố rất khác YouCook2** — tin tức tiếng Việt vs. nấu ăn tiếng Anh. Tối ưu trên YouCook2 có thể không chuyển giao được | 🟡 Trung bình | Coi mọi số đo ở P0–P3 là **tương đối**, dùng để so sánh giữa các cấu hình chứ không phải dự đoán điểm thi; ưu tiên các cải tiến mang tính kiến trúc hơn là tinh chỉnh siêu tham số |
+| **R9** | **Nhãn tự sinh không phải nhãn thi thật.** Trước đây R9 là rủi ro *lệch miền dữ liệu*; miền nay đã đúng, nhưng rủi ro chuyển sang **lệch phân bố truy vấn**: caption do Gemini sinh sạch và trực quan hơn truy vấn thật của BTC | 🔴 Cao | Coi mọi số đo là **tương đối**, dùng so sánh giữa các cấu hình chứ không dự đoán điểm thi; ưu tiên cải tiến **kiến trúc** hơn tinh chỉnh siêu tham số; bắt buộc hiệu chỉnh qua §6.9 khi hệ thống nộp bài mở |
+| **R10** | **Nhãn và hệ thống dùng chung một bộ cắt shot** — `g` là shot do chính TransNetV2 sinh ra, nên lỗi shot detection không bị metric phạt (§6.2). `Recall` đẹp **không** chứng minh cắt shot đúng | 🟡 Trung bình | Bắt buộc đo `tIoU` giữa shot của mình và keyframe/`map-keyframes` BTC trích sẵn — nguồn đối chứng độc lập duy nhất; báo cáo kèm phân bố độ dài shot |
 
 ---
 
@@ -544,7 +626,9 @@ Các quyết định đã chốt khác:
 |---|---|
 | Ngôn ngữ tài liệu | Tiếng Việt, giữ thuật ngữ kỹ thuật tiếng Anh |
 | Phạm vi | Đủ 4 task AIC |
-| Dataset | YouCook2 trước, dữ liệu AIC bổ sung sau |
+| Dataset | **AIC 2025 công khai** (Kaggle `aresusayhi/ai-challenge-2025` v2) — 873 video, 130,7 giờ. P0 chạy pilot `L21`–`L24`, mở rộng đủ 873 ở P4 |
+| Ground truth | **Tự sinh** theo §6.1 (dataset không kèm nhãn); hiệu chỉnh qua nộp bài BTC (§6.9) |
+| Nguồn keyframe | **Tự trích bằng TransNetV2** theo công thức §F1 — bám baseline. Keyframe BTC trích sẵn chỉ dùng làm **đối chứng** |
 | Storage | Đúng baseline: Milvus + Elasticsearch + MongoDB |
 | Backend | FastAPI + Pydantic |
 | Frontend | React + Vite + TypeScript (thiết kế chốt sau) |
@@ -558,10 +642,14 @@ Các quyết định đã chốt khác:
 | # | Câu hỏi | Cần trả lời trước |
 |---|---|---|
 | Q1 | Định dạng file nộp chính xác của BTC? | P3 |
-| Q2 | Dữ liệu AIC có bao nhiêu video / giờ? Ảnh hưởng trực tiếp tới ước lượng hạ tầng | P4 |
-| Q3 | Có kênh audio/phụ đề không? Nếu có thì ASR đáng đưa lên sớm | P4 |
+| ~~Q2~~ | ~~Dữ liệu AIC có bao nhiêu video / giờ?~~ ✅ **Đã trả lời 2026-07-29:** 873 `video_id` duy nhất · 130,7 giờ · 123 GB · 177.321 keyframe BTC trích sẵn (§1.4) | — |
+| Q3 | Có kênh audio/phụ đề không? Nếu có thì ASR đáng đưa lên sớm | P4 — video là bản tin có lời dẫn nên **gần như chắc chắn có audio**; còn phải xác nhận chất lượng và có phụ đề sẵn hay không |
 | Q4 | Số chiều embedding thực tế của `beit3_base_itc` (768 hay khác)? | P0 |
 | Q5 | Lúc thi có mạng internet ổn định không? Ảnh hưởng tới việc QUEST và VQA có dùng được không | P3 |
+| **Q6** | **Số keyframe thật do TransNetV2 + công thức §F1 sinh ra là bao nhiêu?** Quyết định lại toàn bộ ngân sách R2, đĩa, thời gian ingest ở §6.6 | **P0.7** — đo trên pilot rồi ngoại suy |
+| **Q7** | **Hệ thống nộp bài của BTC mở khi nào, và cho nộp thử bao nhiêu lần?** Quyết định §6.9 có khả thi không | P3 |
+| ~~Q8a~~ | ~~`clip-features-32/` của BTC đã L2-normalize chưa?~~ ✅ **Đã trả lời 2026-07-29: rồi.** Đo trên `L21_V001`/`L26_V050`/`L30_V090`: norm ∈ [0,9995 · 1,0005], trung bình 1,0000 — lệch là do làm tròn float16 | — |
+| **Q8b** | **`clip-features-32/` dùng checkpoint CLIP nào** (OpenAI ViT-B/32 hay bản `open_clip` huấn luyện trên LAION)? 512 chiều đúng với ViT-B/32 nhưng không xác định được bản nào | P0 — chỉ cần biết nếu muốn dùng feature BTC làm đối chứng số học; baseline CLIP chính vẫn chạy bằng encoder của mình |
 
 ---
 

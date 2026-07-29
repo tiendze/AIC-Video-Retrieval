@@ -1,6 +1,7 @@
 # Kiến trúc hệ thống — AIC Video Retrieval
 
-> **Phiên bản:** 0.1 · **Ngày:** 2026-07-25
+> **Phiên bản:** 0.2 · **Ngày:** 2026-07-29 (bản 0.1: 2026-07-25)
+> **Thay đổi 0.1 → 0.2:** dataset chuyển từ YouCook2 sang **AIC 2025 công khai**. Ảnh hưởng: §1 · §3.2 · §4.1 · §4.3 · §5.2 (**viết lại**) · §6 · §10.
 > **Baseline:** [arXiv:2512.13169](https://arxiv.org/abs/2512.13169)
 > **Tài liệu liên quan:** [`PRD.md`](./PRD.md) · [`references.md`](./references.md)
 
@@ -23,7 +24,7 @@ Ba nguyên tắc kiến trúc kéo theo:
 | Nguyên tắc | Vì sao | Hiện thực hoá |
 |---|---|---|
 | **Tách encoder khỏi pipeline** | BEiT-3 rất khó cài (rủi ro R1 trong PRD). Phải đổi được backbone mà không viết lại pipeline | `MultimodalEncoder` Protocol (§5.1) |
-| **Tách dataset khỏi pipeline** | Hôm nay YouCook2, mai là dữ liệu AIC | `DatasetAdapter` Protocol (§5.2) |
+| **Tách dataset khỏi pipeline** | Hôm nay pilot `L21`–`L24`, mai là đủ 873 video, mốt là batch mới BTC phát hành | `DatasetAdapter` Protocol (§5.2) |
 | **Tách offline khỏi online** | Ingest chạy hàng chục giờ; query phải trả lời trong vài trăm ms. Hai chế độ vận hành hoàn toàn khác nhau | Hai luồng riêng (§3.2 và §3.3), giao nhau duy nhất tại tầng lưu trữ |
 
 ---
@@ -110,7 +111,7 @@ Chúng giao nhau tại đúng một điểm: **tầng lưu trữ**, và bắt bu
 
 ```mermaid
 flowchart TD
-    A["Video nguồn<br/>YouCook2 / AIC"] --> B["DatasetAdapter<br/>liệt kê video + nhãn"]
+    A["Video nguồn<br/>AIC 2025 · file mp4 cục bộ"] --> B["DatasetAdapter<br/>liệt kê video + metadata<br/>khử trùng video_id"]
     B --> CK{"Đã xử lý xong?<br/>kiểm tra checkpoint"}
     CK -->|"rồi"| SKIP["Bỏ qua"]
     CK -->|"chưa"| C["Giải mã video<br/>ffmpeg tới 48x27 uint8"]
@@ -154,7 +155,9 @@ flowchart TD
 
 1. **Node `Gán global_index và tính s_v, e_v`** — 📄 Paper lưu ở MongoDB `{video_id, s_v, e_v}`. Đây là **điều kiện tiên quyết của DANTE**: thuật toán quy hoạch động chạy trên khoảng index `[s_v, e_v]` của từng video. Bỏ bước này thì DANTE không thể triển khai.
 
-2. **Node `Lọc frame có chữ + dedupe`** 🔧 — paper gọi Gemini OCR trên **mọi** keyframe. Với YouCook2 ước tính 240k–500k keyframe, điều này bất khả thi về chi phí và quota (rủi ro R2). Bước lọc này là bổ sung của dự án.
+2. **Node `Lọc frame có chữ + dedupe`** 🔧 — paper gọi Gemini OCR trên **mọi** keyframe; điều này bất khả thi về chi phí và quota (rủi ro R2). Keyframe 1280×720 tốn **516 token/ảnh**, và chỉ riêng 177k keyframe BTC trích sẵn đã là ~91,5 triệu token. Bước lọc này là bổ sung của dự án. ⚠️ Với video tin tức, **`dedupe` mới là bước tiết kiệm chính** chứ không phải `lọc frame có chữ` — bản tin có chữ ở gần như mọi frame, nhưng giữ nguyên khung đồ hoạ suốt nhiều giây liền.
+
+5. **Node `DatasetAdapter`** — ngoài việc liệt kê video, nó phải **khử trùng `video_id`**: dataset có 961 file `.mp4` nhưng chỉ 873 id duy nhất (`Videos_L25_a1` và `Videos_L25_b` lặp lại id của `Videos_L25_a`). Bỏ bước này thì 88 video bị ingest hai lần, và mẫu số của mọi báo cáo metric bị thổi phồng.
 
 3. **Vòng lặp checkpoint** — `Z → B` khép kín để pipeline resume được (yêu cầu T1).
 
@@ -375,7 +378,10 @@ sequenceDiagram
 | `video_id` | `VARCHAR(32)` | 🔧 | Để lọc **trong** engine, không lọc sau khi lấy về |
 | `global_index` | `INT64` | 🔧 | **Bắt buộc cho DANTE** — chỉ số toàn cục của keyframe |
 | `timestamp` | `FLOAT` | 🔧 | Giây tính từ đầu video |
-| `recipe_type` | `VARCHAR(64)` | 🔧 | Lọc theo nhóm nội dung |
+| `author` | `VARCHAR(128)` | 🔧 | Tên kênh, từ `media-info.author` — lọc theo nhóm nội dung |
+| `batch` | `VARCHAR(8)` | 🔧 | `L21` … `L30` — lọc theo lô phát hành, cũng là đơn vị chia shard khi ingest |
+
+> Hai trường `author` / `batch` **thay cho `recipe_type`** của bản 0.1. Dataset AIC không có trường phân loại nội dung nào tương đương (PRD §6.1.4).
 
 **Index:** HNSW, `metric_type = "COSINE"`, `M = 16`, `efConstruction = 200` (khoảng khuyến nghị của Milvus: `M ∈ [5,100]`, `efConstruction ∈ [50,500]`). Search dùng `params = {"ef": 64}`, chỉnh theo cân bằng recall/latency.
 
@@ -409,7 +415,8 @@ Mapping dùng plugin `elasticsearch-analysis-vietnamese`, kèm `asciifolding` v�
 | `video_id` (unique index) | 📄 | |
 | `s_v` — global_index đầu tiên | 📄 | **Bắt buộc cho DANTE** |
 | `e_v` — global_index cuối cùng | 📄 | **Bắt buộc cho DANTE** |
-| `duration`, `fps`, `recipe_type`, `video_url`, `num_keyframes`, `ingest_status`, `ingested_at` | 🔧 | `ingest_status` là cơ chế checkpoint |
+| `duration`, `fps`, `num_keyframes`, `ingest_status`, `ingested_at` | 🔧 | `ingest_status` là cơ chế checkpoint |
+| `author`, `batch`, `title`, `publish_date`, `watch_url`, `channel_id` | 🔧 | Nạp từ `features/media-info/<video_id>.json`. ⚠️ `duration` lấy từ trường `length` (đơn vị **giây**); `publish_date` là chuỗi **`DD/MM/YYYY`** — parse tường minh, không để thư viện đoán ISO-8601 |
 
 `ingest_status` nhận các giá trị `pending` / `decoding` / `embedded` / `ocr_done` / `complete` / `failed`. Đây chính là hiện thực của yêu cầu resume (T1): pipeline khởi động sẽ bỏ qua mọi video đang ở trạng thái `complete`.
 
@@ -454,7 +461,7 @@ Implementation dự kiến: `BEiT3Encoder` (chính, theo paper), `SigLIPEncoder`
 
 ### 5.2 `DatasetAdapter`
 
-Cho phép chuyển YouCook2 → dữ liệu AIC bằng cách thêm một class, không sửa pipeline (yêu cầu T3).
+Cho phép đổi dataset — mở rộng pilot → toàn kho, hoặc nạp batch mới BTC phát hành — bằng cách thêm một class, không sửa pipeline (yêu cầu T3).
 
 ```python
 from collections.abc import Iterator, Sequence
@@ -484,7 +491,19 @@ class DatasetAdapter(Protocol):
     def load_ground_truth(self, split: str) -> Sequence[GroundTruthSegment]: ...
 ```
 
-`YouCook2Adapter` đọc `youcookii_annotations_trainval.json`; `AICAdapter` viết sau khi có dữ liệu.
+`AIC2025Adapter` là implementation hiện tại. Nó khác `YouCook2Adapter` của bản 0.1 ở một điểm bản chất: **hai phương thức lấy dữ liệu từ hai nguồn khác nhau**.
+
+| Phương thức | Nguồn |
+|---|---|
+| `iter_videos(split)` | Glob `Videos/Videos/Videos_*/video/*.mp4` + đọc `features/media-info/<video_id>.json`. `split` nhận `"pilot"` (`L21`–`L24`) hoặc `"all"`. **Bắt buộc khử trùng `video_id`** — 961 file, 873 id |
+| `load_ground_truth(split)` | Đọc bộ nhãn **tự sinh** `configs/eval/aic_eval_v1.json` (PRD §6.1). Dataset gốc **không** có nhãn |
+
+Hai hệ quả thiết kế:
+
+1. **`load_ground_truth` chỉ dùng được sau khi đã ingest**, vì nhãn được sinh từ shot do TransNetV2 cắt ra. Đây là đảo chiều so với YouCook2 (nhãn có trước, ingest sau) — `eval/run.py` phải fail rõ ràng nếu bộ nhãn chưa tồn tại, không được trả bảng metric rỗng.
+2. Chữ ký `VideoRef` / `GroundTruthSegment` / `DatasetAdapter` **không đổi một dòng nào** so với bản 0.1. Đó chính là bằng chứng T3 được thiết kế đúng — điều mà bản 0.1 định kiểm tra mãi tới P4.
+
+⚠️ Đường dẫn phải dựng bằng **glob**, không bằng chuỗi định dạng: tên thư mục không nhất quán (`Videos_L21_a` … nhưng `Video_L30_a` số ít). Chi tiết: `references.md` §2.2.
 
 ---
 
@@ -516,9 +535,10 @@ AIC-Video-Retrieval/
 │   ├── keyframe.py             lấy mẫu 4 vị trí mỗi shot
 │   ├── ocr.py                  lọc + dedupe + Gemini
 │   └── embed.py                encode theo lô + ghi Milvus
-├── datasets/                   base.py (Protocol) · youcook2.py · aic.py
+├── datasets/                   base.py (Protocol) · aic2025.py
 ├── eval/
 │   ├── run.py                  điểm vào duy nhất
+│   ├── build_eval_set.py       sinh bộ nhãn tự động (PRD §6.1) — dataset KHÔNG kèm nhãn
 │   ├── metrics/                retrieval.py · trake.py · vqa.py
 │   └── baselines/              random.py · bm25.py · clip.py
 ├── configs/                    ingest/ · eval/ · model/
@@ -621,6 +641,9 @@ Nhánh cuối là ràng buộc quan trọng nhất trong sơ đồ: **đổi mod
 | Hybrid fusion RRF | 🔧 Dự án | Paper để Semantic/OCR tách rời, không nêu cách hợp nhất |
 | Lọc + dedupe trước OCR | 🔧 Dự án | Chi phí Gemini trên ~400k keyframe không khả thi (R2) |
 | `MultimodalEncoder` Protocol | 🔧 Dự án | Chống rủi ro cài đặt BEiT-3 (R1) |
-| `DatasetAdapter` Protocol | 🔧 Dự án | Chuyển YouCook2 → AIC không sửa pipeline (T3) |
+| `DatasetAdapter` Protocol | 🔧 Dự án | Đổi/mở rộng dataset không sửa pipeline (T3) |
+| Tự trích keyframe bằng TransNetV2, **không** dùng keyframe BTC trích sẵn | 🔧 Chủ dự án 2026-07-29 | Bám baseline. Đổi lại: tốn công giải mã 130,7 giờ video, và nhãn eval sinh từ chính shot của mình nên metric không phạt được lỗi cắt shot (rủi ro R10) |
+| Bộ eval **nhãn tự sinh** | 🔧 Chủ dự án 2026-07-29 | Dataset công khai không kèm nhãn; đáp án thật chỉ biết qua nộp bài. Không có nhãn thì không đo được, mà không đo được thì vi phạm nguyên tắc xuyên suốt của dự án |
+| `author` / `batch` thay `recipe_type` | 🔧 Dự án | Dataset AIC không có trường phân loại nội dung tương đương |
 | Cổng grounding trước khi trả lời | 🔧 Dự án | Cần thiết để đo `Hallucination Rate` |
 | FastAPI + React/Vite | 🔧 Dự án | Paper không nêu framework |

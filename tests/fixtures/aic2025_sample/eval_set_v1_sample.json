@@ -1,0 +1,23 @@
+[
+  {
+    "video_id": "L21_V001",
+    "start_sec": 0.0,
+    "end_sec": 5.0,
+    "order_index": 0,
+    "caption": "mot nguoi dan chuong trinh dang noi"
+  },
+  {
+    "video_id": "L21_V001",
+    "start_sec": 5.0,
+    "end_sec": 10.0,
+    "order_index": 1,
+    "caption": "hinh anh duong pho ban dem"
+  },
+  {
+    "video_id": "L30_V001",
+    "start_sec": 0.0,
+    "end_sec": 3.0,
+    "order_index": 0,
+    "caption": "ngoai pham vi pilot, phai bi loc khi split=pilot"
+  }
+]
