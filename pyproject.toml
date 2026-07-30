@@ -24,6 +24,14 @@ dev = [
 data = [
     "kagglehub==1.0.2",
 ]
+beit3 = [
+    "torch==2.4.1",
+    "torchvision==0.19.1",
+    "timm==0.4.12",
+    "torchscale==0.2.0",
+    "transformers==4.44.2",
+    "sentencepiece==0.2.2",
+]
 
 [build-system]
 requires = ["setuptools>=68.0"]
@@ -50,9 +58,10 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-addopts = "-m 'not integration'"
+addopts = "-m 'not integration and not model'"
 markers = [
     "integration: requires the docker-compose stack (Milvus/Elasticsearch/MongoDB) running",
+    "model: requires torch/timm/torchscale (pip install -e '.[beit3]') and a downloaded checkpoint",
 ]
 
 [tool.coverage.run]

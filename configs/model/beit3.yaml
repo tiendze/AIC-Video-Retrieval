@@ -1,0 +1,7 @@
+# BEiT3Encoder config (app/encoders/beit3.py). Paths are relative to repo root.
+# Download checkpoint_path / sentencepiece_model_path with scripts/setup_beit3.sh.
+checkpoint_path: models/beit3/beit3_base_itc_patch16_224.pth
+sentencepiece_model_path: models/beit3/beit3.spm
+device: cuda
+batch_size: 16
+model_id: beit3_base_itc_patch16_224
