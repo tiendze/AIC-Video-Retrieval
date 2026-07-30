@@ -1,5 +1,10 @@
 # BEiT3Encoder config (app/encoders/beit3.py). Paths are relative to repo root.
 # Download checkpoint_path / sentencepiece_model_path with scripts/setup_beit3.sh.
+#
+# model_id is embedded in the Milvus collection name (CLAUDE.md §3: "đổi model
+# ⇒ collection mới"). If you change checkpoint_path to a different checkpoint,
+# you MUST also change model_id below — otherwise the new model's vectors get
+# silently mixed into the old model's collection.
 checkpoint_path: models/beit3/beit3_base_itc_patch16_224.pth
 sentencepiece_model_path: models/beit3/beit3.spm
 device: cuda

@@ -11,6 +11,11 @@ set -euo pipefail
 
 INSTALL_DIR="${1:-models/beit3}"
 RELEASE_BASE="https://github.com/addf400/files/releases/download/beit3"
+# Pinned SHA256 of the known-good checkpoint/tokenizer (verified against a
+# passing test run) — catches a corrupted or tampered download that would
+# otherwise silently load a partially-wrong model (CLAUDE.md §3).
+CHECKPOINT_SHA256="d483a41d92b9aea7ef87d17551413b8c22faae927110666b01ac3aa7a199a25b"
+SPM_SHA256="6f5e2fefcf793761a76a6bfb8ad35489f9c203b25557673284b6d032f41043f4"
 
 mkdir -p "${INSTALL_DIR}"
 
@@ -25,9 +30,11 @@ pip install -e ".[beit3]" --extra-index-url https://download.pytorch.org/whl/cu1
 echo "==> Downloading beit3_base_itc_patch16_224.pth checkpoint (~850MB)"
 curl -L --fail -o "${INSTALL_DIR}/beit3_base_itc_patch16_224.pth" \
   "${RELEASE_BASE}/beit3_base_itc_patch16_224.pth"
+echo "${CHECKPOINT_SHA256}  ${INSTALL_DIR}/beit3_base_itc_patch16_224.pth" | sha256sum -c -
 
 echo "==> Downloading beit3.spm tokenizer"
 curl -L --fail -o "${INSTALL_DIR}/beit3.spm" "${RELEASE_BASE}/beit3.spm"
+echo "${SPM_SHA256}  ${INSTALL_DIR}/beit3.spm" | sha256sum -c -
 
 echo "==> Done. Run tests with:"
 echo "    BEIT3_CHECKPOINT_PATH=${INSTALL_DIR}/beit3_base_itc_patch16_224.pth \\"

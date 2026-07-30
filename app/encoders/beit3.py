@@ -74,10 +74,14 @@ class BEiT3Encoder:
         return self._model_id
 
     def encode_image(self, images: Sequence[Image.Image]) -> np.ndarray:
+        if not images:
+            return np.empty((0, self.embedding_dim), dtype=np.float32)
         vectors = [self._encode_image_batch(batch) for batch in self._batched(images)]
         return np.concatenate(vectors, axis=0).astype(np.float32)
 
     def encode_text(self, texts: Sequence[str]) -> np.ndarray:
+        if not texts:
+            return np.empty((0, self.embedding_dim), dtype=np.float32)
         vectors = [self._encode_text_batch(batch) for batch in self._batched(texts)]
         return np.concatenate(vectors, axis=0).astype(np.float32)
 

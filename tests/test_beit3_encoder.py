@@ -85,3 +85,17 @@ def test_same_input_gives_same_vector(encoder, sample_images, sample_texts):
     first_text_vecs = encoder.encode_text(sample_texts)
     second_text_vecs = encoder.encode_text(sample_texts)
     np.testing.assert_allclose(first_text_vecs, second_text_vecs, atol=1e-5)
+
+
+def test_encode_image_with_empty_input_returns_empty_array_not_error(encoder):
+    vecs = encoder.encode_image([])
+
+    assert vecs.shape == (0, encoder.embedding_dim)
+    assert vecs.dtype == np.float32
+
+
+def test_encode_text_with_empty_input_returns_empty_array_not_error(encoder):
+    vecs = encoder.encode_text([])
+
+    assert vecs.shape == (0, encoder.embedding_dim)
+    assert vecs.dtype == np.float32
