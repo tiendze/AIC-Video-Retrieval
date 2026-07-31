@@ -12,7 +12,7 @@ Nguồn sự thật: [`docs/PRD.md`](docs/PRD.md) · [`docs/architecture.md`](do
 
 1. **4 task thi:** `Textual KIS` · `Video KIS` · `QA (VQA)` · `TRAKE`. Điểm **giảm theo thời gian trả lời và số lần nộp sai** ⇒ latency là yêu cầu *chức năng*, không phải "tối ưu sau".
 2. **Hệ thống interactive** — con người chốt đáp án cuối. Đừng tự động hoá chỗ paper cố ý để người vận hành quyết định.
-3. **Ràng buộc cứng:** một máy, **RTX 3070 8GB VRAM**.
+3. **Ràng buộc cứng:** một máy, **RTX 2080Ti 11GB VRAM**.
 4. **Không có ground truth thật.** Dataset AIC 2025 công khai (chi tiết: `references.md` §2) **không kèm nhãn nào**; đáp án chỉ biết qua nộp bài. Bộ eval là **nhãn tự sinh** (giao thức: PRD §6.1) ⇒ mọi con số là **tương đối**, và phải hiệu chỉnh qua nộp bài BTC (PRD §6.9).
 
 Baseline [arXiv:2512.13169](https://arxiv.org/abs/2512.13169) đóng góp **QUEST** và **DANTE**, nhưng **không công bố metric định lượng nào**. Vì vậy `eval/` là điều kiện để mọi tuyên bố "cải thiện" có nghĩa.
@@ -52,7 +52,7 @@ Baseline [arXiv:2512.13169](https://arxiv.org/abs/2512.13169) đóng góp **QUES
 
 **Ảnh và chữ nằm trong CÙNG một không gian vector — mọi thứ khác là hệ quả.** Sơ đồ đầy đủ: `architecture.md` §3.
 
-**Ingest** — 3 nhánh (VISION → Milvus · TEXT → Elasticsearch · METADATA → MongoDB). Trên 8GB VRAM **chạy tuần tự an toàn hơn song song**.
+**Ingest** — 3 nhánh (VISION → Milvus · TEXT → Elasticsearch · METADATA → MongoDB). Trên 11GB VRAM **chạy tuần tự an toàn hơn song song**.
 
 - **Tự trích keyframe bằng TransNetV2** + công thức 4-keyframe/shot (`PRD.md` §F1) — bám baseline. Keyframe BTC trích sẵn **chỉ dùng làm đối chứng**, không phải nguồn ingest.
 - Gán `global_index` liên tục + ghi `s_v` / `e_v` **cùng lúc** với việc ghi keyframe.
@@ -85,7 +85,7 @@ Baseline [arXiv:2512.13169](https://arxiv.org/abs/2512.13169) đóng góp **QUES
 - **Structured output cho cả OCR, VQA và sinh nhãn** qua `model_json_schema()` — không parse text tự do bằng regex.
 - **TransNetV2**: bản `inference-pytorch/`, input `torch.uint8` shape `[B, T, 27, 48, 3]` → resize frame về **48×27**.
 - **BEiT-3**: dùng `beit3_base_itc`. **Timebox 1 ngày** — quá thì chuyển `SigLIPEncoder` qua Protocol và ghi nhận là sai lệch so với baseline.
-- **PyTorch trên 8GB VRAM**: `torch.no_grad()` + autocast fp16, batch size configurable, giải phóng cache giữa các giai đoạn.
+- **PyTorch trên 11GB VRAM**: `torch.no_grad()` + autocast fp16, batch size configurable, giải phóng cache giữa các giai đoạn.
 - **Đọc dữ liệu BTC:** mọi giá trị trong `objects/*.json` là **chuỗi** kể cả số; `publish_date` là **`DD/MM/YYYY`** không phải ISO-8601; tên thư mục **không nhất quán** nên phải glob. Chi tiết: `references.md` §2.
 - Model ID (`gemini-3.6-flash`, `gpt-5.6`) **xác nhận lại lúc implement**. Cần API chưa có trong `references.md` → fetch `llms.txt` rồi cập nhật `references.md` trong cùng change.
 

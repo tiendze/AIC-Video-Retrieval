@@ -202,7 +202,7 @@ class TransNetV2(nn.Module):
 
 **Chọn biến thể nào:** repo phân biệt rõ hai nhóm — `beit3_base` / `beit3_large` (deep fusion, cho các task vision-language cần suy luận chéo) và **`beit3_base_itc` / `beit3_large_itc`** (image-text contrastive). Với **image-text retrieval, dùng bản `_itc`** — repo ghi rõ nhóm này cho kết quả tốt hơn ở task retrieval.
 
-**Với RTX 3070 8GB: chọn `beit3_base_itc`**, không phải `large`.
+**Với RTX 2080Ti 11GB: vẫn chọn `beit3_base_itc`**, không phải `large` (bám baseline, không phải giới hạn VRAM).
 
 **Phương án rút lui:** nếu quá 1 ngày chưa dựng được, chuyển sang SigLIP hoặc open_clip qua `MultimodalEncoder` Protocol (§5.1 của [`architecture.md`](./architecture.md)) và ghi nhận đây là sai lệch so với baseline.
 
@@ -642,7 +642,7 @@ for output in response.output:
 
 **Cài đặt:** cài bản khớp CUDA của máy, xem https://pytorch.org/get-started/locally/
 
-**Điểm cần lưu ý cho RTX 3070 8GB:** dùng `torch.no_grad()` và autocast fp16 cho toàn bộ inference; batch size cấu hình được; giải phóng cache giữa các giai đoạn pipeline.
+**Điểm cần lưu ý cho RTX 2080Ti 11GB:** dùng `torch.no_grad()` và autocast fp16 cho toàn bộ inference; batch size cấu hình được; giải phóng cache giữa các giai đoạn pipeline.
 
 ### 6.4 HuggingFace Transformers
 

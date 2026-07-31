@@ -161,7 +161,7 @@ flowchart TD
 
 3. **Vòng lặp checkpoint** — `Z → B` khép kín để pipeline resume được (yêu cầu T1).
 
-4. **Ba nhánh song song** — chúng độc lập, có thể chạy đồng thời hoặc tách thành ba lần chạy riêng. Trên máy 8GB VRAM, chạy tuần tự từng nhánh thường an toàn hơn.
+4. **Ba nhánh song song** — chúng độc lập, có thể chạy đồng thời hoặc tách thành ba lần chạy riêng. Trên máy 11GB VRAM, chạy tuần tự từng nhánh thường an toàn hơn.
 
 ### 3.3 ⭐ Luồng truy vấn Multimodal (online)
 
@@ -587,7 +587,7 @@ Các ràng buộc **kỹ thuật** (độc lập với hình thức giao diện)
 
 ## 9. Triển khai
 
-### 9.1 Bố trí trên một máy (RTX 3070 8GB)
+### 9.1 Bố trí trên một máy (RTX 2080Ti 11GB)
 
 | Chạy trong Docker | Chạy native |
 |---|---|
@@ -604,7 +604,7 @@ Các ràng buộc **kỹ thuật** (độc lập với hình thức giao diện)
 | Elasticsearch | ≤ 2 GB heap | Đặt cứng qua `ES_JAVA_OPTS` |
 | Milvus standalone | ~4 GB | Tăng theo kích thước index |
 | MongoDB | ~1 GB | |
-| FastAPI + encoder | ~2 GB RAM và ≤ 8 GB VRAM | |
+| FastAPI + encoder | ~2 GB RAM và ≤ 11 GB VRAM | |
 | **Tổng** | **≥ 16 GB, khuyến nghị 32 GB** | Sức ép nằm ở RAM hệ thống, không phải VRAM |
 
 **Chế độ suy giảm:** tắt Elasticsearch để giải phóng ~2 GB; hệ thống chuyển sang semantic-only, mất chức năng OCR search và hybrid fusion.

@@ -493,7 +493,7 @@ Báo cáo `Sequence Exact-Match` và `Kendall's tau` cho từng giá trị, tác
 
 | Metric | Mục tiêu |
 |---|---|
-| Ingest throughput | ⚠️ ≥ 100 keyframe/s ở bước embedding (BEiT-3 base, fp16, RTX 3070) |
+| Ingest throughput | ⚠️ ≥ 100 keyframe/s ở bước embedding (BEiT-3 base, fp16, RTX 2080Ti) |
 | Thời gian ingest pilot `L21`–`L24` (128 video, 27,9 giờ) | ⚠️ ≤ 6 giờ |
 | Thời gian ingest toàn bộ (873 video, 130,7 giờ) | ⚠️ ≤ 24 giờ |
 | Dung lượng vector index | ⚠️ ~0,55 GB (giả định 180k keyframe × 768 chiều × 4 byte) |
@@ -557,11 +557,11 @@ Khi hệ thống nộp bài mở:
 - Lưới kết quả phải render mượt với ≥ 1.000 thumbnail (virtualized rendering)
 - Truy vấn Milvus phải lọc metadata **trong** engine, không lọc sau khi lấy về
 
-### 7.2 Tài nguyên (ràng buộc cứng: RTX 3070 8GB VRAM, một máy)
+### 7.2 Tài nguyên (ràng buộc cứng: RTX 2080Ti 11GB VRAM, một máy)
 
 | Tài nguyên | Yêu cầu |
 |---|---|
-| VRAM | ≤ 8 GB → dùng `beit3_base_itc` thay vì `large`; inference fp16; batch size cấu hình được |
+| VRAM | ≤ 11 GB → vẫn dùng `beit3_base_itc` thay vì `large` (bám baseline, không phải giới hạn VRAM); inference fp16; batch size cấu hình được |
 | RAM hệ thống | Tối thiểu 16 GB, **khuyến nghị 32 GB** — ba store chạy cùng máy là sức ép lên RAM chứ không phải VRAM |
 | JVM heap của Elasticsearch | Giới hạn cứng (≤ 2 GB ở môi trường dev) |
 | Đĩa | Dữ liệu gốc đã chiếm **123 GB** (đo thật). Cộng keyframe tự trích + thumbnail + index ⇒ ⚠️ dự trù **≥ 160 GB** |
@@ -633,7 +633,7 @@ Các quyết định đã chốt khác:
 | Backend | FastAPI + Pydantic |
 | Frontend | React + Vite + TypeScript (thiết kế chốt sau) |
 | VQA answering | Gemini API làm chính |
-| Compute | Một GPU local RTX 3070 8 GB |
+| Compute | Một GPU local RTX 2080Ti 11 GB |
 
 ---
 
