@@ -1,7 +1,7 @@
 import httpx
 import pytest
 
-ES_URL = "http://localhost:9200"
+ES_URL = "http://localhost:9201"
 
 
 @pytest.mark.integration
