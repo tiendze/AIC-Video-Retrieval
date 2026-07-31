@@ -1,0 +1,6 @@
+# MilvusStore index/search parameters (app/stores/milvus_client.py).
+# Recommended ranges per Milvus docs: M in [5, 100], efConstruction in [50, 500]
+# (architecture.md §4.1). search_ef trades recall for latency.
+hnsw_m: 16
+hnsw_ef_construction: 200
+search_ef: 64

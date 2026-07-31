@@ -8,6 +8,9 @@ dependencies = [
     "uvicorn[standard]==0.51.0",
     "pydantic==2.13.4",
     "pydantic-settings==2.14.2",
+    "pymilvus==2.6.12",
+    "pymongo==4.17.0",
+    "elasticsearch[async]==9.3.0",
 ]
 
 [project.optional-dependencies]
