@@ -1,0 +1,4 @@
+# ShotDetector config (pipelines/shot_detect.py). Path relative to repo root.
+# Produced by scripts/setup_transnetv2.sh — see docs/references.md §3.1 for
+# the self-generated SHA256 recorded after the first passing test run.
+checkpoint_path: models/transnetv2/transnetv2-pytorch-weights.pth

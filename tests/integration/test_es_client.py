@@ -17,7 +17,7 @@ from app.stores.es_client import EsStore, OcrDocument
 pytestmark = pytest.mark.integration
 
 # See test_milvus_client.py for why this is overridable via env var.
-_ELASTICSEARCH_URL = os.environ.get("ELASTICSEARCH_URL", "http://localhost:9201")
+_ELASTICSEARCH_URL = os.environ.get("ELASTICSEARCH_URL", "http://localhost:9200")
 
 
 @pytest.fixture()

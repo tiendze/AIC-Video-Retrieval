@@ -15,7 +15,7 @@ falls back to a SigLIPEncoder behind the same Protocol if this is not done in ti
 
 from __future__ import annotations
 
-from typing import Sequence
+from collections.abc import Sequence
 
 import numpy as np
 import torch

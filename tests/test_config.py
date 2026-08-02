@@ -12,9 +12,9 @@ def test_settings_loads_from_env_vars(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert settings.gemini_api_key.get_secret_value() == "fake-gemini-key"
     assert settings.openai_api_key.get_secret_value() == "fake-openai-key"
-    assert settings.milvus_uri == "http://localhost:19540"
+    assert settings.milvus_uri == "http://localhost:19530"
     assert settings.mongo_uri == "mongodb://localhost:27017"
-    assert settings.elasticsearch_url == "http://localhost:9201"
+    assert settings.elasticsearch_url == "http://localhost:9200"
 
 
 def test_settings_raises_when_gemini_api_key_missing(monkeypatch: pytest.MonkeyPatch) -> None:

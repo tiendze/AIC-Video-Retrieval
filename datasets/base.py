@@ -9,6 +9,14 @@ class VideoRef:
     source_path: str
     duration_sec: float
     category: str | None = None
+    # Optional so any DatasetAdapter without this metadata (e.g. a future
+    # dataset, or AIC2026Adapter's own no-metadata fallback) can simply leave
+    # these None — MongoDB's `videos` collection (architecture.md §4.3) wants
+    # them, but no pipeline code may depend on them being present.
+    title: str | None = None
+    publish_date: str | None = None
+    watch_url: str | None = None
+    channel_id: str | None = None
 
 
 @dataclass(frozen=True)

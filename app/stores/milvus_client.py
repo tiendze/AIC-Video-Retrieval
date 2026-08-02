@@ -31,6 +31,7 @@ class KeyframeVector:
     embedding: np.ndarray
     video_id: str
     global_index: int
+    frame_idx: int
     timestamp: float
     author: str
     batch: str
@@ -76,6 +77,11 @@ class MilvusStore:
             field_name="video_id", datatype=DataType.VARCHAR, max_length=_VIDEO_ID_MAX_LENGTH
         )
         schema.add_field(field_name="global_index", datatype=DataType.INT64)
+        # The competition answer format is `<video_id>, <frame_id>` and TRAKE
+        # accepts windows often narrower than 10 frames, so the absolute frame
+        # index has to travel with the search hit — deriving it from
+        # `timestamp * fps` at submission time would round into the wrong frame.
+        schema.add_field(field_name="frame_idx", datatype=DataType.INT64)
         schema.add_field(field_name="timestamp", datatype=DataType.FLOAT)
         schema.add_field(
             field_name="author", datatype=DataType.VARCHAR, max_length=_AUTHOR_MAX_LENGTH
@@ -107,6 +113,7 @@ class MilvusStore:
                 "embedding": v.embedding.tolist(),
                 "video_id": v.video_id,
                 "global_index": v.global_index,
+                "frame_idx": v.frame_idx,
                 "timestamp": v.timestamp,
                 "author": v.author,
                 "batch": v.batch,
@@ -130,7 +137,14 @@ class MilvusStore:
             limit=top_k,
             search_params={"params": {"ef": self._search_ef}},
             filter=filter_expr,
-            output_fields=["video_id", "global_index", "timestamp", "author", "batch"],
+            output_fields=[
+                "video_id",
+                "global_index",
+                "frame_idx",
+                "timestamp",
+                "author",
+                "batch",
+            ],
             consistency_level="Strong",
         )
         return results[0]

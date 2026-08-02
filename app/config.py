@@ -15,10 +15,10 @@ class Settings(BaseSettings):
     gemini_api_key: SecretStr
     openai_api_key: SecretStr
 
-    milvus_uri: str = "http://localhost:19540"
+    milvus_uri: str = "http://localhost:19530"
     milvus_token: SecretStr = SecretStr("root:Milvus")
 
-    elasticsearch_url: str = "http://localhost:9201"
+    elasticsearch_url: str = "http://localhost:9200"
     elastic_api_key: SecretStr | None = None
 
     mongo_uri: str = "mongodb://localhost:27017"

@@ -1,0 +1,33 @@
+# pipelines/ocr.py OcrConfig — TEXT branch tuning (P0.7).
+# Field names match OcrConfig exactly; a caller loads this file and
+# constructs OcrConfig(**yaml.safe_load(...)) before calling run_ocr().
+
+# Step [1]: fraction of Canny edge pixels above which a keyframe is treated
+# as "likely has text". A cheap approximate pre-filter, not a real text
+# detector (pipelines/ocr.py docstring) — for this news-broadcast dataset
+# step [2] dedupe is the real cost saver, not this threshold.
+edge_density_threshold: 0.02
+
+# Step [2]: perceptual-hash (phash) bits allowed to differ and still count
+# as "the same frame" for dedupe.
+hamming_dedupe_threshold: 4
+
+# Step [3]: resize keyframes to at most this many pixels on the long side
+# before sending to Gemini. references.md §5.1: <=384px -> 258 tokens/image
+# (half of 1280x720's 516 tokens). Lowering this cuts cost further but must
+# be verified against small on-screen text (names, locations) staying
+# readable before changing.
+max_ocr_side: 384
+
+# Token cost per image at max_ocr_side — used to track spend against the
+# ingest run's token_budget (references.md §5.1).
+tokens_per_image_at_max_side: 258
+
+# GeminiOcrClient retry policy: exponential backoff, retry_base_delay_seconds
+# * 2^attempt.
+max_retries: 3
+retry_base_delay_seconds: 1.0
+
+# Confirm this model id is still current before a real ingest run — CLAUDE.md
+# §5: "Model ID xác nhận lại lúc implement."
+gemini_model: gemini-3.6-flash

@@ -22,7 +22,7 @@ pytestmark = pytest.mark.integration
 # namespace as the docker-compose stack's published host ports (e.g. a
 # separate dev container attached to the `aic-video-retrieval` network,
 # where the container-internal name/port must be used instead).
-_MILVUS_URI = os.environ.get("MILVUS_URI", "http://localhost:19540")
+_MILVUS_URI = os.environ.get("MILVUS_URI", "http://localhost:19530")
 _MILVUS_TOKEN = os.environ.get("MILVUS_TOKEN", "root:Milvus")
 _EMBEDDING_DIM = 8
 _HNSW_M = 16
@@ -84,6 +84,7 @@ def test_upsert_then_search_returns_the_matching_keyframe(store: MilvusStore) ->
                 embedding=vector,
                 video_id="video1",
                 global_index=0,
+                frame_idx=0,
                 timestamp=0.0,
                 author="channel_a",
                 batch="L21",
@@ -96,6 +97,31 @@ def test_upsert_then_search_returns_the_matching_keyframe(store: MilvusStore) ->
     assert results[0]["entity"]["video_id"] == "video1"
 
 
+def test_search_returns_frame_idx_needed_for_submission(store: MilvusStore) -> None:
+    # The competition answer is `<video_id>, <frame_id>`, so a search hit must
+    # already carry the absolute frame index — no second lookup, no rounding
+    # from timestamp * fps.
+    vector = _unit_vector(hot_index=0)
+    store.upsert(
+        [
+            KeyframeVector(
+                keyframe_id="video1_0",
+                embedding=vector,
+                video_id="video1",
+                global_index=0,
+                frame_idx=1234,
+                timestamp=41.13,
+                author="channel_a",
+                batch="L21",
+            )
+        ]
+    )
+
+    results = store.search(query_vector=vector, top_k=1)
+
+    assert results[0]["entity"]["frame_idx"] == 1234
+
+
 def test_search_filter_is_passed_to_engine_not_applied_after(store: MilvusStore) -> None:
     vector = _unit_vector(hot_index=0)
     store.upsert(
@@ -105,6 +131,7 @@ def test_search_filter_is_passed_to_engine_not_applied_after(store: MilvusStore)
                 embedding=vector,
                 video_id="video_a",
                 global_index=0,
+                frame_idx=0,
                 timestamp=0.0,
                 author="channel_a",
                 batch="L21",
@@ -114,6 +141,7 @@ def test_search_filter_is_passed_to_engine_not_applied_after(store: MilvusStore)
                 embedding=vector,
                 video_id="video_b",
                 global_index=1,
+                frame_idx=90,
                 timestamp=0.0,
                 author="channel_b",
                 batch="L21",
@@ -134,6 +162,7 @@ def test_upsert_is_idempotent_on_same_keyframe_id(store: MilvusStore) -> None:
         embedding=vector,
         video_id="video1",
         global_index=0,
+        frame_idx=0,
         timestamp=0.0,
         author="channel_a",
         batch="L21",

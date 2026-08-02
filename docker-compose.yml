@@ -24,7 +24,7 @@ services:
       MINIO_SECRET_KEY: minioadmin
     ports:
       - "9001:9001"
-      - "9004:9000"
+      - "9000:9000"
     volumes:
       - ./volumes/minio:/minio_data
     command: minio server /minio_data --console-address ":9001"
@@ -53,7 +53,7 @@ services:
       timeout: 20s
       retries: 3
     ports:
-      - "19540:19530"
+      - "19530:19530"
       - "9091:9091"
     depends_on:
       - etcd
@@ -76,19 +76,11 @@ services:
       timeout: 20s
       retries: 3
     ports:
-      - "9201:9200"
+      - "9200:9200"
 
   mongo:
     container_name: aic-mongo
     image: mongo:8.3.7
-    # Bypass docker-entrypoint.sh: its startup chown of /data/db to the
-    # "mongodb" user fails under rootless Docker on this NFS-backed bind
-    # mount (container uid 0 maps 1:1 to the real host owner, which has no
-    # CAP_CHOWN to reassign files to another uid on the NFS server). Running
-    # mongod directly as uid 0 skips that step; no MONGO_INITDB_* env vars
-    # are used here so the entrypoint's other init behavior isn't needed.
-    entrypoint: ["mongod"]
-    command: ["--bind_ip_all"]
     volumes:
       - ./volumes/mongo:/data/db
     healthcheck:

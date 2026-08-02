@@ -13,7 +13,8 @@ tests/test_beit3_encoder.py):
 
 from __future__ import annotations
 
-from typing import Protocol, Sequence
+from collections.abc import Sequence
+from typing import Protocol
 
 import numpy as np
 from PIL import Image

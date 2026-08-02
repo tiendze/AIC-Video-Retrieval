@@ -35,6 +35,17 @@ beit3 = [
     "transformers==4.44.2",
     "sentencepiece==0.2.2",
 ]
+ingest = [
+    "aic-video-retrieval[beit3]",
+    "opencv-python-headless==4.10.0.84",
+    "imagehash==4.3.1",
+    "pillow==11.0.0",
+    "pyyaml==6.0.3",
+]
+ocr = [
+    "aic-video-retrieval[ingest]",
+    "google-genai==2.16.0",
+]
 
 [build-system]
 requires = ["setuptools>=68.0"]

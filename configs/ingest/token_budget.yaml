@@ -1,0 +1,9 @@
+# Run-wide Gemini OCR token budget for one `run_ingest()` call (PRD risk R2,
+# references.md §5.1) -- pipelines/ingest.py treats this as a single pool
+# shared across every video in the run, not reset per video.
+#
+# Pilot L21-L24 (128 video) estimate at OcrConfig.max_ocr_side=384px is
+# ~6.7M tokens (references.md §5.1 table); the full 873-video corpus is
+# ~45.8M tokens at the same resolution. Update this value (and re-check the
+# references.md table) before running against a wider split.
+token_budget: 6700000

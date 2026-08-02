@@ -106,6 +106,25 @@ class MongoStore:
     async def get_video(self, video_id: str) -> dict[str, Any] | None:
         return await self.videos.find_one({"video_id": video_id})
 
+    async def get_keyframes_for_video(self, video_id: str) -> list[dict[str, Any]]:
+        """All persisted keyframe rows for one video, ordered by `global_index`
+        — used to resume the TEXT/OCR branch for a video whose VISION branch
+        already finished in an earlier run, without redoing shot detection."""
+        cursor = self.keyframes.find({"video_id": video_id}).sort("global_index", 1)
+        return [doc async for doc in cursor]
+
+    async def max_keyframe_global_index(self) -> int | None:
+        """Highest `global_index` actually claimed by a written keyframe row
+        — the ingest orchestrator's true recovery point for the next
+        `global_index` range. Deliberately reads `keyframes`, not
+        `VideoDocument.e_v`: `e_v` is only written once a video's ingest
+        fully finishes, so recovering from it would miss `global_index`
+        values already claimed by keyframes written just before a crash,
+        risking the next video reusing (and colliding with) that range
+        (CLAUDE.md T1: resume must not duplicate or collide global_index)."""
+        doc = await self.keyframes.find_one(sort=[("global_index", -1)])
+        return doc["global_index"] if doc else None
+
     async def close(self) -> None:
         await self._client.close()
 
