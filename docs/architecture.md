@@ -124,6 +124,7 @@ flowchart TD
     G --> H1["Nhánh THỊ GIÁC"]
     G --> H2["Nhánh VĂN BẢN"]
     G --> H3["Nhánh METADATA"]
+    A --> H4["Nhánh ASR (P0.11a)<br/>độc lập checkpoint VISION/OCR"]
 
     H1 --> I1["BEiT-3 image encoder"]
     I1 --> J1["L2 normalize"]
@@ -136,10 +137,15 @@ flowchart TD
     H3 --> I3["Lưu JPEG + sinh thumbnail"]
     I3 --> K3[("MongoDB<br/>đường dẫn + metadata")]
 
+    H4 --> P4["faster-whisper transcribe<br/>(.mp4 trực tiếp qua PyAV)"]
+    P4 --> I4["Lọc ảo giác<br/>no_speech_prob / avg_logprob / độ dài text"]
+    I4 --> K4[("Elasticsearch<br/>segment_id + text + frame window")]
+
     K1 --> Z["Ghi checkpoint theo video_id"]
     K2 --> Z
     K3 --> Z
     Z --> B
+    K4 --> Z4["Ghi asr_runs.asr_status (MongoDB)"]
 
     ERR["Danh sách video lỗi"]
     C -.->|"lỗi giải mã"| ERR
@@ -147,11 +153,11 @@ flowchart TD
 
     classDef store fill:#eef6ff,stroke:#2563eb,stroke-width:2px,color:#1e3a8a
     classDef risk fill:#fff4e6,stroke:#d97706,stroke-width:2px,color:#7c2d12
-    class K1,K2,K3 store
+    class K1,K2,K3,K4 store
     class P,ERR risk
 ```
 
-**Bốn điểm cần chú ý trong sơ đồ này:**
+**Bốn điểm cần chú ý trong sơ đồ này** (cộng thêm nhánh ASR ở điểm 6):
 
 1. **Node `Gán global_index và tính s_v, e_v`** — 📄 Paper lưu ở MongoDB `{video_id, s_v, e_v}`. Đây là **điều kiện tiên quyết của DANTE**: thuật toán quy hoạch động chạy trên khoảng index `[s_v, e_v]` của từng video. Bỏ bước này thì DANTE không thể triển khai.
 
@@ -162,6 +168,8 @@ flowchart TD
 3. **Vòng lặp checkpoint** — `Z → B` khép kín để pipeline resume được (yêu cầu T1).
 
 4. **Ba nhánh song song** — chúng độc lập, có thể chạy đồng thời hoặc tách thành ba lần chạy riêng. Trên máy 8GB VRAM, chạy tuần tự từng nhánh thường an toàn hơn.
+
+6. **Nhánh ASR (`H4`) tách khỏi node `A`, không phải `G`** 🔧 — bổ sung 2026-08-02, ngoài đường găng P0 (`.claude/plans/p0-foundation.plan.md` §P0.11). Nó chỉ cần `.mp4` (đọc `fps`/`frame_count` bằng cv2, không đọc Mongo), nên chạy độc lập với checkpoint VISION/OCR — video ở trạng thái `embedded` hay `complete` không ảnh hưởng gì tới việc ASR đã chạy hay chưa. Trạng thái của nó ghi ở collection **riêng** `asr_runs`, không phải field trên `VideoDocument` (`upsert_video()` là `replace_one` toàn phần — thêm field ASR vào đó sẽ bị ingest ghi đè im lặng). `start_frame_idx`/`end_frame_idx` trong `Elasticsearch` là **cửa sổ truy hồi** suy từ `start_time`/`end_time` qua floor/ceil, không phải `frame_id` nộp BTC.
 
 ### 3.3 ⭐ Luồng truy vấn Multimodal (online)
 
@@ -535,7 +543,8 @@ AIC-Video-Retrieval/
 │   ├── shot_detect.py          TransNetV2
 │   ├── keyframe.py             lấy mẫu 4 vị trí mỗi shot
 │   ├── ocr.py                  lọc + dedupe + Gemini
-│   └── embed.py                encode theo lô + ghi Milvus
+│   ├── embed.py                encode theo lô + ghi Milvus
+│   └── asr.py                  faster-whisper + lọc ảo giác (P0.11a, ngoài đường găng P0)
 ├── datasets/                   base.py (Protocol) · aic2026.py
 ├── eval/
 │   ├── run.py                  điểm vào duy nhất
@@ -648,3 +657,4 @@ Nhánh cuối là ràng buộc quan trọng nhất trong sơ đồ: **đổi mod
 | `author` / `batch` thay `recipe_type` | 🔧 Dự án | Dataset AIC không có trường phân loại nội dung tương đương |
 | Cổng grounding trước khi trả lời | 🔧 Dự án | Cần thiết để đo `Hallucination Rate` |
 | FastAPI + React/Vite | 🔧 Dự án | Paper không nêu framework |
+| Nhánh ASR (P0.11, faster-whisper) — đảo non-goal | 🔧 Chủ dự án 2026-08-02 | Baseline không có ASR; bản tin có lời dẫn nói ra nhiều thứ không hiện thành chữ (tên người, địa danh, số liệu) — bổ trợ OCR. Là job GPU offline không tốn quota Gemini nên chạy được đúng lúc nhánh OCR đang chờ quota, không chặn P0.8-P0.10 |

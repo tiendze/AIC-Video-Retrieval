@@ -127,7 +127,7 @@ Nhóm lỗi không crash, chỉ làm điểm số tệ đi mà không rõ lý do
 |---|---|---|
 | Q1 | Định dạng file nộp chính xác của BTC? | P3.5 (chờ BTC công bố) |
 | ~~Q2~~ | ~~Dữ liệu AIC có bao nhiêu video / giờ?~~ | ✅ **đã trả lời 2026-07-29:** 873 video · 130,7 giờ · 123 GB |
-| Q3 | Có kênh audio / phụ đề không? | P4.5 — bản tin có lời dẫn nên gần như chắc chắn có audio; còn phải xác nhận chất lượng |
+| ~~Q3~~ | ~~Có kênh audio / phụ đề không?~~ | ✅ **đã trả lời 2026-08-02: có audio, KHÔNG có phụ đề sẵn.** `media-info` chỉ có `author/title/publish_date/watch_url/channel_id/length` ⇒ phải tự chạy ASR. Kéo từ P4.5 về **P0.11** (ngoài đường găng) vì là job GPU offline, không tốn quota Gemini |
 | Q4 | `embedding_dim` thực tế của `beit3_base_itc`? | **P0.5** — ghi lại ngay khi load checkpoint |
 | Q5 | Lúc thi có mạng ổn định không? | P3 (quyết định QUEST/VQA có dùng được không) |
 | **Q6** | **Số keyframe thật do TransNetV2 + §F1 sinh ra?** Quyết định lại ngân sách R2 / đĩa / thời gian ingest | **P0.7** — đo trên pilot rồi ngoại suy |

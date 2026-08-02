@@ -570,7 +570,7 @@ recipe = Recipe.model_validate_json(interaction.output_text)
 
 > *"Larger images are tiled into 768x768 pixel tiles, each costing 258 tokens."* Ảnh nhỏ hơn 384×384 tính 258 token.
 
-Keyframe của AIC 2025 là **1280×720** ⇒ cắt thành **2 tile** 768×768 ⇒ **516 token/ảnh**. Hạ về ≤ 384×384 trước khi gửi thì còn **258 token/ảnh** — đây là đòn bẩy chi phí rẻ nhất, nhưng phải kiểm chứng chữ nhỏ trên màn hình có còn đọc được không.
+Keyframe của AIC 2026 là **1280×720** ⇒ cắt thành **2 tile** 768×768 ⇒ **516 token/ảnh**. Hạ về ≤ 384×384 trước khi gửi thì còn **258 token/ảnh** — đây là đòn bẩy chi phí rẻ nhất, nhưng phải kiểm chứng chữ nhỏ trên màn hình có còn đọc được không.
 
 Quy đổi trên số keyframe **BTC trích sẵn** (mốc tham chiếu — số keyframe do TransNetV2 của dự án sinh ra ⚠️ **[Cần đo]**, xem PRD §8/R2):
 
@@ -637,6 +637,82 @@ for output in response.output:
 - Responses API overview: https://developers.openai.com/api/reference/responses/overview.md
 - Images và vision: https://developers.openai.com/api/docs/guides/images-vision.md
 - Quickstart: https://developers.openai.com/api/docs/quickstart.md
+
+---
+
+### 5.3 faster-whisper — ASR
+
+🔧 Dự án (P0.11). Baseline arXiv:2512.13169 **không** có ASR.
+
+- Repo: https://github.com/SYSTRAN/faster-whisper
+- **`llms.txt`: ❌ không có** — nguồn là README + đọc thẳng `faster_whisper/transcribe.py`. Đã fetch kiểm chứng **2026-08-02**.
+
+**Cài đặt:** `pip install faster-whisper` — kéo theo `ctranslate2`, `av`, `tokenizers`, `onnxruntime` (VAD). GPU cần **cuBLAS + cuDNN 9 (CUDA 12)**. ✅ Version pin đã xác nhận 2026-08-02 (`pyproject.toml` nhóm `asr`): `faster-whisper==1.2.1` (bản mới nhất trên PyPI tại thời điểm implement, phát hành 2025-10-31), kéo theo `ctranslate2>=4.0,<5`, `huggingface-hub>=0.21`, `tokenizers>=0.13,<1`, `onnxruntime>=1.14,<2`, `av>=11`.
+
+**⚠️ Không cần bước trích audio riêng.** README: *"The audio is decoded with the Python library PyAV which bundles the FFmpeg libraries"* ⇒ `transcribe()` nhận **thẳng đường dẫn `.mp4`**, không phải extract `.wav` trước.
+
+**Khởi tạo + transcribe** (nguồn: README + `faster_whisper/transcribe.py`):
+
+```python
+from faster_whisper import WhisperModel
+
+# WhisperModel.__init__(model_size_or_path, device="auto", device_index=0,
+#     compute_type="default", cpu_threads=0, num_workers=1,
+#     download_root=None, local_files_only=False, revision=None, ...)
+model = WhisperModel("large-v3", device="cuda", compute_type="int8_float16")
+
+segments, info = model.transcribe(
+    "data/Videos_L21_a/video/L21_V001.mp4",   # .mp4 trực tiếp
+    language="vi",
+    beam_size=5,
+    vad_filter=True,
+    vad_parameters={"min_silence_duration_ms": 500},
+    condition_on_previous_text=False,   # chống vòng lặp ảo giác
+)
+```
+
+**⚠️ `segments` là generator LAZY** — `transcribe()` trả `Tuple[Iterable[Segment], TranscriptionInfo]` và **chưa chạy gì** cho tới khi iterate. Đừng đo thời gian ở dòng `transcribe(...)`.
+
+**Kiểu dữ liệu trả về** (nguồn: `faster_whisper/transcribe.py`):
+
+```python
+@dataclass
+class Segment:
+    id: int; seek: int
+    start: float; end: float          # giây
+    text: str
+    tokens: List[int]
+    avg_logprob: float                # ← lọc ảo giác
+    compression_ratio: float
+    no_speech_prob: float             # ← lọc ảo giác
+    words: Optional[List[Word]]       # chỉ khi word_timestamps=True
+    temperature: Optional[float]
+
+@dataclass
+class Word:
+    start: float; end: float; word: str; probability: float
+
+@dataclass
+class TranscriptionInfo:
+    language: str; language_probability: float
+    duration: float; duration_after_vad: float
+    all_language_probs: Optional[List[Tuple[str, float]]]
+    transcription_options: TranscriptionOptions
+    vad_options: VadOptions
+```
+
+**Tham số `transcribe()` liên quan tới chất lượng** (mặc định trong ngoặc): `no_speech_threshold` (0.6) · `log_prob_threshold` (−1.0) · `compression_ratio_threshold` (2.4) · `condition_on_previous_text` (**True** — nên đặt `False`) · `hallucination_silence_threshold` (None) · `word_timestamps` (False) · `hotwords` (None).
+
+**💰 Chi phí — con số quyết định tính khả thi:** chạy **cục bộ, miễn phí**, không tốn quota Gemini. Benchmark chính thức trong README trên **RTX 3070 Ti** (audio 13 phút):
+
+| compute_type | Thời gian | VRAM |
+|---|---|---|
+| fp16 | 1m03s | ~6090 MB |
+| int8 | 59s | ~2926 MB |
+
+⇒ Ngoại suy 130,7 giờ (873 video) ≈ **10–12 giờ GPU**; pilot L21 (29 video) ≈ **[Cần đo]**. Vừa RTX 3070 8GB.
+
+**⚠️ PhoWhisper-large KHÔNG dùng được với faster-whisper.** Model card [vinai/PhoWhisper-large](https://huggingface.co/vinai/PhoWhisper-large) chỉ có bản HF `transformers` — **không có bản convert CTranslate2**, và không phơi `no_speech_prob` nên **không chạy được bộ lọc ảo giác**. Là bước nâng cấp **có đo** về sau, không phải baseline.
 
 ---
 
@@ -736,7 +812,7 @@ Ràng buộc kỹ thuật (độc lập với thiết kế): virtualized renderi
 | **Vector search** | [FAISS](https://github.com/facebookresearch/faiss), [Qdrant](https://qdrant.tech) | Nếu Milvus quá nặng cho một máy. FAISS in-process bỏ được hẳn một service |
 | **Encoder** | [SigLIP](https://huggingface.co/docs/transformers/model_doc/siglip), [open_clip](https://github.com/mlfoundations/open_clip), [jina-clip-v2](https://huggingface.co/jinaai/jina-clip-v2) | **Cũng là phương án rút lui khẩn cấp cho R1.** jina-clip-v2 đa ngôn ngữ — có thể hợp hơn với truy vấn tiếng Việt |
 | **OCR** | [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR), [EasyOCR](https://github.com/JaidedAI/EasyOCR) | Thay Gemini OCR để **cắt chi phí R2**. Chạy cục bộ, không quota, nhưng chất lượng tiếng Việt thường kém hơn |
-| **Kênh ASR** | [faster-whisper](https://github.com/SYSTRAN/faster-whisper), [WhisperX](https://github.com/m-bain/whisperX) | Thêm một kênh truy hồi hoàn toàn mới từ lời thoại. **Rất giá trị với AIC 2025**: bản tin có lời dẫn dày đặc, nói ra nhiều thứ **không** hiện thành chữ trên màn hình (tên người, địa danh, số liệu) — bổ trợ chứ không trùng lặp với kênh OCR |
+| ~~**Kênh ASR**~~ → 🔧 **đã kéo về v1** | [faster-whisper](https://github.com/SYSTRAN/faster-whisper), [WhisperX](https://github.com/m-bain/whisperX) | Thêm một kênh truy hồi hoàn toàn mới từ lời thoại. **Rất giá trị với AIC 2026**: bản tin có lời dẫn dày đặc, nói ra nhiều thứ **không** hiện thành chữ trên màn hình (tên người, địa danh, số liệu) — bổ trợ chứ không trùng lặp với kênh OCR. **2026-08-02: không còn thuộc giai đoạn 2** — đã thành **P0.11** (`PRD.md` §2.3). API đã fetch kiểm chứng ở **§5.3** |
 | **Reranking** | Cross-encoder / ColBERT-style | Khi Recall@100 cao nhưng Recall@1 thấp — nghĩa là đáp án có trong tầm với, chỉ xếp hạng sai |
 | **Tăng tốc inference** | ONNX Runtime, TensorRT | Khi ingest là nút thắt |
 | **Nén vector** | Product Quantization, scalar quantization | Khi index không vừa RAM |
@@ -763,6 +839,7 @@ Ràng buộc kỹ thuật (độc lập với thiết kế): virtualized renderi
 | **TransNetV2** | ❌ | — | Chỉ có GitHub → đọc README + source |
 | **BEiT-3** | ❌ | — | Chỉ có `microsoft/unilm` → đọc README + get-started |
 | ES Vietnamese plugin | ❌ | — | Chỉ có GitHub README |
+| **faster-whisper** | ❌ | — | Chỉ có GitHub → đọc README + `faster_whisper/transcribe.py`. Fetch **2026-08-02**, xem §5.3 |
 
 **Nên kiểm tra lại bảng này định kỳ** — `llms.txt` đang được các nhà cung cấp bổ sung dần, và URL có thể đổi (Pydantic đã đổi một lần, để lại redirect 301).
 

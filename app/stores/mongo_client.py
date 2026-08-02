@@ -37,6 +37,20 @@ class KeyframeDocument:
 
 
 @dataclass(frozen=True)
+class AsrRunDocument:
+    """One video's ASR transcription run (P0.11a) — deliberately its own
+    collection, not a field on `VideoDocument`: `upsert_video()` is a full
+    `replace_one` (see below), so an ASR field added there would be
+    silently overwritten every time ingest re-runs for that video."""
+
+    video_id: str
+    asr_status: str
+    num_segments: int
+    model_id: str
+    fps: float
+
+
+@dataclass(frozen=True)
 class VideoDocument:
     video_id: str
     s_v: int
@@ -61,10 +75,12 @@ class MongoStore:
         self._db = self._client[database_name]
         self.keyframes = self._db["keyframes"]
         self.videos = self._db["videos"]
+        self.asr_runs = self._db["asr_runs"]
 
     async def ensure_indexes(self) -> None:
         await self.keyframes.create_index("keyframe_id", unique=True)
         await self.videos.create_index("video_id", unique=True)
+        await self.asr_runs.create_index("video_id", unique=True)
 
     async def bulk_insert_keyframes(self, docs: Sequence[KeyframeDocument]) -> int:
         """Insert keyframe documents. Returns the number of newly inserted rows.
@@ -125,8 +141,29 @@ class MongoStore:
         doc = await self.keyframes.find_one(sort=[("global_index", -1)])
         return doc["global_index"] if doc else None
 
+    async def upsert_asr_run(self, doc: AsrRunDocument) -> None:
+        """Insert-or-replace one video's ASR run record, keyed by `video_id`
+        — the resume/idempotency mechanism for `scripts/run_asr.py` (mirrors
+        `upsert_video`)."""
+        await self.asr_runs.replace_one(
+            {"video_id": doc.video_id}, _asr_run_document_to_dict(doc), upsert=True
+        )
+
+    async def get_asr_run(self, video_id: str) -> dict[str, Any] | None:
+        return await self.asr_runs.find_one({"video_id": video_id})
+
     async def close(self) -> None:
         await self._client.close()
+
+
+def _asr_run_document_to_dict(doc: AsrRunDocument) -> dict[str, Any]:
+    return {
+        "video_id": doc.video_id,
+        "asr_status": doc.asr_status,
+        "num_segments": doc.num_segments,
+        "model_id": doc.model_id,
+        "fps": doc.fps,
+    }
 
 
 def _keyframe_document_to_dict(doc: KeyframeDocument) -> dict[str, Any]:

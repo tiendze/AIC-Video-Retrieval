@@ -1,0 +1,214 @@
+"""ASR branch (P0.11a TEXT pipeline) — a fourth retrieval channel from spoken
+dialogue, architecture.md §3.2 node A (straight from the `.mp4`), not node G
+(never routed through a keyframe):
+
+    .mp4 -> faster-whisper transcribe -> [1] hallucination filter -> [2] index ES (BM25)
+
+Segments are indexed at SEGMENT granularity, never forced onto keyframe
+boundaries: a single spoken sentence often spans several shots, and a
+static studio shot can contain several sentences (plan P0.11). `frame_idx`
+window per segment is a *retrieval window* only, derived via floor/ceil —
+never the BTC submission `frame_id`, which always comes from a keyframe's
+own `frame_idx` in Mongo/Milvus (CLAUDE.md T2).
+
+Every tunable threshold lives in `AsrConfig`, not as a module-level magic
+number (CLAUDE.md §6) — the field defaults here match
+`configs/ingest/asr.yaml`, which is the source of truth a caller should
+load and pass in.
+"""
+
+from __future__ import annotations
+
+import logging
+import math
+from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import Protocol
+
+from app.stores.es_client import AsrEsStore, AsrSegmentDocument
+
+logger = logging.getLogger(__name__)
+
+STATUS_DONE = "done"
+STATUS_FAILED = "failed"
+
+_REASON_NO_SPEECH = "no_speech"
+_REASON_LOW_CONFIDENCE = "low_confidence"
+_REASON_SHORT_TEXT = "short_text"
+
+
+@dataclass(frozen=True)
+class AsrConfig:
+    """Mirrors `configs/ingest/asr.yaml` — see that file for the rationale
+    behind each default."""
+
+    model_size: str = "large-v3"
+    compute_type: str = "float16"
+    device: str = "cuda"
+    beam_size: int = 5
+    language: str = "vi"
+    vad_filter: bool = True
+    condition_on_previous_text: bool = False
+    no_speech_prob_threshold: float = 0.6
+    avg_logprob_threshold: float = -1.0
+    min_text_length: int = 2
+
+
+_DEFAULT_ASR_CONFIG = AsrConfig()
+
+
+@dataclass(frozen=True)
+class AsrSegment:
+    """One segment as returned by faster-whisper's `Segment` (references.md
+    §5.3) — only the fields the hallucination filter and frame-window math
+    need."""
+
+    start: float
+    end: float
+    text: str
+    no_speech_prob: float
+    avg_logprob: float
+
+
+@dataclass(frozen=True)
+class FrameWindow:
+    start_frame_idx: int
+    end_frame_idx: int
+
+
+class AsrClient(Protocol):
+    """Firewall around the faster-whisper SDK — swappable for a fake in
+    tests, or a different ASR backend (PhoWhisper, WhisperX) later."""
+
+    def transcribe(self, video_path: str) -> Sequence[AsrSegment]: ...
+
+
+@dataclass(frozen=True)
+class AsrRunSummary:
+    total_segments: int
+    kept_segments: int
+    dropped_no_speech: int
+    dropped_low_confidence: int
+    dropped_short_text: int
+
+
+def _hallucination_reason(
+    segment: AsrSegment, config: AsrConfig = _DEFAULT_ASR_CONFIG
+) -> str | None:
+    """`None` when `segment` looks like real speech; otherwise the specific
+    reason it was dropped, so callers can report drop counts per reason
+    (plan P0.11a: 'báo cáo tỉ lệ cắt của từng bước riêng biệt, đừng gộp')."""
+    if segment.no_speech_prob > config.no_speech_prob_threshold:
+        return _REASON_NO_SPEECH
+    if segment.avg_logprob < config.avg_logprob_threshold:
+        return _REASON_LOW_CONFIDENCE
+    if len(segment.text.strip()) < config.min_text_length:
+        return _REASON_SHORT_TEXT
+    return None
+
+
+def is_hallucination(segment: AsrSegment, config: AsrConfig = _DEFAULT_ASR_CONFIG) -> bool:
+    """True when `segment` looks like Whisper hallucinating over silence or
+    noise rather than real speech — news jingles and silent B-roll are
+    common triggers for this dataset (references.md §5.3). Checked via OR
+    across three signals (`no_speech_prob`, `avg_logprob`, text length);
+    every threshold comes from `AsrConfig`, never hardcoded here."""
+    return _hallucination_reason(segment, config) is not None
+
+
+def to_frame_window(segment: AsrSegment, fps: float, frame_count: int) -> FrameWindow:
+    """floor on the left edge, ceil on the right edge — the window only ever
+    *widens*, never drops a frame a TRAKE answer could need. `round()` is
+    forbidden here (CLAUDE.md T2)."""
+    start_frame_idx = max(0, math.floor(segment.start * fps))
+    end_frame_idx = min(frame_count - 1, math.ceil(segment.end * fps))
+    return FrameWindow(start_frame_idx=start_frame_idx, end_frame_idx=end_frame_idx)
+
+
+class FasterWhisperClient:
+    """Wraps `faster_whisper.WhisperModel.transcribe()` (references.md §5.3,
+    verified against faster-whisper==1.2.1). Audio is decoded straight from
+    the `.mp4` via PyAV (bundled with the package) — no separate extraction
+    step."""
+
+    def __init__(self, config: AsrConfig = _DEFAULT_ASR_CONFIG) -> None:
+        from faster_whisper import WhisperModel  # lazy: only needed when this class is used
+
+        self._model = WhisperModel(
+            config.model_size, device=config.device, compute_type=config.compute_type
+        )
+        self._config = config
+
+    def transcribe(self, video_path: str) -> list[AsrSegment]:
+        segments, _info = self._model.transcribe(
+            video_path,
+            beam_size=self._config.beam_size,
+            language=self._config.language,
+            vad_filter=self._config.vad_filter,
+            condition_on_previous_text=self._config.condition_on_previous_text,
+        )
+        return [
+            AsrSegment(
+                start=segment.start,
+                end=segment.end,
+                text=segment.text,
+                no_speech_prob=segment.no_speech_prob,
+                avg_logprob=segment.avg_logprob,
+            )
+            for segment in segments
+        ]
+
+
+async def run_asr(
+    video_id: str,
+    segments: Sequence[AsrSegment],
+    *,
+    es: AsrEsStore,
+    fps: float,
+    frame_count: int,
+    config: AsrConfig = _DEFAULT_ASR_CONFIG,
+) -> AsrRunSummary:
+    """Filters hallucinated segments out of one video's transcript, then
+    bulk-indexes the rest to Elasticsearch at segment granularity.
+    `segment_id` is derived from the segment's position in the *original*
+    transcript (not the filtered list), so it stays stable regardless of how
+    many segments get dropped."""
+    documents: list[AsrSegmentDocument] = []
+    dropped_no_speech = 0
+    dropped_low_confidence = 0
+    dropped_short_text = 0
+
+    for index, segment in enumerate(segments):
+        reason = _hallucination_reason(segment, config)
+        if reason == _REASON_NO_SPEECH:
+            dropped_no_speech += 1
+            continue
+        if reason == _REASON_LOW_CONFIDENCE:
+            dropped_low_confidence += 1
+            continue
+        if reason == _REASON_SHORT_TEXT:
+            dropped_short_text += 1
+            continue
+
+        window = to_frame_window(segment, fps, frame_count)
+        documents.append(
+            AsrSegmentDocument(
+                segment_id=f"{video_id}_seg{index}",
+                video_id=video_id,
+                start_time=segment.start,
+                end_time=segment.end,
+                text=segment.text,
+                start_frame_idx=window.start_frame_idx,
+                end_frame_idx=window.end_frame_idx,
+            )
+        )
+
+    await es.bulk_index(documents)
+
+    return AsrRunSummary(
+        total_segments=len(segments),
+        kept_segments=len(documents),
+        dropped_no_speech=dropped_no_speech,
+        dropped_low_confidence=dropped_low_confidence,
+        dropped_short_text=dropped_short_text,
+    )

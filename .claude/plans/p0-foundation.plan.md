@@ -1,7 +1,7 @@
 # P0 — Nền móng
 
 > **Quay lại:** [`roadmap.plan.md`](./roadmap.plan.md) · **Tiếp theo:** [`p1-search.plan.md`](./p1-search.plan.md)
-> **Trạng thái:** 🟡 đang chạy — **P0.1 → P0.6 xong**, đang vào **P0.7**
+> **Trạng thái:** 🟡 đang chạy — **P0.1 → P0.6 xong**; **P0.7 gần xong** (nhánh VISION đã chạy hết, chỉ còn OCR đang chờ quota Gemini); mở thêm **P0.11 — nhánh ASR** để lấp khoảng trống chờ quota
 
 | Bước | Trạng thái |
 |---|---|
@@ -16,6 +16,8 @@
 | P0.8 search + `/health` | ⬜ |
 | P0.9 `eval/run.py` | ⬜ |
 | P0.10 báo cáo phase | ⬜ |
+| P0.11a ASR → ES (BM25) | ⬜ **ngoài đường găng** — thêm 2026-08-02 |
+| P0.11b ASR → Milvus (dense) | ⬜ chờ P0.11a chốt transcript |
 
 **Exit criteria (PRD §4):** search một truy vấn bất kỳ ra kết quả từ đầu đến cuối; `eval/run.py` chạy được và in ra Recall@k **dù số còn thấp**.
 
@@ -28,7 +30,11 @@
 ```
 P0.1 scaffold ──► P0.3 adapter ──┬──► P0.5 encoder BEiT-3 (timebox 1 ngày)
 P0.2 docker-compose ──► P0.6 stores ──┴──► P0.7 ingest ──► P0.4′ sinh nhãn ──► P0.8 search ──► P0.9 eval ──► P0.10 báo cáo
+                                                │
+                                                └──► P0.11a ASR→ES ──► P0.11b ASR→Milvus     (ngoài đường găng)
 ```
+
+> **P0.11 không nằm trên đường găng.** Nó chỉ cần `.mp4` (đọc `fps`/`frame_count` thẳng bằng cv2, **không đọc Mongo**), nên không phụ thuộc P0.7 đã xong hay chưa — chỉ vướng VRAM, không vướng dữ liệu. Đường găng P0 vẫn kết thúc ở P0.10.
 
 > **Cập nhật 2026-07-29 — đổi dataset.** Dữ liệu công khai đã tải xong về `data/` (873 video, 130,7 giờ). Task **P0.4 (downloader `yt-dlp`) bị bỏ** — video đã là file `.mp4` cục bộ. Thay vào đó là **P0.4′ — sinh bộ eval**, vì dataset không kèm nhãn nào.
 >
@@ -336,6 +342,121 @@ Hệ thống phải **vượt xa** baseline random. Không vượt ⇒ **có bug
 4. Cập nhật trạng thái P0 trong `roadmap.plan.md`.
 
 **🛑 Không sang P1 khi chưa có bảng số này.**
+
+---
+
+## P0.11 — Nhánh ASR (kênh truy hồi thứ tư)
+
+> 🔧 **Quyết định chủ dự án 2026-08-02 — đảo non-goal `PRD.md:133`.** Baseline arXiv:2512.13169 **không** có ASR; đây là bổ sung của dự án, không phải của paper.
+> **Ngoài đường găng P0.** Không chặn P0.8/P0.9/P0.10. Đánh số **P0.11** vì P0.8 đã thuộc về search + `/health`.
+
+**Vì sao làm ngay bây giờ, không phải chen ngang:** OCR là **lời gọi API** (hết quota Gemini ⇒ đứng), ASR là **GPU thuần offline** (không cần key, không tốn quota). Hai việc chặn nhau ở **hai tài nguyên khác nhau** ⇒ chạy ASR lúc này không đánh đổi gì. Video đang ở `embedded`, mà `_TERMINAL_STATUSES` chỉ gồm `{ocr_done, complete}` ⇒ có quota là chạy lại `run_ingest.py`, vào thẳng `resume_ocr_for_video`, **không mất tiến độ**.
+
+**Vì sao đáng làm:** dữ liệu là bản tin tiếng Việt **có lời dẫn** (`references.md:86`); lời dẫn nói ra nhiều thứ **không hiện thành chữ** — tên người, địa danh, số liệu ⇒ **bổ trợ** OCR chứ không trùng. `references.md:744` xếp ASR ưu tiên cao nhất của giai đoạn 2.
+
+### Đã fetch kiểm chứng (CLAUDE.md §5) — cập nhật `references.md` §5 trong cùng change
+
+- `faster-whisper` decode audio bằng **PyAV (bundle FFmpeg)** ⇒ **đọc thẳng `.mp4`, không cần bước extract audio riêng**.
+- `transcribe(...) -> Tuple[Iterable[Segment], TranscriptionInfo]` — `Iterable` là **generator lazy**, không chạy gì tới khi iterate.
+- `Segment` có `start, end, text, no_speech_prob, avg_logprob` — hai trường sau là thứ bộ lọc ảo giác cần.
+- Benchmark chính thức **RTX 3070 Ti**: audio 13 phút → ~1 phút; VRAM 2926–6090MB ⇒ vừa 8GB.
+- **PhoWhisper-large KHÔNG có bản CTranslate2** (đọc model card) và không phơi `no_speech_prob` ⇒ là bước nâng cấp **có đo** về sau, không phải baseline.
+
+### P0.11a — Transcribe → Elasticsearch (BM25)
+
+| Module | Nội dung |
+|---|---|
+| `pipelines/asr.py` | Soi gương `pipelines/ocr.py`: `AsrConfig` (mirror yaml) · `AsrSegment` · Protocol `AsrClient` · `FasterWhisperClient` (lazy import) · hàm thuần `is_hallucination` / `to_frame_window` · `run_asr()` trả `AsrRunSummary` |
+| `configs/ingest/asr.yaml` | Đúng convention `ocr.yaml`: phẳng, key trùng tên field 1:1, mỗi key có comment nêu lý do |
+| `scripts/run_asr.py` | Sao khung `run_ingest.py`. **Dựng model 1 lần ngoài vòng lặp** |
+| `app/stores/es_client.py` | Thêm `AsrSegmentDocument` + `AsrEsStore`. ⚠️ `EsStore` hiện **hard-code** mapping OCR và field `ocr_text` (`:58-84`) ⇒ **không dùng lại được**, phải có store riêng. Trích `_VI_ANALYSIS_SETTINGS` ra hằng số để hai index dùng chung `vi_analyzer` |
+| `app/stores/mongo_client.py` | Thêm collection **`asr_runs`** + `AsrRunDocument(video_id, asr_status, num_segments, model_id, fps)` |
+
+**Index ở mức SEGMENT, không ép về keyframe.** Một câu lời dẫn 4–8s trải nhiều shot; cắt theo ranh giới keyframe làm **vỡ câu** ⇒ BM25 mất ngữ cảnh. Segment → keyframe suy ra được, chiều ngược lại thì không.
+
+**⚠️ Trạng thái ASR để ở collection RIÊNG, không thêm field vào `VideoDocument`.** `upsert_video()` là **full `replace_one`** (`mongo_client.py:100-104`) ⇒ field ASR thêm vào đó sẽ bị ingest chạy lại **ghi đè im lặng**. Collection riêng cũng có nghĩa **không sửa một dòng nào của code ingest đang chạy**.
+
+**⚠️ Quy đổi `time → frame_idx`.** `video_io.py:68-71` ghi `frame_idx → timestamp` là chiều hợp lệ duy nhất. Ta đi ngược, nên chốt luật:
+
+```
+start_frame_idx = max(0,               floor(start_time * fps))
+end_frame_idx   = min(frame_count - 1, ceil (end_time   * fps))
+```
+
+**floor biên trái, ceil biên phải** — cửa sổ chỉ **nới rộng**, không bao giờ đánh rơi frame. `round()` bị cấm ở đây. Hai số này là **cửa sổ truy hồi, KHÔNG phải đáp án nộp BTC** — `frame_id` nộp bài luôn lấy từ `frame_idx` của chính keyframe trong Mongo/Milvus.
+
+**⚠️ Lọc ảo giác — text bịa vào ES là ô nhiễm trực tiếp kênh BM25.** Bản tin có nhạc hiệu, B-roll im lặng, tiếng ồn hiện trường; Whisper hay bịa câu lặp ở đó. Bật `vad_filter=True` + loại segment khi `no_speech_prob > ngưỡng` **hoặc** `avg_logprob < ngưỡng` **hoặc** text quá ngắn. Đặt `condition_on_previous_text=False` để chặn vòng lặp ảo giác. **Mọi ngưỡng vào `configs/ingest/asr.yaml`**, không hard-code.
+
+### P0.11b — Transcript → Milvus (dense)
+
+**BM25-only không phải end state cho ASR.** Khác biệt cấu trúc so với OCR:
+
+- **Chữ trên màn hình được viết ra để đọc** — tiêu đề, chạy chữ, tên nhân vật. Nó **đã ở dạng từ khoá**; người tìm sẽ gõ gần đúng những từ đó.
+- **Lời nói là văn nói tự phát** — dài dòng, đầy liên từ và đại từ, diễn đạt tuỳ ý. **Không ai gõ truy vấn bằng những từ đó.**
+
+⇒ **khoảng cách paraphrase của ASR lớn hơn OCR về mặt cấu trúc.** Lập luận "danh từ riêng IDF cao ⇒ BM25 mạnh" chỉ đúng cho phần **tên riêng/số liệu**, không cover phần mô tả sự kiện — mà đó là phần lớn lời dẫn. BM25 vẫn **cần**, chỉ là **không đủ**.
+
+**Không dùng lại được BEiT-3:** `beit3_base_itc` huấn luyện **image–text** contrastive, không phải text–text; tokenizer là `XLMRobertaTokenizer` (`app/encoders/beit3.py:53`) đa ngôn ngữ ở tầng token nhưng **alignment học trên caption tiếng Anh** ⇒ vector tiếng Việt lệch. Cần **encoder thứ ba** — đề xuất `bge-m3`, ⚠️ **[Cần verify]** lúc implement — vào collection riêng `transcripts_{model_id}`.
+
+Không vi phạm invariant *"một encoder duy nhất"* (CLAUDE.md §3): invariant đó nói *ingest và query **trong cùng một kênh** phải cùng model*, không cấm kênh text–text có encoder riêng. Nhưng `model_id` **bắt buộc** nằm trong tên collection.
+
+**Vì sao tách khỏi P0.11a, không phải để hoãn:** transcription là phần **đắt và không đảo ngược** (~10h GPU/873 video); embedding đọc lại `transcript_text` từ ES bằng scroll API nên **không cần chạy lại Whisper**. Nếu ngưỡng lọc ảo giác sai thì phải transcribe lại — lúc đó embedding cũng bỏ đi. Chốt transcript trước rồi mới embed là thứ tự rẻ hơn. Trên 8GB, chạy tuần tự Whisper (~3GB) rồi `bge-m3` (~2,5GB) an toàn hơn nạp cả hai.
+
+### Đo "ASR có cải thiện không" — bốn bước
+
+⚠️ **Bẫy phải tránh:** bộ eval sinh từ **caption thị giác** (PRD §6.1) ⇒ truy vấn mô tả thứ **nhìn thấy được**, trong khi giá trị riêng của ASR là thứ **chỉ nghe thấy**. Chạy bộ eval hiện tại rồi kết luận *"ASR không cải thiện"* là **sai do thước đo lệch**, không phải do ASR kém.
+
+| Bước | Đo gì | Cần `eval/` chưa? |
+|---|---|---|
+| **1** | **Hallucination Rate** (100 segment mẫu có seed, người nghe) · **WER** (người tự gõ 10–15 phút audio — *ground truth thật duy nhất của cả dự án*) · **Timestamp drift** (30 segment, `mean \|Δt\|`) | ❌ **làm được ngay sau khi chạy L21** |
+| **2** | **Cổng "không được làm hại"**: `semantic` vs `+OCR` vs `+OCR+ASR` trên bộ eval **hiện có**. Câu hỏi là *"ASR có làm tụt không"*, không phải *"có tăng không"* | ✅ sau P0.9 |
+| **3** | Tập truy vấn ASR-aware. **Bắt buộc**: Gemini sinh · BEiT-3+BM25 tìm (tách vai, CLAUDE.md §3) · cấm chép nguyên văn · **báo cáo độ chồng lấp từ vựng** — điểm dồn vào nhóm chồng lấp cao ⇒ **rò rỉ nhãn, không phải hệ thống giỏi** | ✅ |
+| **4** | **Đối chứng âm — phép đo duy nhất không làm giả được**: chỉ giữ truy vấn mà thực thể **được nói ra** nhưng **không có trong index OCR**. `semantic-only` phải gần mức ngẫu nhiên; **độ nhảy khi bật ASR chính là giá trị của ASR** | ✅ |
+
+Bước 3 bắt diễn đạt lại — đúng chỗ BM25 yếu nhất. Nên **báo cáo tách hai nhóm chồng lấp cao/thấp**: nhóm thấp tụt mạnh chính là **bằng chứng định lượng** để quyết P0.11b, thay vì tranh luận cảm tính.
+
+Timestamp drift ở Bước 1 chính là con số điền vào **cửa sổ mở rộng bất đối xứng lệch về sau** — phát thanh viên nói *"Thủ tướng thăm nhà máy X"* khi hình còn là studio, B-roll đến sau vài giây.
+
+**Kèm mọi con số:** git SHA · `asr_model_id` + `compute_type` + ngưỡng đã dùng · `eval_set_version` + hash · **số `video_id` duy nhất** · số truy vấn · seed.
+
+### Verify
+
+```powershell
+pytest tests/test_asr.py -v
+python -c "import yaml; from pipelines.asr import AsrConfig; print(AsrConfig(**yaml.safe_load(open('configs/ingest/asr.yaml',encoding='utf-8'))))"
+```
+
+Test bám convention `tests/test_ocr.py` (không fixture, double là `_Fake*`, `async def` không marker) — **không cần GPU, không cần ES**:
+- `test_hallucination_filter_drops_segment_above_no_speech_threshold`
+- `test_hallucination_filter_drops_segment_below_avg_logprob_threshold`
+- ⭐ `test_frame_window_uses_floor_and_ceil_so_no_frame_is_dropped` — chống trượt cửa sổ TRAKE
+- `test_frame_window_clamped_to_video_frame_count`
+- `test_asr_indexes_only_kept_segments_to_elasticsearch`
+- `test_asr_thresholds_come_from_config_not_hardcoded`
+- `test_asr_summary_counts_each_drop_reason_separately`
+
+**Lệnh chạy thật — chuẩn bị sẵn, chủ dự án tự chạy** (CLAUDE.md §10):
+```powershell
+pip install -e ".[asr]"
+python scripts/run_asr.py --batches L21 --limit 1   # đọc transcript bằng mắt trước
+python scripts/run_asr.py --batches L21             # 29 video
+```
+⚠️ **Không chạy song song với ingest** khi ingest còn giữ TransNetV2 + BEiT-3.
+
+### Docs phải sửa trong cùng change (CLAUDE.md §2)
+
+`PRD.md:133` đảo non-goal · `PRD.md:682` đóng **Q3** (*có audio, KHÔNG có phụ đề sẵn*) · `architecture.md` §3.2 thêm nhánh **thứ 4** (gắn từ node `A`, **không** từ `G` — audio đến từ `.mp4`, không từ keyframe) + §6 thêm `asr.py` + §10 thêm dòng 🔧 · `references.md:739` sửa `AIC 2025` → `AIC 2026` + thêm **§5.3 faster-whisper**.
+
+⚠️ `docs/research.md` **stale 4 chỗ**, đọc phải cảnh giác: (1) OCR *đã* nối vào `ingest_video()` rồi; (2) hằng số tên `_TERMINAL_STATUSES` chứ không phải `_SKIP_STATUSES`; (3) `EsStore` **không** dùng lại được; (4) `VideoInfo` không có `duration`.
+
+### Định nghĩa "xong" của P0.11
+
+- [ ] `pytest tests/test_asr.py` xanh, coverage ≥ 80%
+- [ ] L21 (29 video) chạy xong, `asr_runs.asr_status == "done"` đủ số
+- [ ] **Hallucination Rate + WER + timestamp drift đã đo bằng người** — không phải suy đoán
+- [ ] Ngưỡng trong `asr.yaml` đã chỉnh theo số đo, **lý do chỉnh viết ra TRƯỚC khi nhìn số mới**
+- [ ] Docs đã sửa đồng bộ, `research.md` đã đánh dấu các chỗ stale
+- [ ] Báo cáo phase theo template CLAUDE.md §8
 
 ---
 

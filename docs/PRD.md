@@ -130,7 +130,7 @@ Ghi rõ để tránh trôi phạm vi:
 
 - ❌ **Không** fine-tune / train lại backbone ở giai đoạn 1 — chỉ dùng checkpoint có sẵn
 - ❌ **Không** làm multi-tenant, phân quyền, quản lý người dùng — đây là công cụ nội bộ chạy LAN
-- ❌ **Không** xử lý kênh audio/ASR ở v1 (đưa vào phương án tối ưu giai đoạn 2)
+- ~~❌ **Không** xử lý kênh audio/ASR ở v1 (đưa vào phương án tối ưu giai đoạn 2)~~ → 🔧 **đảo quyết định 2026-08-02 (chủ dự án):** ASR **vào v1**, dưới dạng **P0.11 — ngoài đường găng P0**. Lý do: (a) dữ liệu là bản tin có lời dẫn, nói ra nhiều thứ **không** hiện thành chữ trên màn hình (tên người, địa danh, số liệu) ⇒ **bổ trợ** chứ không trùng OCR; (b) là job **GPU offline, không cần API key, không tốn quota Gemini** ⇒ chạy được đúng lúc nhánh OCR đang chờ quota — hai việc chặn ở **hai tài nguyên khác nhau**. Không chặn P0.8/P0.9/P0.10. Chi tiết: `.claude/plans/p0-foundation.plan.md` §P0.11
 - ❌ **Không** tự động hoá hoàn toàn — hệ thống là *interactive*, con người vẫn là người quyết định đáp án cuối
 - ❌ **Không** tối ưu hạ tầng phân tán / Kubernetes — mục tiêu là chạy tốt trên **một máy**
 
@@ -679,7 +679,7 @@ Các quyết định đã chốt khác:
 | ~~Q1~~ | ~~Định dạng file nộp chính xác của BTC?~~ ✅ **Đã trả lời 2026-08-01** bằng đề vòng sơ tuyển AIC 2026: `<video_id>, <frame_id>[, <answer>]`, tối đa 100 đáp án/truy vấn, chấm `mean(R@k)` với k ∈ {1,5,20,50,100} (`references.md` §1.2, §F8) | — |
 | **Q9** | **Batch 2 của vòng sơ tuyển AIC 2026 gồm bao nhiêu video, phát hành khi nào?** Quyết định lại ngân sách đĩa / thời gian ingest ở §6.6 và phạm vi P4 | P4 — đề ghi "dự kiến thông báo trong thời gian tới" |
 | ~~Q2~~ | ~~Dữ liệu AIC có bao nhiêu video / giờ?~~ ✅ **Đã trả lời 2026-07-29:** 873 `video_id` duy nhất · 130,7 giờ · 123 GB · 177.321 keyframe BTC trích sẵn (§1.4) | — |
-| Q3 | Có kênh audio/phụ đề không? Nếu có thì ASR đáng đưa lên sớm | P4 — video là bản tin có lời dẫn nên **gần như chắc chắn có audio**; còn phải xác nhận chất lượng và có phụ đề sẵn hay không |
+| ~~Q3~~ | ~~Có kênh audio/phụ đề không? Nếu có thì ASR đáng đưa lên sớm~~ | ✅ **đã trả lời 2026-08-02: có audio, KHÔNG có phụ đề sẵn.** `media-info` chỉ có `author` / `title` / `publish_date` / `watch_url` / `channel_id` / `length` (`datasets/aic2026.py`) — dataset **không kèm transcript hay phụ đề nào** ⇒ phải tự chạy ASR, không có đường tắt parse file có sẵn. Kéo từ P4 về **P0.11** (ngoài đường găng), xem §2.3. ⚠️ Chất lượng ASR **[Cần đo]** — WER + hallucination rate đo bằng người trên L21 |
 | ~~Q4~~ | ~~Số chiều embedding thực tế của `beit3_base_itc` (768 hay khác)?~~ ✅ **Đã trả lời 2026-08-01: 768** — đo trực tiếp trên checkpoint `beit3_base_itc_patch16_224.pth` thật, khớp giả định trong `architecture.md` §4.1, không cần sửa. Batch=8 ảnh tốn ~1,1GB VRAM đỉnh trên RTX 3070 8GB | — |
 | Q5 | Lúc thi có mạng internet ổn định không? Ảnh hưởng tới việc QUEST và VQA có dùng được không | P3 |
 | **Q6** | **Số keyframe thật do TransNetV2 + công thức §F1 sinh ra là bao nhiêu?** Quyết định lại toàn bộ ngân sách R2, đĩa, thời gian ingest ở §6.6 | **P0.7** — đo trên pilot rồi ngoại suy |

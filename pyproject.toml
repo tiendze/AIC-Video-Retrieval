@@ -46,6 +46,10 @@ ocr = [
     "aic-video-retrieval[ingest]",
     "google-genai==2.16.0",
 ]
+asr = [
+    "aic-video-retrieval[ingest]",
+    "faster-whisper==1.2.1",
+]
 
 [build-system]
 requires = ["setuptools>=68.0"]
