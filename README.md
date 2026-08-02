@@ -17,7 +17,9 @@ Baseline: [arXiv:2512.13169 — *Integrated Semantic and Temporal Alignment for 
 **Pipeline:** TransNetV2 (shot detection) → BEiT-3 (multimodal embedding) → Gemini (OCR)
 **Lưu trữ:** Milvus (vector) · Elasticsearch + `vi_analyzer` (OCR text) · MongoDB (metadata)
 **Ứng dụng:** FastAPI + Pydantic · React + Vite + TypeScript
-**Dataset:** AIC 2025 công khai (Kaggle `aresusayhi/ai-challenge-2025` v2) — **873 video, 130,7 giờ**, tin tức tiếng Việt. Tải bằng `python download.py` vào `data/`. P0 chạy pilot `L21`–`L24` (128 video), mở rộng đủ 873 ở P4. ⚠️ Dataset **không kèm nhãn truy vấn** — bộ eval là nhãn tự sinh, xem PRD §6.1
+**Dataset:** AIC 2026 batch 1 công khai (nội dung trùng batch 1 của AIC 2025) — **873 video, 130,7 giờ**, tin tức tiếng Việt, nằm ở `data/`. Đã tải: `Videos_*/video/*.mp4` · `media-info` · `map-keyframes`. **Cố ý không tải** `Keyframes_*` / `objects` / `clip-features-32` — dự án tự trích bằng model của mình. P0 chạy pilot `L21`–`L24` (128 video), mở rộng đủ 873 ở P4. ⚠️ **Batch 2 chưa phát hành.** ⚠️ Dataset **không kèm nhãn truy vấn** — bộ eval là nhãn tự sinh, xem PRD §6.1
+
+**Đề thi:** vòng sơ tuyển AIC 2026 — 3 task (`Textual KIS` · `QA` · `TRAKE`, **không còn Video KIS**), nộp tối đa **100 đáp án xếp hạng** mỗi truy vấn, điểm = `mean(R@k)` với k ∈ {1,5,20,50,100}. Đáp án là `<video_id>, <frame_id>`. Toàn văn: `Thong tin vong So tuyen AIC2026.pdf`; tóm tắt: `docs/references.md` §1.2
 
 ## Cài đặt & chạy (P0.1)
 

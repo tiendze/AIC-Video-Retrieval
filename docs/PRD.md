@@ -1,11 +1,13 @@
 # PRD — Hệ thống Truy vấn & Hỏi đáp Video Đa phương thức
 
 > **Tên dự án:** AIC-Video-Retrieval
-> **Phiên bản:** 0.2 — đổi dataset sang **AIC 2025 công khai**
+> **Phiên bản:** 0.3 — theo **đề vòng sơ tuyển AIC 2026** (dataset AIC 2026 batch 1)
 > **Ngày:** 2026-07-29 (bản khởi tạo 0.1: 2026-07-25)
 > **Trạng thái:** Draft — chờ review
 >
-> **Thay đổi 0.1 → 0.2:** dataset thay thế YouCook2 được bỏ, dùng thẳng dữ liệu AIC 2025 công khai đã tải về `data/`. Ảnh hưởng: §1.4 · §4 · §6.1 (nguồn nhãn — **viết lại toàn bộ**) · §6.2 · §6.3 · §6.6 · §6.9 (mục mới) · §8 (R4/R5 đóng, R6/R9 đổi nghĩa, R10 mới) · §9 · §10.
+> **Thay đổi 0.1 → 0.2:** dataset thay thế YouCook2 được bỏ, dùng thẳng dữ liệu công khai đã tải về `data/`. Ảnh hưởng: §1.4 · §4 · §6.1 (nguồn nhãn — **viết lại toàn bộ**) · §6.2 · §6.3 · §6.6 · §6.9 (mục mới) · §8 (R4/R5 đóng, R6/R9 đổi nghĩa, R10 mới) · §9 · §10.
+>
+> **Thay đổi 0.2 → 0.3 (2026-08-01) — theo đề vòng sơ tuyển AIC 2026:** **bỏ Video KIS** (còn 3 task) · **bỏ luật phạt theo thời gian/số lần nộp sai**, thay bằng nộp 100 đáp án xếp hạng chấm `mean(R@k)` với **k ∈ {1,5,20,50,100}** · đáp án là **`frame_id` tuyệt đối** (cửa sổ TRAKE < 10 frame) · dataset đổi tên sang **AIC 2026 batch 1**, batch 2 chưa phát hành. Ảnh hưởng: §1.1 (**viết lại**) · §1.4 · §2.1 · §5/F8 (**Q1 đã đóng**) · §6.2 · §6.3 (**bộ K + `AIC Final Score`**) · §6.6 · §6.7 · §10 (Q1 đóng, Q9 mới).
 > **Baseline:** [arXiv:2512.13169 — *Integrated Semantic and Temporal Alignment for Interactive Video Retrieval*](https://arxiv.org/abs/2512.13169) (team AIO_Owlgorithms, HCMC AI Challenge 2025)
 
 ---
@@ -24,16 +26,25 @@
 
 ### 1.1 Bài toán
 
-Hội thi **AI Challenge TP.HCM (AIC)** yêu cầu xây dựng công cụ tìm kiếm sự kiện trong một kho video lớn. Ban tổ chức đưa ra truy vấn, thí sinh dùng công cụ tự phát triển để định vị đúng khoảnh khắc và nộp kết quả. Cuộc thi có 4 dạng nhiệm vụ:
+Hội thi **AI Challenge TP.HCM (AIC)** yêu cầu xây dựng công cụ tìm kiếm sự kiện trong một kho video lớn. Ban tổ chức đưa ra truy vấn, thí sinh dùng công cụ tự phát triển để định vị đúng khoảnh khắc và nộp kết quả.
 
-| Task | Đầu vào | Đầu ra cần tìm |
+> ✅ **Cập nhật 2026-08-01 — đề vòng sơ tuyển AIC 2026 đã công bố.** Toàn văn: `Thong tin vong So tuyen AIC2026.pdf` ở gốc repo; tóm tắt kèm công thức: [`references.md`](./references.md) §1.2. Hai thay đổi làm lệch giả định của bản PRD trước là **bỏ Video KIS** và **đổi hẳn cách chấm**.
+
+Vòng sơ tuyển có **3 dạng nhiệm vụ**:
+
+| Task | Đầu vào | Định dạng đáp án |
 |---|---|---|
-| **Textual KIS** | Mô tả sự kiện bằng ngôn ngữ tự nhiên (vòng chung kết: lộ dần từng phần) | Đúng video + đúng khoảnh khắc |
-| **Video KIS** | Một clip ngắn (≤ 20 giây) được chiếu, **không được ghi hình** | Đúng video + đúng khoảnh khắc |
-| **QA (VQA)** | Câu hỏi về nội dung hình ảnh trong kho video | Câu trả lời + bằng chứng (keyframe) |
-| **TRAKE** | Một chuỗi N sự kiện **theo thứ tự thời gian** | Đúng video + chuỗi N keyframe đúng thứ tự |
+| **Textual KIS** | Mô tả sự kiện bằng ngôn ngữ tự nhiên — vòng sơ tuyển cấp **sẵn và trọn vẹn**, không lộ dần | `<video_id>, <frame_id>` |
+| **QA (VQA)** | Mô tả sự kiện + câu hỏi về thông tin trong sự kiện đó (trả lời tiếng Việt hoặc Anh) | `<video_id>, <frame_id>, <answer>` |
+| **TRAKE** | Chuỗi N khoảnh khắc ngữ nghĩa **theo thứ tự thời gian** | `<video_id>, <frame_id₁>, …, <frame_idₙ>` |
 
-Đặc thù quyết định thiết kế: **điểm số giảm theo thời gian trả lời và theo số lần nộp sai**. Nghĩa là hệ thống không chỉ cần đúng — nó cần đúng *nhanh*, và giao diện phải cho phép người vận hành duyệt kết quả trong vài giây.
+~~**Video KIS**~~ — **không còn ở vòng sơ tuyển AIC 2026.**
+
+**Đặc thù quyết định thiết kế — đã đổi so với AIC 2025:**
+
+1. **Mỗi truy vấn nộp tối đa 100 đáp án đã xếp hạng**, điểm = `mean(R@k)` với `k ∈ {1, 5, 20, 50, 100}`. **Không còn phạt theo thời gian trả lời hay số lần nộp sai.** ⇒ mục tiêu tối ưu chuyển từ *"đúng nhanh"* sang **"đúng và xếp hạng cao"**. Latency vẫn quan trọng nhưng là yêu cầu **vận hành** (người duyệt 100 kết quả), không còn là điều kiện ăn điểm.
+2. **`R@1` chiếm 1/5 tổng điểm.** Đẩy đáp án đúng từ hạng 3 lên hạng 1 đáng giá gần bằng mọi cải thiện khác cộng lại.
+3. **Đáp án là `frame_id` — chỉ số frame tuyệt đối**, không phải giây, không phải số thứ tự keyframe. Cửa sổ chấm của TRAKE thường **< 10 frame**, nên mọi phép quy đổi `timestamp → frame` là một chỗ mất điểm im lặng. Hệ quả kiến trúc: `frame_idx` phải được ghi cùng lúc với keyframe và mang theo trong kết quả search (`architecture.md` §4.1).
 
 ### 1.2 Hai hạn chế mà baseline nhắm tới
 
@@ -62,19 +73,19 @@ Paper chỉ báo cáo xếp hạng **định tính** ở vòng chung kết: TRAK
 
 ### 1.4 Tình trạng dữ liệu hiện tại
 
-Dự án dùng **dữ liệu công khai AIC 2025** (Kaggle `aresusayhi/ai-challenge-2025` v2), đã tải xong về `data/` ngày 2026-07-28. Thống kê chi tiết và bố cục thư mục: [`references.md`](./references.md) §2.
+Dự án dùng **dữ liệu công khai AIC 2026 batch 1**, đã tải về `data/`. Đề ghi rõ đây **chính là batch 1 của AIC 2025** (nội dung không đổi) và **batch 2 sẽ bổ sung sau**. Thống kê chi tiết và bố cục thư mục: [`references.md`](./references.md) §2.
 
-| Thuộc tính | Giá trị **đo được** |
+| Thuộc tính | Giá trị **đo được** (2026-08-01) |
 |---|---|
 | Số `video_id` duy nhất | **873** (batch `L21` … `L30`) |
-| Số file `.mp4` | 961 — 88 file là **bản sao trùng id** (`Videos_L25_a1`, `Videos_L25_b`) |
+| Số file `.mp4` | **873** — bản tải hiện tại không còn thư mục trùng id như bản Kaggle cũ (961 file) |
 | Tổng thời lượng | **130,7 giờ** (470.428 s) |
 | Thời lượng trung bình | ~9,0 phút/video |
 | Nội dung | Video **tin tức tiếng Việt** (HTV — *60 Giây Official*, …) |
-| Dung lượng | 123 GB |
-| Keyframe BTC trích sẵn | 177.321 ảnh 1280×720 |
-| Feature BTC kèm theo | CLIP ViT-B/32 `(n, 512)` float16 · `map-keyframes` · `media-info` · `objects` |
+| Thành phần đã tải | `Videos_*/video/*.mp4` · `media-info` (873/873) · `map-keyframes` (873/873) |
+| Thành phần **cố ý không tải** | `Keyframes_*` · `objects` · `clip-features-32` — dự án **tự trích bằng model của mình** (quyết định chủ dự án 2026-08-01) |
 | **File nhãn truy vấn** | ❌ **không có** |
+| **Batch 2** | ⚠️ **chưa phát hành** — mọi con số trên sẽ phải đo lại khi có |
 
 **Đây là dữ liệu đúng miền thi** — cùng ngôn ngữ, cùng thể loại, cùng phân bố với dữ liệu sẽ dùng khi thi. Không còn khoảng cách miền như phương án YouCook2 trước đây. Hệ quả tốt: `vi_analyzer` và nhánh OCR **kiểm chứng được ngay từ P0**, vì video tin tức đầy chữ trên màn hình.
 
@@ -100,7 +111,7 @@ Kênh hiệu chỉnh duy nhất chống lại ba điểm lệch trên là **nộ
 |---|---|---|
 | **G1** | Tái hiện được kiến trúc baseline, chạy end-to-end trên dữ liệu thật | Hoàn tất một truy vấn Textual KIS từ UI ra kết quả |
 | **G2** | Có bộ số đo tin cậy để mọi thay đổi đều chứng minh được là cải thiện | Chạy được `eval/` một lệnh, ra bảng metrics đầy đủ |
-| **G3** | Hỗ trợ đủ 4 task thi (Textual KIS, Video KIS, QA, TRAKE) | Mỗi task có endpoint + đường xuất file nộp |
+| **G3** | Hỗ trợ đủ **3** task vòng sơ tuyển AIC 2026 (Textual KIS, QA, TRAKE) | Mỗi task có endpoint + đường xuất file nộp |
 | **G4** | Người vận hành tìm ra đáp án đúng trong ngân sách thời gian thi | `Time-To-First-Correct` (xem §6.6) |
 
 ### 2.2 Mục tiêu kỹ thuật
@@ -273,12 +284,21 @@ Trả lời câu hỏi dựa trên keyframe truy hồi được. Dùng **Gemini 
 
 Xuất file kết quả theo định dạng BTC.
 
-⚠️ **Định dạng nộp chính xác chưa công bố** — trang hướng dẫn AIC ghi *"quy tắc tính điểm sẽ được thông báo riêng"*. Vì vậy:
+✅ **Định dạng đã công bố ở đề vòng sơ tuyển AIC 2026** (`references.md` §1.2) — mục này không còn là ẩn số:
+
+| Task | Một dòng đáp án |
+|---|---|
+| Textual KIS | `<video_id>, <frame_id>` |
+| QA | `<video_id>, <frame_id>, <answer>` |
+| TRAKE | `<video_id>, <frame_id₁>, …, <frame_idₙ>` |
 
 **Acceptance criteria:**
 - [ ] Tách rời **dữ liệu kết quả** và **bộ định dạng (formatter)** — đổi format chỉ sửa formatter
 - [ ] Có validator chạy trước khi ghi file
-- [ ] Hỗ trợ cả 4 dạng task
+- [ ] Hỗ trợ cả **3** dạng task của vòng sơ tuyển (Video KIS đã bỏ)
+- [ ] **Tối đa 100 dòng mỗi truy vấn**, và **thứ tự dòng chính là thứ hạng** — validator phải chặn khi vượt 100
+- [ ] `frame_id` lấy thẳng từ `frame_idx` đã lưu lúc ingest, **không** tính lại từ `timestamp × fps`
+- [ ] TRAKE: đúng N cột frame theo đúng thứ tự sự kiện; sai `video_id` là mất trắng cả truy vấn nên validator phải cảnh báo khi N frame **không cùng** một `video_id`
 
 ### F9 — Giao diện tương tác *(P1, hoàn thiện ở P3)*
 
@@ -342,7 +362,7 @@ Chữ ký này **giữ nguyên** so với bản 0.1, nên `DatasetAdapter` Proto
 |---|---|
 | **Textual KIS** | `caption` là truy vấn; shot nguồn là đáp án đúng |
 | **TRAKE** | Lấy N shot **liên tiếp** trong cùng video (N ∈ {3,5,7}); caption của chúng là N sự kiện; thứ tự thời gian là nhãn thứ tự — miễn phí và **không thể sai**, vì thứ tự shot là dữ kiện khách quan chứ không phải phán đoán của LLM |
-| **Video KIS** | Cắt clip ≤ 20 s quanh shot làm truy vấn; đáp án là chính shot đó |
+| ~~**Video KIS**~~ | ❌ **Bỏ** — không còn ở vòng sơ tuyển AIC 2026 (§1.1) |
 | **QA / VQA** | Gemini sinh 1–2 câu hỏi **chỉ trả lời được bằng thông tin thị giác** trong shot, kèm đáp án tham chiếu (§6.5) |
 
 **Điểm mạnh cần nhận ra:** nhãn TRAKE là phần **đáng tin nhất** trong cả bộ, vì thứ tự thời gian của shot không do LLM quyết định. Ngược lại nhãn Textual KIS và VQA phụ thuộc hoàn toàn vào chất lượng caption của Gemini.
@@ -378,7 +398,12 @@ Ground truth là một **khoảng thời gian**, còn hệ thống trả về m�
 
 **Vì sao chọn cách này thay vì tIoU(shot, segment) ≥ 0.5:**
 - Sản phẩm trả về *keyframe*, không trả về *đoạn*. Đo trực tiếp thứ hệ thống thực sự sinh ra.
-- Khớp cách chấm của cuộc thi: BTC kiểm tra frame nộp lên có nằm trong đoạn đúng hay không.
+- Khớp cách chấm của cuộc thi: BTC kiểm tra frame nộp lên có nằm trong đoạn đúng hay không (đã xác nhận bằng đề AIC 2026 — `I(idᵢ ∈ [s, e])`, `references.md` §1.2).
+
+✅ **Đề AIC 2026 xác nhận quy tắc này đúng, nhưng theo `frame_id` chứ không theo giây.** BTC so `idᵢ ∈ [s, e]` trên **chỉ số frame**. Bộ nhãn tự sinh của dự án lưu `start_sec`/`end_sec`, nên `eval/` quy đổi bằng `fps` của chính video. Hai lưu ý:
+
+- **Quy đổi chỉ được làm ở một chỗ** (`eval/` và bộ xuất bài dùng chung một hàm), nếu không hai bên sẽ lệch nhau một frame mà không ai phát hiện.
+- **Cửa sổ chấm của TRAKE thường < 10 frame** — ở 25–30 fps là **dưới 0,4 giây**. Sai số làm tròn ở mức này không còn là chi tiết kỹ thuật, nó là chênh lệch giữa 1 điểm và 0 điểm.
 
 ⚠️ **Một cảnh báo riêng cho bộ nhãn tự sinh.** Ở YouCook2, `segment` là *procedure segment* do người annotate — độc lập với shot của TransNetV2. Ở đây `g` **chính là** một shot do TransNetV2 cắt ra (§6.1.1). Nghĩa là ranh giới đáp án và ranh giới hệ thống sinh ra **đến từ cùng một thuật toán**. Hệ quả phải nhớ:
 
@@ -395,18 +420,23 @@ Ground truth là một **khoảng thời gian**, còn hệ thống trả về m�
 
 Chênh lệch giữa hai mức chỉ ra bệnh cụ thể: video-level cao mà segment-level thấp nghĩa là *tìm đúng video nhưng sai khoảnh khắc* — vấn đề nằm ở lấy mẫu keyframe hoặc độ mịn thời gian, không phải ở embedding.
 
-### 6.3 Nhóm A — Metrics truy hồi (Textual KIS / Video KIS)
+### 6.3 Nhóm A — Metrics truy hồi (Textual KIS)
 
 **Bộ đánh giá:** mỗi `caption` trong `aic_eval_v1.json` (§6.1) là một truy vấn; ground truth là shot tương ứng.
 
+> ✅ **Bộ K đổi theo đề AIC 2026: `K ∈ {1, 5, 20, 50, 100}`** — đúng bộ K mà BTC dùng để chấm (`references.md` §1.2). Bản trước dùng `{1, 5, 10, 20, 100}`; `K = 10` bị bỏ và `K = 50` được thêm vào. Đo lệch bộ K nghĩa là đo bằng cái thước khác với thước chấm điểm.
+>
+> **Thêm một metric mới, `AIC Final Score`** — mô phỏng đúng công thức của BTC: `mean(R@k)` với `k ∈ {1,5,20,50,100}`, trong đó `R@k = max(R-Score của k đáp án đầu)`. Trên bộ nhãn tự sinh, `R-Score` là nhị phân (hit / không hit) nên `R@k` rút gọn thành `Recall@k` của **một** truy vấn, và `AIC Final Score` = trung bình `Recall@k` trên 5 mốc. Đây là con số **duy nhất** so sánh trực tiếp được với bảng điểm cuộc thi.
+
 | Metric | Công thức / định nghĩa | Vì sao cần |
 |---|---|---|
-| **Recall@K**, K ∈ {1, 5, 10, 20, 100} | Tỉ lệ truy vấn có ít nhất một hit trong top-K | Metric chính. K=1 đo độ chính xác đỉnh; K=100 đo khả năng "có trong tầm với" của người vận hành khi cuộn lưới |
+| **AIC Final Score** ⭐ | `mean(Recall@k)`, k ∈ {1,5,20,50,100} | Bản mô phỏng công thức chấm chính thức — metric để so giữa các cấu hình |
+| **Recall@K**, K ∈ {1, 5, 20, 50, 100} | Tỉ lệ truy vấn có ít nhất một hit trong top-K | Metric chính. K=1 đo độ chính xác đỉnh **và chiếm 1/5 điểm thi**; K=100 là trần số đáp án được nộp |
 | **MRR** | Trung bình của `1 / rank_hit_đầu_tiên` trên toàn bộ truy vấn | Nhạy với vị trí kết quả đúng — sát với trải nghiệm thi thực tế |
 | **mAP** | Trung bình Average Precision | Xét mọi kết quả đúng, không chỉ cái đầu tiên |
 | **nDCG@10** | Discounted cumulative gain chuẩn hoá | Có tính đến thứ hạng của nhiều kết quả đúng |
 | **Median Rank** | Trung vị thứ hạng của hit đầu tiên | Không bị kéo lệch bởi outlier như Mean Rank |
-| **Recall@K theo nhóm** | Recall@10 tách theo `author` (kênh) và `batch` | Phát hiện hệ thống yếu ở loại nội dung nào (§6.1.4) |
+| **Recall@K theo nhóm** | Recall@20 tách theo `author` (kênh) và `batch` | Phát hiện hệ thống yếu ở loại nội dung nào (§6.1.4) |
 
 **Baselines bắt buộc so sánh:**
 
@@ -478,7 +508,9 @@ Báo cáo `Sequence Exact-Match` và `Kendall's tau` cho từng giá trị, tác
 | QUEST (có gọi LLM) | ⚠️ ≤ 3 s | ⚠️ ≤ 6 s |
 | VQA answering | ⚠️ ≤ 5 s | ⚠️ ≤ 10 s |
 
-**Metrics mô phỏng chế độ thi** — đây là thứ gần nhất với điểm số thật:
+⚠️ **Đọc lại các mốc latency trên theo đề AIC 2026.** Điểm không còn giảm theo thời gian trả lời, nên đây **không còn là ngưỡng ăn điểm** mà là ngưỡng để người vận hành duyệt được 100 kết quả trong một phiên. Vượt mốc là khó chịu, không phải mất điểm — đừng đánh đổi chất lượng xếp hạng lấy latency.
+
+**Metrics mô phỏng chế độ thi** — ⚠️ **giá trị đã giảm mạnh so với bản trước.** `TTFC` / `STC` / `Success Rate @ 300s` sinh ra để mô phỏng luật phạt theo thời gian và số lần nộp sai của AIC 2025; luật đó **không còn**. Giữ lại vì vẫn đo được trải nghiệm vận hành thật, nhưng **không** dùng để đánh giá chất lượng hệ thống — `AIC Final Score` (§6.3) mới là thứ thay thế:
 
 | Metric | Định nghĩa | Cách đo |
 |---|---|---|
@@ -493,7 +525,7 @@ Báo cáo `Sequence Exact-Match` và `Kendall's tau` cho từng giá trị, tác
 
 | Metric | Mục tiêu |
 |---|---|
-| Ingest throughput | ⚠️ ≥ 100 keyframe/s ở bước embedding (BEiT-3 base, fp16, RTX 2080Ti) |
+| Ingest throughput | ⚠️ ≥ 100 keyframe/s ở bước embedding (BEiT-3 base, fp16, RTX 3070) — [Cần đo lại] trên GPU 8GB VRAM, mốc cũ đo giả định trên 2080Ti |
 | Thời gian ingest pilot `L21`–`L24` (128 video, 27,9 giờ) | ⚠️ ≤ 6 giờ |
 | Thời gian ingest toàn bộ (873 video, 130,7 giờ) | ⚠️ ≤ 24 giờ |
 | Dung lượng vector index | ⚠️ ~0,55 GB (giả định 180k keyframe × 768 chiều × 4 byte) |
@@ -513,9 +545,10 @@ Báo cáo `Sequence Exact-Match` và `Kendall's tau` cho từng giá trị, tác
 
 | Metric | Sàn (phải đạt) | Mục tiêu v1 | Kỳ vọng |
 |---|---|---|---|
+| **AIC Final Score** (segment-level) ⭐ | ⚠️ [Cần đo] | ⚠️ [Cần đo] | ⚠️ [Cần đo] |
 | Recall@1 (segment-level) | ≥ 0,05 | **≥ 0,12** | ≥ 0,20 |
-| Recall@10 (segment-level) | ≥ 0,20 | **≥ 0,35** | ≥ 0,50 |
-| Recall@10 (video-level) | ≥ 0,40 | **≥ 0,60** | ≥ 0,75 |
+| Recall@20 (segment-level) | ⚠️ [Cần đo] | ⚠️ [Cần đo] | ⚠️ [Cần đo] |
+| Recall@20 (video-level) | ⚠️ [Cần đo] | ⚠️ [Cần đo] | ⚠️ [Cần đo] |
 | MRR | ≥ 0,10 | **≥ 0,20** | ≥ 0,30 |
 | TRAKE Sequence Exact-Match (N=3) | ≥ 0,10 | **≥ 0,25** | ≥ 0,40 |
 | TRAKE Kendall's tau | ≥ 0,50 | **≥ 0,75** | ≥ 0,90 |
@@ -557,11 +590,13 @@ Khi hệ thống nộp bài mở:
 - Lưới kết quả phải render mượt với ≥ 1.000 thumbnail (virtualized rendering)
 - Truy vấn Milvus phải lọc metadata **trong** engine, không lọc sau khi lấy về
 
-### 7.2 Tài nguyên (ràng buộc cứng: RTX 2080Ti 11GB VRAM, một máy)
+### 7.2 Tài nguyên (ràng buộc cứng: RTX 3070 8GB VRAM, một máy)
+
+> ✅ **Cập nhật 2026-08-01 — đổi máy chạy.** Dự án chuyển từ server (RTX 2080Ti 11GB) sang laptop cá nhân (RTX 3070 8GB). **8GB < 11GB** — mọi ngân sách batch size/VRAM trong mục này là **cận trên cũ, không còn đảm bảo đúng**; cần đo lại ở P0.5/P0.7 và thắt lại nếu OOM.
 
 | Tài nguyên | Yêu cầu |
 |---|---|
-| VRAM | ≤ 11 GB → vẫn dùng `beit3_base_itc` thay vì `large` (bám baseline, không phải giới hạn VRAM); inference fp16; batch size cấu hình được |
+| VRAM | ≤ 8 GB → vẫn dùng `beit3_base_itc` thay vì `large` (bám baseline **và** giờ cũng là giới hạn VRAM thật — `base` an toàn hơn nhiều trên 8GB); inference fp16; batch size cấu hình được, ⚠️ [Cần đo lại] giá trị an toàn trên GPU mới |
 | RAM hệ thống | Tối thiểu 16 GB, **khuyến nghị 32 GB** — ba store chạy cùng máy là sức ép lên RAM chứ không phải VRAM |
 | JVM heap của Elasticsearch | Giới hạn cứng (≤ 2 GB ở môi trường dev) |
 | Đĩa | Dữ liệu gốc đã chiếm **123 GB** (đo thật). Cộng keyframe tự trích + thumbnail + index ⇒ ⚠️ dự trù **≥ 160 GB** |
@@ -633,7 +668,7 @@ Các quyết định đã chốt khác:
 | Backend | FastAPI + Pydantic |
 | Frontend | React + Vite + TypeScript (thiết kế chốt sau) |
 | VQA answering | Gemini API làm chính |
-| Compute | Một GPU local RTX 2080Ti 11 GB |
+| Compute | Một GPU local **RTX 3070 8 GB** (đổi từ RTX 2080Ti 11GB khi chuyển máy, 2026-08-01) |
 
 ---
 
@@ -641,10 +676,11 @@ Các quyết định đã chốt khác:
 
 | # | Câu hỏi | Cần trả lời trước |
 |---|---|---|
-| Q1 | Định dạng file nộp chính xác của BTC? | P3 |
+| ~~Q1~~ | ~~Định dạng file nộp chính xác của BTC?~~ ✅ **Đã trả lời 2026-08-01** bằng đề vòng sơ tuyển AIC 2026: `<video_id>, <frame_id>[, <answer>]`, tối đa 100 đáp án/truy vấn, chấm `mean(R@k)` với k ∈ {1,5,20,50,100} (`references.md` §1.2, §F8) | — |
+| **Q9** | **Batch 2 của vòng sơ tuyển AIC 2026 gồm bao nhiêu video, phát hành khi nào?** Quyết định lại ngân sách đĩa / thời gian ingest ở §6.6 và phạm vi P4 | P4 — đề ghi "dự kiến thông báo trong thời gian tới" |
 | ~~Q2~~ | ~~Dữ liệu AIC có bao nhiêu video / giờ?~~ ✅ **Đã trả lời 2026-07-29:** 873 `video_id` duy nhất · 130,7 giờ · 123 GB · 177.321 keyframe BTC trích sẵn (§1.4) | — |
 | Q3 | Có kênh audio/phụ đề không? Nếu có thì ASR đáng đưa lên sớm | P4 — video là bản tin có lời dẫn nên **gần như chắc chắn có audio**; còn phải xác nhận chất lượng và có phụ đề sẵn hay không |
-| Q4 | Số chiều embedding thực tế của `beit3_base_itc` (768 hay khác)? | P0 |
+| ~~Q4~~ | ~~Số chiều embedding thực tế của `beit3_base_itc` (768 hay khác)?~~ ✅ **Đã trả lời 2026-08-01: 768** — đo trực tiếp trên checkpoint `beit3_base_itc_patch16_224.pth` thật, khớp giả định trong `architecture.md` §4.1, không cần sửa. Batch=8 ảnh tốn ~1,1GB VRAM đỉnh trên RTX 3070 8GB | — |
 | Q5 | Lúc thi có mạng internet ổn định không? Ảnh hưởng tới việc QUEST và VQA có dùng được không | P3 |
 | **Q6** | **Số keyframe thật do TransNetV2 + công thức §F1 sinh ra là bao nhiêu?** Quyết định lại toàn bộ ngân sách R2, đĩa, thời gian ingest ở §6.6 | **P0.7** — đo trên pilot rồi ngoại suy |
 | **Q7** | **Hệ thống nộp bài của BTC mở khi nào, và cho nộp thử bao nhiêu lần?** Quyết định §6.9 có khả thi không | P3 |

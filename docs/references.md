@@ -37,19 +37,52 @@ Thanh-Danh Luu, Le-Vu Nguyen Dinh, Duc-Thien Tran, Duy-Bao Bui, Nam-Tien Le, Tin
 - Trang chính thức: https://aichallenge.hochiminhcity.gov.vn/en/home
 - Hướng dẫn: https://aichallenge.hochiminhcity.gov.vn/en/huong-dan
 
-**Bốn dạng nhiệm vụ:** Textual KIS, Video KIS (clip ≤ 20 giây, không được ghi hình), QA, TRAKE.
+> ✅ **Cập nhật 2026-08-01 — đề vòng sơ tuyển AIC 2026 đã công bố** (`Thong tin vong So tuyen AIC2026.pdf` ở gốc repo). Mục này viết lại theo đề chính thức; phần cũ (4 task, phạt theo thời gian) là của AIC 2025 và **không còn áp dụng**.
 
-**Cách chấm:** điểm tối đa mỗi truy vấn bằng nhau; điểm giảm theo thời gian trả lời và số lần nộp sai. Trang hướng dẫn ghi *"quy tắc tính điểm sẽ được thông báo riêng"* — **định dạng file nộp chính xác chưa công bố**.
+**Ba dạng nhiệm vụ ở vòng sơ tuyển:**
+
+| Task | Đầu vào | Định dạng đáp án `rᵢ` |
+|---|---|---|
+| **Textual KIS** | Mô tả sự kiện bằng ngôn ngữ tự nhiên — vòng sơ tuyển cung cấp **sẵn và trọn vẹn**, không lộ dần | `<video_id>, <frame_id>` |
+| **Q&A (VQA)** | Mô tả sự kiện + một câu hỏi về thông tin trong sự kiện đó. Trả lời được bằng **tiếng Việt hoặc tiếng Anh** | `<video_id>, <frame_id>, <answer>` |
+| **TRAKE** | Chuỗi N khoảnh khắc ngữ nghĩa có cấu trúc, theo thứ tự thời gian | `<video_id>, <frame_id₁>, …, <frame_idₙ>` |
+
+**Video KIS đã bị bỏ** khỏi vòng sơ tuyển AIC 2026.
+
+⚠️ **`frame_id` là chỉ số frame tuyệt đối trong video**, không phải giây và không phải số thứ tự keyframe. Đề nói rõ "semantic keyframe" (khoảnh khắc mang ý nghĩa nội dung) **khác** "I-Frame" (khung hình kỹ thuật của thuật toán nén).
+
+### Cách chấm — đây là thay đổi lớn nhất so với AIC 2025
+
+Mỗi truy vấn được nộp **tối đa 100 đáp án đã xếp hạng**. Mỗi đáp án nhận một **R-Score ∈ [0, 1]**:
+
+- **Textual KIS:** `R = I(vᵢ = GTᵥ ∧ idᵢ ∈ [s, e])` — đúng video **và** frame nằm trong đoạn đáp án.
+- **Q&A:** như trên, cộng thêm điều kiện `answer` khớp **về mặt ngữ nghĩa**.
+- **TRAKE:** sai `video_id` ⇒ **0 điểm ngay lập tức**. Đúng video thì `R = (1/N) · Σⱼ I(idᵢ,ⱼ ∈ [sⱼ, eⱼ])` — tỉ lệ khoảnh khắc khớp. ⚠️ Mỗi đoạn `[sⱼ, eⱼ]` **thường dưới 10 frame**.
+
+**Điểm cuối cùng của một truy vấn:**
+
+```
+R@k        = max(R-Score của k đáp án đầu tiên),   k ∈ {1, 5, 20, 50, 100}
+FinalScore = (R@1 + R@5 + R@20 + R@50 + R@100) / 5
+```
+
+Ví dụ trong đề: đáp án #1 có R = 0,5; đáp án #3 có R = 0,8 (cao nhất) ⇒ `(0,5 + 0,8 + 0,8 + 0,8 + 0,8) / 5 = 0,74`.
+
+**Ba hệ quả bắt buộc nhớ khi thiết kế:**
+
+1. **Không còn phạt theo thời gian trả lời hay số lần nộp sai.** Latency không còn là yêu cầu *chức năng*; nó chỉ còn là yêu cầu vận hành (người ngồi duyệt 100 kết quả).
+2. **`R@1` chiếm 1/5 tổng điểm** trong khi `R@5`…`R@100` thường bằng nhau. Nghĩa là **đẩy đáp án đúng lên hạng 1** đáng giá gần bằng toàn bộ phần còn lại — đây chính là thứ `MRR` và `Recall@1` đo.
+3. **Bộ K của `eval/` phải là `{1, 5, 20, 50, 100}`**, đúng bộ K mà BTC chấm. Đo `Recall@10` mà không đo `Recall@20`/`@50` là đo lệch thước.
 
 ---
 
-## 2. Dataset — AIC 2025 (dữ liệu công khai)
+## 2. Dataset — AIC 2026 batch 1 (dữ liệu công khai)
 
-> Số liệu dưới đây **đo trực tiếp trên đĩa ngày 2026-07-29**, không phải ước lượng.
+> ✅ **Cập nhật 2026-08-01.** Đề vòng sơ tuyển ghi rõ: dữ liệu đợt 1 của AIC 2026 **chính là batch 1 của AIC 2025** — nội dung không đổi, chỉ đổi tên cuộc thi. **Batch 2 sẽ được bổ sung sau**, nên mọi con số dưới đây là của batch 1 và sẽ phải đo lại khi batch 2 về.
+>
+> Số liệu **đo trực tiếp trên đĩa ngày 2026-08-01**, không phải ước lượng.
 
-- Nguồn: Kaggle `aresusayhi/ai-challenge-2025`, version **2** — tải bằng `download.py` (`kagglehub`)
-- Gốc dữ liệu trên máy: `data/datasets/aresusayhi/ai-challenge-2025/versions/2/`
-- Dung lượng: **123 GB**
+- Gốc dữ liệu trên máy: **`data/`** (bố cục phẳng — xem §2.2)
 - Nội dung: video **tin tức tiếng Việt** (HTV — *60 Giây Official*, …), có tiếng nói và **chữ trên màn hình**
 
 ### 2.1 Thống kê
@@ -57,27 +90,37 @@ Thanh-Danh Luu, Le-Vu Nguyen Dinh, Duc-Thien Tran, Duy-Bao Bui, Nam-Tien Le, Tin
 | Thuộc tính | Giá trị đo được |
 |---|---|
 | Số `video_id` duy nhất | **873** (batch `L21` … `L30`) |
-| Số file `.mp4` | 961 — chênh 88 file vì `Videos_L25_a1` và `Videos_L25_b` là **bản sao trùng id** của `Videos_L25_a` |
+| Số file `.mp4` | **873** — bản tải hiện tại **không còn** thư mục trùng id (`Videos_L25_a1` / `Videos_L25_b` của bản Kaggle cũ đã không còn) |
 | Tổng thời lượng | **470.428 giây ≈ 130,7 giờ** (tổng trường `length` của `media-info`) |
 | Thời lượng trung bình | ~9,0 phút/video |
-| Keyframe **BTC trích sẵn** | **177.321** ảnh JPG **1280×720** (~203 ảnh/video, ~1 ảnh mỗi 2,65 giây) |
+| Keyframe **BTC trích sẵn** | 177.321 ảnh JPG 1280×720 — ⚠️ **chưa tải về**, xem §2.2 |
 
-**Bẫy khi đếm video:** đếm file `.mp4` sẽ ra 961 và tính trùng 88 video. Luôn khử trùng theo `video_id` — `DatasetAdapter` phải đảm bảo điều này, và mọi báo cáo metric lấy mẫu số từ số `video_id` duy nhất.
+**Bẫy khi đếm video vẫn giữ nguyên trong code.** Bản tải hiện tại 1 file = 1 id, nhưng bản Kaggle trước đó có 961 file / 873 id. Adapter **vẫn khử trùng theo `video_id`** — bỏ bước này thì một lần tải lại khác layout là mọi mẫu số metric bị thổi phồng mà không có gì báo động.
 
 ### 2.2 Bố cục thư mục
 
+**Đã tải về (`data/`):**
+
 ```
-versions/2/
-├── Videos/Videos/Videos_<batch>/video/<video_id>.mp4    # 961 file, 873 id duy nhất
-├── Keyframes_<batch>/keyframes/<video_id>/NNN.jpg       # 177.321 ảnh 1280×720
-└── features/
-    ├── map-keyframes/<video_id>.csv        # n,pts_time,fps,frame_idx
-    ├── clip-features-32/<video_id>.npy     # (n_keyframes, 512) float16 — CLIP ViT-B/32
-    ├── media-info/<video_id>.json          # metadata YouTube
-    └── objects/<video_id>/NNN.json         # object detection từng keyframe
+data/
+├── Videos_<batch>/video/<video_id>.mp4              # 873 file .mp4
+├── media-info-aic25-b1/media-info/<video_id>.json   # 873 file metadata YouTube
+└── map-keyframes-aic25-b1/map-keyframes/<video_id>.csv   # 873 file, n,pts_time,fps,frame_idx
 ```
 
-`<batch>` gồm: `L21` `L22` `L23` `L24` `L25` `L26_a`…`L26_e` `L27` `L28` `L29` `L30`. Tên thư mục **không nhất quán** — thư mục video dùng tiền tố `Videos_` trừ `Video_L30_a` (số ít), thư mục keyframe dùng `Keyframes_`. Adapter phải **glob** chứ không dựng đường dẫn bằng chuỗi định dạng.
+**Chưa tải — và có chủ đích (quyết định chủ dự án 2026-08-01):**
+
+| Thành phần BTC | Vì sao không tải |
+|---|---|
+| `Keyframes_<batch>/` | Dự án **tự trích keyframe bằng TransNetV2** (PRD §F1). Keyframe BTC chỉ là đối chứng |
+| `objects/` | Object detection **tự chạy bằng model của mình** |
+| `clip-features-32/` | Vector chính do encoder của dự án sinh; feature BTC chỉ dùng đối chứng |
+
+⇒ **`map-keyframes` là nguồn đối chứng độc lập duy nhất còn lại** cho chất lượng cắt shot (R10, PRD §6.2). Đừng bỏ nó.
+
+`<batch>` gồm: `L21` `L22` `L23` `L24` `L25` `L26_a`…`L26_e` `L27` `L28` `L29` `L30`. Tên thư mục **không nhất quán** giữa các bản phát hành (bản trước có `Video_L30_a` số ít và lồng thêm một tầng `Videos/Videos/`). Adapter phải **glob**, không dựng đường dẫn bằng chuỗi định dạng — `AIC2026Adapter` glob `Video*/video/*.mp4` ở mọi độ sâu chính vì lý do này.
+
+⚠️ **Đề AIC 2026 ghi rõ: "một số video có thể không có file metadata tương ứng."** Bản tải hiện tại đủ 873/873, nhưng adapter vẫn phải chịu được thiếu — khi thiếu, `duration_sec` suy từ dòng cuối `map-keyframes` (`frame_idx / fps`, là **cận dưới**) và `author` để `None`. Thiếu **cả hai** nguồn thì raise, không đoán.
 
 ### 2.3 Bốn nhánh `features/`
 
@@ -182,6 +225,13 @@ class TransNetV2(nn.Module):
 
 > Không cần train lại. README ghi rõ: *"You do not need to train the network, use code and instructions in inference folder to detect shots in your videos."*
 
+**✅ Cập nhật 2026-08-01 — checkpoint đã dựng xong (P0.7).** Không có gói pip lẫn checkpoint PyTorch chính chủ. Đã xác nhận: trọng số TensorFlow gốc được commit thẳng qua Git LFS trong `inference/transnetv2-weights/`; convert sang PyTorch bằng chính `convert_weights.py` của tác giả (`scripts/setup_transnetv2.sh`, chạy trong venv tạm với TensorFlow 2.17 — tương thích ngược tốt với SavedModel lưu bằng TF 2.1). Kiến trúc model vendor thẳng vào `pipelines/vendor/transnetv2_upstream/` (MIT license), không import qua pip.
+
+- Checkpoint: `models/transnetv2/transnetv2-pytorch-weights.pth` (~30,5 MB)
+- SHA256 (tự sinh lúc convert, không phải checksum công bố sẵn — dùng để phát hiện lệch khi chạy lại script):
+  `eed5336d5d6a013c67f5863505a26e7e835053e64a9ce413d6b089ccba07bb53`
+- Verify: `TRANSNETV2_CHECKPOINT_PATH=models/transnetv2/transnetv2-pytorch-weights.pth pytest -m model tests/test_shot_detect_model.py -v` → pass trên video pilot thật `L21_V001.mp4`.
+
 ### 3.2 BEiT-3 — encoder đa phương thức
 
 📄 Paper dùng làm encoder chính, đưa ảnh và chữ về chung không gian vector.
@@ -202,7 +252,7 @@ class TransNetV2(nn.Module):
 
 **Chọn biến thể nào:** repo phân biệt rõ hai nhóm — `beit3_base` / `beit3_large` (deep fusion, cho các task vision-language cần suy luận chéo) và **`beit3_base_itc` / `beit3_large_itc`** (image-text contrastive). Với **image-text retrieval, dùng bản `_itc`** — repo ghi rõ nhóm này cho kết quả tốt hơn ở task retrieval.
 
-**Với RTX 2080Ti 11GB: vẫn chọn `beit3_base_itc`**, không phải `large` (bám baseline, không phải giới hạn VRAM).
+**Với RTX 3070 8GB: vẫn chọn `beit3_base_itc`**, không phải `large` — giờ vừa bám baseline vừa là giới hạn VRAM thật (đổi từ RTX 2080Ti 11GB khi chuyển máy, 2026-08-01).
 
 **Phương án rút lui:** nếu quá 1 ngày chưa dựng được, chuyển sang SigLIP hoặc open_clip qua `MultimodalEncoder` Protocol (§5.1 của [`architecture.md`](./architecture.md)) và ghi nhận đây là sai lệch so với baseline.
 
@@ -642,7 +692,7 @@ for output in response.output:
 
 **Cài đặt:** cài bản khớp CUDA của máy, xem https://pytorch.org/get-started/locally/
 
-**Điểm cần lưu ý cho RTX 2080Ti 11GB:** dùng `torch.no_grad()` và autocast fp16 cho toàn bộ inference; batch size cấu hình được; giải phóng cache giữa các giai đoạn pipeline.
+**Điểm cần lưu ý cho RTX 3070 8GB:** dùng `torch.no_grad()` và autocast fp16 cho toàn bộ inference; batch size cấu hình được; giải phóng cache giữa các giai đoạn pipeline.
 
 ### 6.4 HuggingFace Transformers
 

@@ -1,0 +1,123 @@
+# P2 — Hai đóng góp của paper: QUEST & DANTE
+
+> **Quay lại:** [`roadmap.plan.md`](./roadmap.plan.md) · **Trước:** [`p1-search.plan.md`](./p1-search.plan.md) · **Tiếp theo:** [`p3-vqa-submission.plan.md`](./p3-vqa-submission.plan.md)
+> **Trạng thái:** ⬜ chưa bắt đầu · **Điều kiện vào:** P1 đã đạt mục tiêu Recall@10
+
+**Exit criteria (PRD §4):** TRAKE `Sequence Exact-Match` đạt mục tiêu §6.7; **có bảng ablation `λ`**.
+
+Đây là phase tái hiện hai đóng góp chính của paper baseline. **Giá trị riêng của dự án nằm ở P2.4** — paper đưa ra hai giá trị `λ` nhưng không có bảng ablation nào, nên không ai biết hình phạt thời gian thực sự đóng góp bao nhiêu.
+
+**Điều kiện tiên quyết từ P0:** `global_index` liên tục + `s_v` / `e_v` trong MongoDB. Thiếu là DANTE không chạy được.
+
+---
+
+## P2.1 — `dante_service.py`
+
+**Làm gì:** quy hoạch động tìm chuỗi N sự kiện đúng thứ tự trong một video.
+
+**Công thức nguyên văn từ paper** (PRD §F6 · architecture.md §3.5):
+
+```
+(1)  S[i,t]      = cosine_similarity(u_i, E[t])
+(2)  DP[i,t]     = S[i,t] + max_{τ ∈ [s_v, t−1]} ( DP[i−1,τ] − λ(t − τ) )
+(3)  running_max = max( running_max, DP[i−1,t−1] + λ(t−1) )
+(4)  DP[i,t]     = S[i,t] + running_max − λt
+(5)  DANTE[v]    = max_{t ∈ [s_v, e_v]} DP[N,t]
+```
+
+Yêu cầu triển khai:
+- Dùng bản **running max** — Eq (3)(4), đưa `O(N·T²)` → **`O(NT)`**. Mẹo: tách `λ(t−τ)` thành `λt − λτ`, đưa `λτ` vào trong max và `λt` ra ngoài.
+- **Ràng buộc thứ tự `τ < t` là bất biến** — chuỗi trả về **không bao giờ** đảo thứ tự thời gian.
+- **Có backtracking** để trả về đúng N keyframe, không chỉ điểm số.
+- `λ` đọc từ `configs/`, **không hard-code**.
+- DP chạy trên khoảng `[s_v, e_v]` của từng video, lấy từ MongoDB.
+
+**Verify (TDD — viết RED trước):**
+- `test_dante_never_returns_out_of_order_sequence` — dựng ma trận similarity cố tình dụ thuật toán chọn thứ tự đảo; kết quả vẫn phải tăng dần theo `global_index`
+- `test_dante_returns_exactly_n_keyframes` — backtracking đủ N
+- `test_dante_runtime_is_linear_in_t` — nhân đôi T ⇒ thời gian tăng ~2×, **không** ~4×. Đây là kiểm chứng thực nghiệm tuyên bố `O(NT)` mà paper không chứng minh bằng số
+- `test_lambda_zero_reduces_to_pure_order_constraint`
+
+---
+
+## P2.2 — `POST /api/trake` + bộ eval TRAKE
+
+**Làm gì:** đưa DANTE ra API và dựng ground truth.
+
+- Endpoint: body `events[]`, `lambda_penalty`, `top_k`. Trả top-k video, mỗi video kèm đúng N keyframe **đúng thứ tự thời gian** (US-4).
+- **Bộ eval:** mỗi video val có ≥ 3 segment → lấy **N segment liên tiếp** làm chuỗi truy vấn, N ∈ {3, 5, 7}; caption của chúng là N sự kiện đầu vào. Nguồn nhãn: `order_index` của `GroundTruthSegment` (từ P0.3).
+- Cố định seed khi lấy mẫu bộ eval.
+
+**Verify:** gọi endpoint với một chuỗi thật từ val → trả về đúng cấu trúc, thứ tự không đảo.
+
+---
+
+## P2.3 — `eval/metrics/trake.py`
+
+**Làm gì:** đo chất lượng TRAKE (PRD §6.4). Chạy qua **cùng một entry point** `eval/run.py`.
+
+| Metric | Vì sao cần |
+|---|---|
+| **Sequence Exact-Match** ⭐ | Cả N keyframe đều hit **và** đúng thứ tự — đúng điều kiện chấm điểm của TRAKE |
+| Per-event Recall@K | Chỉ ra sự kiện thứ mấy hay hỏng (thường là đầu/cuối chuỗi) |
+| Video-level Recall@K | Tách lỗi "chọn sai video" khỏi lỗi "chọn sai frame trong video đúng" |
+| **Kendall's tau** ⭐ | Đo riêng chất lượng *sắp thứ tự* — đây chính là thứ `λ` điều khiển |
+| Mean Temporal Offset | Sai bao xa khi sai (giây) — lệch 2 giây khác hẳn lệch 2 phút |
+| Thời gian chạy theo T | Kiểm chứng `O(NT)` |
+
+**Verify:** `python -m eval.run --config configs/eval/trake_val.yaml` ra bảng đầy đủ, kèm git SHA / checkpoint / mẫu số / seed.
+
+---
+
+## P2.4 — ⭐ Ablation `λ` — phần paper không có
+
+**Làm gì:** sweep bắt buộc (PRD §6.4).
+
+```
+λ ∈ {0, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1}   ×   N ∈ {3, 5, 7}
+```
+
+Báo cáo `Sequence Exact-Match` và `Kendall's tau` cho từng ô.
+
+**Trường hợp `λ = 0` là quan trọng nhất.** Nó trả lời câu hỏi: *hình phạt khoảng cách thời gian có thực sự đóng góp gì không?* Nếu `λ = 0` cho kết quả tương đương, thì phần cốt lõi của DANTE chỉ là **ràng buộc thứ tự**, không phải hình phạt khoảng cách — và **phải nói thẳng điều đó trong báo cáo**, kể cả khi nó mâu thuẫn với paper.
+
+Paper đề xuất `λ = 0.001` (khoảng cách index 3–15) và `λ = 0.01` (khoảng cách 1–3) — đối chiếu xem số đo có ủng hộ không.
+
+**Verify:** bảng ablation 7 × 3; `configs/` ghi lại giá trị `λ` được chọn cuối cùng kèm lý do.
+
+---
+
+## P2.5 — `quest_service.py` (2 nhánh)
+
+**Làm gì:** xử lý truy vấn Out-of-Knowledge — truy vấn chứa thực thể mà model embedding chưa từng thấy (PRD §F5 · architecture.md §3.4).
+
+**Nhánh 1 — viết lại truy vấn:**
+- `q₀` → LLM sinh `q_r` mô tả trực quan, chi tiết hơn → search bằng encoder như bình thường.
+- OpenAI: `client.responses.parse(..., text_format=Model)`. **Bắt buộc xử lý nhánh `item.type == "refusal"`** trước khi đọc `item.parsed`.
+- **Hiển thị CẢ `q₀` LẪN `q_r`** — người vận hành phải thấy LLM đã làm gì (US-2).
+
+**Nhánh 2 — tìm ảnh mẫu bên ngoài:**
+- Tìm ảnh của thực thể lạ trên web → hiện danh sách ứng viên → **người dùng TỰ CHỌN** ảnh mẫu `I*` → image-to-image search.
+- **Không auto-pick ảnh đầu tiên.** Người vận hành biết ngữ cảnh mà hệ thống không biết — ép tự động sẽ mất nhiều hơn được.
+
+**Cả hai nhánh:**
+- Timeout + retry exponential backoff → hết timeout thì **fallback về search thường bằng `q₀`**, **không treo UI**.
+- Lỗi mạng ở nhánh phụ **không được giết request chính**.
+
+**Verify:**
+- `test_quest_falls_back_to_plain_search_on_timeout`
+- `test_quest_handles_openai_refusal_branch`
+- `test_quest_response_contains_both_original_and_rewritten_query`
+- Thực nghiệm: ngắt mạng → UI vẫn trả kết quả search thường trong ngân sách latency
+
+---
+
+## Định nghĩa "xong" của P2
+
+- [ ] `Sequence Exact-Match (N=3)` đạt mục tiêu PRD §6.7
+- [ ] `Kendall's tau` đạt mục tiêu §6.7
+- [ ] **Bảng ablation `λ` đầy đủ 7 × 3**, có kết luận rõ về `λ = 0`
+- [ ] Chứng minh thực nghiệm `O(NT)` (đồ thị thời gian theo T)
+- [ ] QUEST hai nhánh chạy được, có fallback, hiển thị `q₀` + `q_r`
+- [ ] Coverage ≥ 80%
+- [ ] Báo cáo phase theo template CLAUDE.md §8

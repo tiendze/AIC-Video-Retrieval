@@ -111,7 +111,7 @@ Chúng giao nhau tại đúng một điểm: **tầng lưu trữ**, và bắt bu
 
 ```mermaid
 flowchart TD
-    A["Video nguồn<br/>AIC 2025 · file mp4 cục bộ"] --> B["DatasetAdapter<br/>liệt kê video + metadata<br/>khử trùng video_id"]
+    A["Video nguồn<br/>AIC 2026 batch 1 · file mp4 cục bộ"] --> B["DatasetAdapter<br/>liệt kê video + metadata<br/>khử trùng video_id"]
     B --> CK{"Đã xử lý xong?<br/>kiểm tra checkpoint"}
     CK -->|"rồi"| SKIP["Bỏ qua"]
     CK -->|"chưa"| C["Giải mã video<br/>ffmpeg tới 48x27 uint8"]
@@ -161,7 +161,7 @@ flowchart TD
 
 3. **Vòng lặp checkpoint** — `Z → B` khép kín để pipeline resume được (yêu cầu T1).
 
-4. **Ba nhánh song song** — chúng độc lập, có thể chạy đồng thời hoặc tách thành ba lần chạy riêng. Trên máy 11GB VRAM, chạy tuần tự từng nhánh thường an toàn hơn.
+4. **Ba nhánh song song** — chúng độc lập, có thể chạy đồng thời hoặc tách thành ba lần chạy riêng. Trên máy 8GB VRAM, chạy tuần tự từng nhánh thường an toàn hơn.
 
 ### 3.3 ⭐ Luồng truy vấn Multimodal (online)
 
@@ -377,7 +377,8 @@ sequenceDiagram
 | `embedding` | `FLOAT_VECTOR(d)` | 📄 | Đã L2-normalize; `d` = 768 với `beit3_base_itc` (xác nhận lại lúc load checkpoint — Q4 trong PRD) |
 | `video_id` | `VARCHAR(32)` | 🔧 | Để lọc **trong** engine, không lọc sau khi lấy về |
 | `global_index` | `INT64` | 🔧 | **Bắt buộc cho DANTE** — chỉ số toàn cục của keyframe |
-| `timestamp` | `FLOAT` | 🔧 | Giây tính từ đầu video |
+| `frame_idx` | `INT64` | 🔧 | **Bắt buộc để nộp bài** — chỉ số frame tuyệt đối trong video. Đây đúng là `<frame_id>` mà BTC chấm (PRD §1.1). Mang theo trong kết quả search để bộ xuất bài **không phải** tính lại từ `timestamp × fps` |
+| `timestamp` | `FLOAT` | 🔧 | Giây tính từ đầu video — dùng cho hiển thị và cho quy tắc hit của `eval/`, **không** dùng để nộp bài |
 | `author` | `VARCHAR(128)` | 🔧 | Tên kênh, từ `media-info.author` — lọc theo nhóm nội dung |
 | `batch` | `VARCHAR(8)` | 🔧 | `L21` … `L30` — lọc theo lô phát hành, cũng là đơn vị chia shard khi ingest |
 
@@ -491,7 +492,7 @@ class DatasetAdapter(Protocol):
     def load_ground_truth(self, split: str) -> Sequence[GroundTruthSegment]: ...
 ```
 
-`AIC2025Adapter` là implementation hiện tại. Nó khác `YouCook2Adapter` của bản 0.1 ở một điểm bản chất: **hai phương thức lấy dữ liệu từ hai nguồn khác nhau**.
+`AIC2026Adapter` là implementation hiện tại. Nó khác `YouCook2Adapter` của bản 0.1 ở một điểm bản chất: **hai phương thức lấy dữ liệu từ hai nguồn khác nhau**.
 
 | Phương thức | Nguồn |
 |---|---|
@@ -535,7 +536,7 @@ AIC-Video-Retrieval/
 │   ├── keyframe.py             lấy mẫu 4 vị trí mỗi shot
 │   ├── ocr.py                  lọc + dedupe + Gemini
 │   └── embed.py                encode theo lô + ghi Milvus
-├── datasets/                   base.py (Protocol) · aic2025.py
+├── datasets/                   base.py (Protocol) · aic2026.py
 ├── eval/
 │   ├── run.py                  điểm vào duy nhất
 │   ├── build_eval_set.py       sinh bộ nhãn tự động (PRD §6.1) — dataset KHÔNG kèm nhãn
@@ -587,7 +588,7 @@ Các ràng buộc **kỹ thuật** (độc lập với hình thức giao diện)
 
 ## 9. Triển khai
 
-### 9.1 Bố trí trên một máy (RTX 2080Ti 11GB)
+### 9.1 Bố trí trên một máy (RTX 3070 8GB, đổi từ RTX 2080Ti 11GB khi chuyển máy 2026-08-01)
 
 | Chạy trong Docker | Chạy native |
 |---|---|
@@ -604,7 +605,7 @@ Các ràng buộc **kỹ thuật** (độc lập với hình thức giao diện)
 | Elasticsearch | ≤ 2 GB heap | Đặt cứng qua `ES_JAVA_OPTS` |
 | Milvus standalone | ~4 GB | Tăng theo kích thước index |
 | MongoDB | ~1 GB | |
-| FastAPI + encoder | ~2 GB RAM và ≤ 11 GB VRAM | |
+| FastAPI + encoder | ~2 GB RAM và ≤ 8 GB VRAM | |
 | **Tổng** | **≥ 16 GB, khuyến nghị 32 GB** | Sức ép nằm ở RAM hệ thống, không phải VRAM |
 
 **Chế độ suy giảm:** tắt Elasticsearch để giải phóng ~2 GB; hệ thống chuyển sang semantic-only, mất chức năng OCR search và hybrid fusion.
