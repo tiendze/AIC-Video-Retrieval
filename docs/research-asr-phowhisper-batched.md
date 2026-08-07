@@ -1,8 +1,10 @@
 # Research — Nâng cấp kênh ASR: PhoWhisper + batched inference
 
-> **Trạng thái: ĐỀ XUẤT — chưa duyệt, chưa thực thi.** Không có dòng code nào được sửa khi viết file này.
+> **Trạng thái: 🟢 ĐÃ DUYỆT VÀ ĐÃ THỰC THI (2026-08-07) — "đường nhanh".** Chủ dự án chốt: *"cứ thực thi ingest vào đi chưa cần nhãn tay đâu mình sẽ tự kiểm tra trước, rồi sau đó mình sẽ test bằng nhãn sau, tại giờ mình đang cần gấp"*. Kế hoạch thực thi đầy đủ (F1-F5, tasks, quyết định §11) nằm ở [`.claude/plans/asr-phowhisper-batched.plan.md`](../.claude/plans/asr-phowhisper-batched.plan.md) — file đó là nguồn sự thật cho **trạng thái thực thi**; file này giữ nguyên vai trò tài liệu **nghiên cứu/bằng chứng** đứng sau quyết định.
 >
-> **Quan hệ với [`research.md`](research.md):** file đó là hồ sơ P0.11 (dựng nhánh ASR, đã duyệt 2026-08-02). File này là **bước tiếp theo** trả lời đúng câu hỏi mà `research.md` §9-B để treo: *"`large-v3` làm baseline trước, PhoWhisper là bước nâng cấp **có đo**"*. Đây là lúc đo.
+> ⚠️ **Chưa có số đo chất lượng nào.** "Đã duyệt" ở đây nghĩa là *"đã quyết định đổi mà không chờ đo"*, không phải *"đã chứng minh PhoWhisper tốt hơn"*. Số đo bằng nhãn người vẫn nợ — xem Nhịp 3 trong plan.
+>
+> **Quan hệ với [`research.md`](research.md):** file đó là hồ sơ P0.11 (dựng nhánh ASR, đã duyệt 2026-08-02). File này là **bước tiếp theo** trả lời đúng câu hỏi mà `research.md` §9-B để treo: *"`large-v3` làm baseline trước, PhoWhisper là bước nâng cấp **có đo**"*. Đường nhanh 2026-08-07 tạm gác điều kiện "có đo" vì lý do thời gian — xem cảnh báo trên.
 >
 > **Không ghi đè `research.md`** — nó ghi lại quyết định đã duyệt, đè lên là mất hồ sơ.
 
@@ -284,7 +286,15 @@ Giả định *"segment không chồng lấn, sắp xếp tăng dần theo thờ
 
 **`tests/` không dùng `model_size`** (đã grep toàn repo) ⇒ đổi tên chỉ chạm 6 vị trí ở mục 1/5/6. Rẻ hơn dự kiến.
 
-### 8.2 Phác thảo — CHƯA áp dụng
+### 8.2 Phác thảo — ✅ ĐÃ áp dụng 2026-08-07
+
+Phác thảo dưới chạy được nguyên xi (F4, plan §2). Hai chỗ lệch so với bản
+gốc, cả hai đều là bổ sung, không phải thay đổi hướng: (1) validate F3
+(`batched=True` + `vad_filter=False` ⇒ raise) chuyển vào `__post_init__` của
+`AsrConfig` thay vì để crash giữa chừng; (2) skip logic (F1) tách thành hàm
+thuần `should_transcribe()` thay vì inline trong `scripts/run_asr.py`, để
+test được không cần Mongo thật. Chi tiết đầy đủ: plan §2 (F1-F5) và §7
+(Tasks T1-T7).
 
 `configs/ingest/asr.yaml`:
 
@@ -358,7 +368,24 @@ def transcribe(self, video_path: str) -> list[AsrSegment]:
 
 ---
 
+## 9b. F1-F5 — phát hiện thêm khi implement (2026-08-07)
+
+Đọc trực tiếp working tree lúc code (không có trong bản research gốc ngày
+2026-08-05). Chi tiết đầy đủ + số dòng: plan §2.
+
+| # | Phát hiện | Mức | Đã sửa |
+|---|---|---|---|
+| **F1** | `scripts/run_asr.py`'s skip logic chỉ nhìn `asr_status`, không so `model_id` — đổi model rồi chạy lại L21 sẽ **bỏ qua sạch** video đã `done`, nhưng vẫn ghi đè JSON export với `model_id` mới ⇒ provenance sai, không crash, không log | 🔴 Cao | ✅ `should_transcribe()` (hàm thuần) skip chỉ khi `asr_status==done` **và** `model_id` khớp; thêm `--force` |
+| **F2** | Batched mode gộp `avg_logprob`/`no_speech_prob` theo **VAD chunk** thay vì per-segment — tỉ lệ drop của bộ lọc ảo giác đổi vì **cơ chế batching**, không phải vì đổi model. Đọc sai chỗ này sẽ quy nhầm công/tội cho PhoWhisper | 🟠 Trung bình | Ghi nhận, chưa cần code — áp dụng lúc đọc số ở Nhịp 3 (R4+F2 trong plan §10) |
+| **F3** | `batched=true` + `vad_filter=false` + audio > 30s ⇒ `RuntimeError` giữa chừng, sau khi đã nạp model | 🟡 Thấp | ✅ Validate ngay trong `AsrConfig.__post_init__` |
+| **F4** | 3 mục `⚠️ [Cần verify]` của §8.2 (dưới) — đều đã xác nhận bằng cách đọc trực tiếp `faster_whisper==1.2.1` source | — | ✅ Đóng, xem §8.2 |
+| **F5** | R2 (§9) chỉ nói ES; nhưng P0.11b cũng ghi segment vào Milvus `transcripts_bge_m3`. Trước khi sửa, **không có API xoá nào** cho `TranscriptMilvusStore`/`AsrEsStore` | 🟠 Cao | ✅ `AsrEsStore.delete_by_video()`/`recreate_index()`, `TranscriptMilvusStore.drop_collection()` |
+
+---
+
 ## 10. Thứ tự thực hiện
+
+> ⚠️ **Thứ tự dưới đây là kế hoạch gốc (2026-08-05), KHÔNG phải thứ tự đã chạy.** Chủ dự án chốt "đường nhanh" 2026-08-07 (banner đầu file): bước 1-2 (bộ nhãn + script đo) và bước 6 (ma trận 4 cấu hình) **hoãn sang Nhịp 3**. Thứ tự thật đã thực thi: plan §7 (NHỊP 1: T1-T7) rồi plan §7 (NHỊP 2: N1-N7, chủ dự án tự chạy). Giữ nguyên danh sách gốc dưới đây làm hồ sơ.
 
 1. **Dựng bộ nhãn §6.1** — 10 phút transcript gõ tay. *Đây là điều kiện chặn, không phải bước tuỳ chọn.*
 2. Viết script đo WER + proper-noun recall (`eval/asr_wer.py`), test bằng nhãn giả trước.
@@ -373,13 +400,15 @@ def transcribe(self, video_path: str) -> list[AsrSegment]:
 
 ## 11. Câu hỏi cần chủ dự án chốt
 
-| # | Câu hỏi | Trạng thái |
+✅ **Đã chốt 2026-08-07** — xem plan §4 cho lý do đầy đủ của từng câu.
+
+| # | Câu hỏi | Quyết định |
 |---|---|---|
-| A | Chấp nhận bỏ ~2–3 giờ gõ tay 10 phút transcript làm bộ nhãn? Không có nó thì mọi so sánh là cảm tính | ⬜ chưa chốt |
-| B | Tự convert PhoWhisper sang CT2, hay tải bản có sẵn của bên thứ ba? | ⬜ chưa chốt |
-| C | Làm cả A+B cùng lúc, hay tách hai commit để đo riêng? (khuyến nghị: **tách**) | ⬜ chưa chốt |
-| D | `hotwords` + gazetteer địa danh — làm luôn đợt này hay để đợt sau? Nó nhắm đúng "Cửu Long" và rẻ hơn đổi model | ⬜ chưa chốt |
-| E | Chỉ chạy lại L21, hay nhân dịp này chạy luôn L22–L24? | ⬜ chưa chốt |
+| A | Chấp nhận bỏ ~2–3 giờ gõ tay 10 phút transcript làm bộ nhãn? Không có nó thì mọi so sánh là cảm tính | 🔵 **Hoãn sang Nhịp 3** — kiểm tra bằng mắt trước, đo bằng nhãn sau |
+| B | Tự convert PhoWhisper sang CT2, hay tải bản có sẵn của bên thứ ba? | ✅ **Tự convert** từ `vinai/PhoWhisper-large` (BSD-3), ghi sha256 |
+| C | Làm cả A+B cùng lúc, hay tách hai commit để đo riêng? (khuyến nghị: **tách**) | ✅ **Gộp** — đường nhanh bật cả hai cùng lúc; đánh đổi: không cô lập được model vs batching nếu có vấn đề (đã ghi vào plan §3) |
+| D | `hotwords` + gazetteer địa danh — làm luôn đợt này hay để đợt sau? Nó nhắm đúng "Cửu Long" và rẻ hơn đổi model | 🔵 **Hoãn** — ứng viên đầu tiên nếu Nhịp 3 cho thấy PhoWhisper không thắng rõ |
+| E | Chỉ chạy lại L21, hay nhân dịp này chạy luôn L22–L24? | ✅ **L21 trước** — tập duy nhất có đường cơ sở (log 2026-08-04) để so số segment (T6b) |
 
 ---
 
