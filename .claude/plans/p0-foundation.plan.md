@@ -17,7 +17,7 @@
 | P0.9 `eval/run.py` | ⬜ |
 | P0.10 báo cáo phase | ⬜ |
 | P0.11a ASR → ES (BM25) | ⬜ **ngoài đường găng** — thêm 2026-08-02 |
-| P0.11b ASR → Milvus (dense) | ⬜ chờ P0.11a chốt transcript |
+| P0.11b ASR → Milvus (dense) | ⬜ **optional** — chủ dự án 2026-08-07: tốn thời gian, làm sau nếu còn dư, không chặn P0.11 "xong" |
 
 **Exit criteria (PRD §4):** search một truy vấn bất kỳ ra kết quả từ đầu đến cuối; `eval/run.py` chạy được và in ra Recall@k **dù số còn thấp**.
 
@@ -31,10 +31,12 @@
 P0.1 scaffold ──► P0.3 adapter ──┬──► P0.5 encoder BEiT-3 (timebox 1 ngày)
 P0.2 docker-compose ──► P0.6 stores ──┴──► P0.7 ingest ──► P0.4′ sinh nhãn ──► P0.8 search ──► P0.9 eval ──► P0.10 báo cáo
                                                 │
-                                                └──► P0.11a ASR→ES ──► P0.11b ASR→Milvus     (ngoài đường găng)
+                                                └──► P0.11a ASR→ES ──► P0.11b ASR→Milvus     (ngoài đường găng, P0.11b optional)
 ```
 
 > **P0.11 không nằm trên đường găng.** Nó chỉ cần `.mp4` (đọc `fps`/`frame_count` thẳng bằng cv2, **không đọc Mongo**), nên không phụ thuộc P0.7 đã xong hay chưa — chỉ vướng VRAM, không vướng dữ liệu. Đường găng P0 vẫn kết thúc ở P0.10.
+>
+> **Cập nhật 2026-08-07 — P0.11b optional.** Chủ dự án: bước `bge-m3` encode (dense semantic cho ASR) tốn thời gian, không cấp thiết bằng phần còn lại. P0.11a (transcribe → Elasticsearch/BM25) vẫn giữ nguyên kế hoạch; P0.11b chuyển thành **làm sau nếu còn dư thời gian**, không phải điều kiện để coi P0.11 là "xong". Không cần code nào thay đổi để làm việc này khả thi — `scripts/embed_transcripts.py` vốn đã là lệnh CLI tách rời (§P0.11b bên dưới), không nằm trong `run_ingest.py` hay bất kỳ đường chạy bắt buộc nào.
 
 > **Cập nhật 2026-07-29 — đổi dataset.** Dữ liệu công khai đã tải xong về `data/` (873 video, 130,7 giờ). Task **P0.4 (downloader `yt-dlp`) bị bỏ** — video đã là file `.mp4` cục bộ. Thay vào đó là **P0.4′ — sinh bộ eval**, vì dataset không kèm nhãn nào.
 >
@@ -387,7 +389,9 @@ end_frame_idx   = min(frame_count - 1, ceil (end_time   * fps))
 
 **⚠️ Lọc ảo giác — text bịa vào ES là ô nhiễm trực tiếp kênh BM25.** Bản tin có nhạc hiệu, B-roll im lặng, tiếng ồn hiện trường; Whisper hay bịa câu lặp ở đó. Bật `vad_filter=True` + loại segment khi `no_speech_prob > ngưỡng` **hoặc** `avg_logprob < ngưỡng` **hoặc** text quá ngắn. Đặt `condition_on_previous_text=False` để chặn vòng lặp ảo giác. **Mọi ngưỡng vào `configs/ingest/asr.yaml`**, không hard-code.
 
-### P0.11b — Transcript → Milvus (dense)
+### P0.11b — Transcript → Milvus (dense) — 🔧 optional (chủ dự án 2026-08-07)
+
+> Làm sau nếu còn dư thời gian, không chặn P0.11 "xong" hay bất kỳ phase nào khác — xem cập nhật ở đầu §P0.11.
 
 **BM25-only không phải end state cho ASR.** Khác biệt cấu trúc so với OCR:
 
@@ -451,12 +455,20 @@ python scripts/run_asr.py --batches L21             # 29 video
 
 ### Định nghĩa "xong" của P0.11
 
+**Bắt buộc (P0.11a):**
+
 - [ ] `pytest tests/test_asr.py` xanh, coverage ≥ 80%
 - [ ] L21 (29 video) chạy xong, `asr_runs.asr_status == "done"` đủ số
 - [ ] **Hallucination Rate + WER + timestamp drift đã đo bằng người** — không phải suy đoán
 - [ ] Ngưỡng trong `asr.yaml` đã chỉnh theo số đo, **lý do chỉnh viết ra TRƯỚC khi nhìn số mới**
 - [ ] Docs đã sửa đồng bộ, `research.md` đã đánh dấu các chỗ stale
 - [ ] Báo cáo phase theo template CLAUDE.md §8
+
+**Optional (P0.11b, 🔧 chủ dự án 2026-08-07 — không cần cho P0.11 "xong"):**
+
+- [ ] `pytest tests/test_embed_transcripts.py` xanh
+- [ ] `scripts/embed_transcripts.py` chạy xong trên L21, `transcripts_{model_id}` có đủ segment
+- [ ] Bước 3/4 ở bảng đo phía trên (`semantic` vs `+OCR` vs `+OCR+ASR`, đối chứng âm) đã chạy — nếu bỏ P0.11b thì hai bước này cũng bỏ theo
 
 ---
 
