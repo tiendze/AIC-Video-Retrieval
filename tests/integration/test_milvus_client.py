@@ -14,7 +14,12 @@ import numpy as np
 import pytest
 from pymilvus import MilvusClient
 
-from app.stores.milvus_client import KeyframeVector, MilvusStore
+from app.stores.milvus_client import (
+    KeyframeVector,
+    MilvusStore,
+    TranscriptMilvusStore,
+    TranscriptVector,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -173,3 +178,61 @@ def test_upsert_is_idempotent_on_same_keyframe_id(store: MilvusStore) -> None:
 
     results = store.search(query_vector=vector, top_k=10)
     assert len(results) == 1
+
+
+@pytest.fixture()
+def transcript_store(raw_client: MilvusClient) -> Iterator[TranscriptMilvusStore]:
+    model_id = f"test_{uuid.uuid4().hex[:8]}"
+    created = TranscriptMilvusStore(
+        uri=_MILVUS_URI,
+        token=_MILVUS_TOKEN,
+        model_id=model_id,
+        embedding_dim=_EMBEDDING_DIM,
+        hnsw_m=_HNSW_M,
+        hnsw_ef_construction=_HNSW_EF_CONSTRUCTION,
+        search_ef=_SEARCH_EF,
+    )
+    yield created
+    raw_client.drop_collection(created.collection_name)
+
+
+def test_transcript_store_drop_collection_clears_rows_but_keeps_collection_usable(
+    transcript_store: TranscriptMilvusStore,
+) -> None:
+    vector = _unit_vector(hot_index=0)
+    transcript_store.upsert(
+        [
+            TranscriptVector(
+                segment_id="video1_seg0",
+                embedding=vector,
+                video_id="video1",
+                start_frame_idx=0,
+                end_frame_idx=30,
+                start_time=0.0,
+                end_time=1.0,
+            )
+        ]
+    )
+    name_before = transcript_store.collection_name
+
+    transcript_store.drop_collection()
+
+    assert transcript_store.collection_name == name_before  # same name, fresh collection
+    results = transcript_store.search(query_vector=vector, top_k=10)
+    assert results == []
+    # collection is usable again -- a fresh upsert doesn't error
+    transcript_store.upsert(
+        [
+            TranscriptVector(
+                segment_id="video2_seg0",
+                embedding=vector,
+                video_id="video2",
+                start_frame_idx=0,
+                end_frame_idx=30,
+                start_time=0.0,
+                end_time=1.0,
+            )
+        ]
+    )
+    results = transcript_store.search(query_vector=vector, top_k=10)
+    assert results[0]["entity"]["video_id"] == "video2"

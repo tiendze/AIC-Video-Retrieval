@@ -2,12 +2,15 @@
 # Field names match AsrConfig exactly; a caller loads this file and
 # constructs AsrConfig(**yaml.safe_load(...)) before calling run_asr().
 
-# faster-whisper model size (references.md §5.3). Chosen 2026-08-02: closest
-# match to the official RTX 3070 Ti benchmark table we verified
-# (large-v2/float16: ~4.5GB VRAM, ~1min per 13min audio) while using the
-# newer, generally more accurate v3 checkpoint. Not yet benchmarked on this
-# exact GPU -- confirm VRAM/latency after the first real L21 run.
-model_size: large-v3
+# CTranslate2 checkpoint -- a repo name (faster-whisper downloads from HF) or
+# a local path (e.g. models/PhoWhisper-large-ct2). This value is also the
+# provenance string written to asr_runs.model_id and the meta of both
+# exported JSON files -- changing it MUST change this string too (see
+# scripts/run_asr.py's should_transcribe resume check).
+# large-v3 chosen 2026-08-02: closest match to the official RTX 3070 Ti
+# benchmark table we verified (large-v2/float16: ~4.5GB VRAM, ~1min per
+# 13min audio) while using the newer, generally more accurate v3 checkpoint.
+model_id: large-v3
 
 # CTranslate2 compute type. float16 matches the verified benchmark; switch
 # to int8 if VRAM headroom is tight running alongside other GPU work.
@@ -32,7 +35,24 @@ vad_filter: true
 # decode on the previous segment's (possibly already-hallucinated) text.
 # false breaks that feedback loop -- deliberate tradeoff, not a default we
 # forgot to set.
+# ⚠️ VÔ HIỆU khi batched=true -- faster-whisper hard-codes this to False in
+# batched mode regardless of what's set here (research-asr-phowhisper-
+# batched.md §5.3). Kept for the batched=false escape hatch; editing this
+# value while batched=true has NO effect.
 condition_on_previous_text: false
+
+# Batched inference (faster-whisper >= 1.1). Decodes the VAD chunks of the
+# SAME video in one pass instead of one chunk at a time -- NOT running
+# multiple videos in parallel, and does not violate CLAUDE.md §4's
+# "sequential branches" rule (still one model, one GPU context at a time).
+# Set false if batched drops segments -- see faster-whisper issue #1179.
+batched: false
+
+# Only takes effect when batched=true (rejected by the non-batched call).
+# 8, not 16 like faster-whisper's README benchmark: the RTX 3070 has 8GB
+# VRAM, and batch size doesn't scale speed linearly anyway (short chunks
+# still get padded to 30s, and the decoder waits for the longest chunk).
+batch_size: 8
 
 # Step [1] of the hallucination filter: drop a segment when the model's own
 # "this might be silence/noise" probability exceeds this. Starting guess,

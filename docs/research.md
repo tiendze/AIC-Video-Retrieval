@@ -24,7 +24,7 @@
 >
 > - `faster-whisper` decode bằng **PyAV (bundle FFmpeg)** ⇒ **đọc thẳng `.mp4`, không cần extract audio** — đúng như §4 phỏng đoán.
 > - `Segment` **thật sự có** `no_speech_prob` + `avg_logprob` ⇒ bộ lọc ảo giác §5a chạy được.
-> - **PhoWhisper-large KHÔNG có bản CTranslate2** và không phơi `no_speech_prob` ⇒ không phải baseline, là bước nâng cấp có đo.
+> - ~~**PhoWhisper-large KHÔNG có bản CTranslate2** và không phơi `no_speech_prob`~~ — **Đính chính 2026-08-07: sai cả hai vế**, xem `references.md` §5.3 (`docs/research-asr-phowhisper-batched.md` §3). Vẫn là bước nâng cấp có đo, không phải baseline.
 >
 > ### 🔄 §3 đã được mở rộng
 >
@@ -130,7 +130,7 @@ end_frame_idx    long
 | Bậc | Model | Đánh đổi |
 |---|---|---|
 | **Mặc định (baseline)** | `faster-whisper` + `large-v3`, compute type `int8_float16` | Chín, ổn định, VRAM ~3GB (thoải mái trên 8GB). Timestamp segment-level trôi ~0,5–2s — chấp nhận được vì ta expand cửa sổ. ⚠️ **[Cần đo]** VRAM và tốc độ thực tế |
-| **Nâng chất** | `PhoWhisper-large` (VinAI, fine-tune tiếng Việt) | WER tiếng Việt tốt hơn Whisper gốc. Rủi ro: bản HF transformers chậm hơn CTranslate2; fine-tune **có thể làm lệch timestamp**. ⚠️ **[Cần verify]** có bản convert CTranslate2 chưa |
+| **Nâng chất** | `PhoWhisper-large` (VinAI, fine-tune tiếng Việt) | WER tiếng Việt tốt hơn Whisper gốc. Rủi ro: fine-tune **có thể làm lệch timestamp**. ~~⚠️ **[Cần verify]** có bản convert CTranslate2 chưa~~ — **Đã đóng 2026-08-07:** có, xem `references.md` §5.3 |
 
 **Cách làm an toàn:** bọc bằng `Protocol` y hệt `OcrClient` (`pipelines/ocr.py:66-70`) — đã là pattern của repo. Chạy `large-v3` trước để có đường cơ sở chạy được, swap `PhoWhisper` sau và **so bằng số**. Không cam kết vào một model trước khi đo.
 

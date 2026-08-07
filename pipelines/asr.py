@@ -45,7 +45,7 @@ class AsrConfig:
     """Mirrors `configs/ingest/asr.yaml` — see that file for the rationale
     behind each default."""
 
-    model_size: str = "large-v3"
+    model_id: str = "large-v3"
     compute_type: str = "float16"
     device: str = "cuda"
     beam_size: int = 5
@@ -55,6 +55,22 @@ class AsrConfig:
     no_speech_prob_threshold: float = 0.6
     avg_logprob_threshold: float = -1.0
     min_text_length: int = 2
+    batched: bool = False
+    batch_size: int = 8
+
+    def __post_init__(self) -> None:
+        # faster_whisper/transcribe.py:413-419 (research-asr-phowhisper-batched
+        # F3): batched mode with vad_filter=False and no clip_timestamps raises
+        # RuntimeError on any audio > 30s — every video here qualifies. Fail at
+        # construction, not mid-run after the model is already loaded.
+        if self.batched and not self.vad_filter:
+            raise ValueError(
+                "AsrConfig(batched=True) requires vad_filter=True — faster-whisper's "
+                "batched pipeline raises RuntimeError on audio > 30s otherwise "
+                "(research-asr-phowhisper-batched.plan.md F3)"
+            )
+        if self.batch_size < 1:
+            raise ValueError(f"AsrConfig.batch_size must be >= 1, got {self.batch_size}")
 
 
 _DEFAULT_ASR_CONFIG = AsrConfig()
@@ -179,6 +195,24 @@ def is_hallucination(segment: AsrSegment, config: AsrConfig = _DEFAULT_ASR_CONFI
     return _hallucination_reason(segment, config) is not None
 
 
+def should_transcribe(existing_run: dict | None, model_id: str, force: bool) -> bool:
+    """`True` when a video needs a transcribe call this run.
+
+    Resume must key off BOTH `asr_status` and `model_id` (research-asr-
+    phowhisper-batched.plan.md F1): checking `asr_status` alone means
+    switching checkpoints and re-running silently skips every video already
+    `done` under the OLD model, while the run's JSON export still gets
+    stamped with the NEW `model_id` — a file that lies about which
+    checkpoint produced it, with no crash and no log line."""
+    if force:
+        return True
+    if existing_run is None:
+        return True
+    if existing_run.get("asr_status") != STATUS_DONE:
+        return True
+    return existing_run.get("model_id") != model_id
+
+
 def to_frame_window(segment: AsrSegment, fps: float, frame_count: int) -> FrameWindow:
     """floor on the left edge, ceil on the right edge — the window only ever
     *widens*, never drops a frame a TRAKE answer could need. `round()` is
@@ -195,20 +229,29 @@ class FasterWhisperClient:
     step."""
 
     def __init__(self, config: AsrConfig = _DEFAULT_ASR_CONFIG) -> None:
-        from faster_whisper import WhisperModel  # lazy: only needed when this class is used
+        # lazy: only needed when this class is used
+        from faster_whisper import BatchedInferencePipeline, WhisperModel
 
-        self._model = WhisperModel(
-            config.model_size, device=config.device, compute_type=config.compute_type
+        model = WhisperModel(
+            config.model_id, device=config.device, compute_type=config.compute_type
         )
+        # Batched decodes VAD chunks of the SAME video in one pass instead of
+        # one chunk at a time; sequential is kept as an escape hatch
+        # (faster-whisper#1179 reports dropped segments on some inputs).
+        self._model = BatchedInferencePipeline(model=model) if config.batched else model
         self._config = config
 
     def transcribe(self, video_path: str) -> list[AsrSegment]:
+        # batch_size is rejected by WhisperModel.transcribe() -- only the
+        # batched path accepts it, so it is passed conditionally.
+        extra = {"batch_size": self._config.batch_size} if self._config.batched else {}
         segments, _info = self._model.transcribe(
             video_path,
             beam_size=self._config.beam_size,
             language=self._config.language,
             vad_filter=self._config.vad_filter,
             condition_on_previous_text=self._config.condition_on_previous_text,
+            **extra,
         )
         return [
             AsrSegment(

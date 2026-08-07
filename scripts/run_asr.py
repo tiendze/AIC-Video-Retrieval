@@ -18,10 +18,16 @@ run's in-memory results, so previously-transcribed videos skipped by the
 resume check are still included. Re-running with every video already `done`
 therefore rebuilds the JSON without loading Whisper or touching the GPU.
 
-WARNING: GPU-heavy (large-v3 Whisper decode) -- per CLAUDE.md section 10,
-prepared here for you to run yourself, not run automatically. Do not run
-alongside scripts/run_ingest.py while that script still holds TransNetV2 +
-BEiT-3 on the same GPU -- sequential only on 8GB VRAM.
+WARNING: GPU-heavy (Whisper decode, checkpoint set by configs/ingest/asr.yaml's
+model_id) -- per CLAUDE.md section 10, prepared here for you to run yourself,
+not run automatically. Do not run alongside scripts/run_ingest.py while that
+script still holds TransNetV2 + BEiT-3 on the same GPU -- sequential only on
+8GB VRAM.
+
+A video already `asr_status="done"` under the SAME model_id is skipped on a
+re-run; changing model_id in asr.yaml (or passing --force) re-transcribes it
+even if a prior run under a different model finished (see should_transcribe
+in pipelines/asr.py).
 
 Prerequisites:
   docker compose up -d      # MongoDB + Elasticsearch (Milvus not needed here)
@@ -58,6 +64,7 @@ from pipelines.asr import (
     VideoTiming,
     format_duration,
     run_asr,
+    should_transcribe,
     summarize_timings,
 )
 from pipelines.export_asr import build_asr_export, build_shot_aligned_export
@@ -120,6 +127,12 @@ def _parse_args() -> argparse.Namespace:
         type=Path,
         default=_DEFAULT_OUTPUT_SHOT_JSON,
         help="where to dump the shot-aligned transcript JSON",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="re-transcribe even videos already done under the same model_id "
+        "(normally only a model_id change or a prior failure triggers a re-run)",
     )
     return parser.parse_args()
 
@@ -280,7 +293,7 @@ async def _main() -> int:
 
     for video in videos:
         existing = await mongo.get_asr_run(video.video_id)
-        if existing is not None and existing.get("asr_status") == STATUS_DONE:
+        if not should_transcribe(existing, model_id=asr_config.model_id, force=args.force):
             skipped.append(video.video_id)
             continue
 
@@ -307,7 +320,7 @@ async def _main() -> int:
                     video_id=video.video_id,
                     asr_status=STATUS_DONE,
                     num_segments=summary.kept_segments,
-                    model_id=asr_config.model_size,
+                    model_id=asr_config.model_id,
                     fps=video_info.fps,
                 )
             )
@@ -350,7 +363,7 @@ async def _main() -> int:
                     video_id=video.video_id,
                     asr_status=STATUS_FAILED,
                     num_segments=0,
-                    model_id=asr_config.model_size,
+                    model_id=asr_config.model_id,
                     fps=0.0,
                 )
             )
@@ -374,7 +387,7 @@ async def _main() -> int:
     )
     _log_timing_summary(timings)
 
-    export_ok = await _dump_json_artifacts(es, args, asr_config.model_size)
+    export_ok = await _dump_json_artifacts(es, args, asr_config.model_id)
 
     await mongo.close()
     await es.close()

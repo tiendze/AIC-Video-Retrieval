@@ -188,6 +188,23 @@ class AsrEsStore:
         last video's segments — an export that looks complete but isn't."""
         await self._client.indices.refresh(index=self._index_name)
 
+    async def delete_by_video(self, video_id: str) -> None:
+        """Deletes every segment for one video, in-engine (`delete_by_query`)
+        — never fetch-then-filter-then-delete client-side (CLAUDE.md §4)."""
+        await self._client.delete_by_query(
+            index=self._index_name, query={"term": {"video_id": video_id}}
+        )
+
+    async def recreate_index(self) -> None:
+        """Drops the whole index and rebuilds it empty — used before
+        re-running ASR under a different `model_id` (research-asr-
+        phowhisper-batched.plan.md F5/R2), so segments from the old model can
+        never linger and get scrolled back into the same JSON export
+        alongside the new model's segments. `ignore_unavailable=True`: a
+        first-ever run has no index yet, and that isn't an error here."""
+        await self._client.indices.delete(index=self._index_name, ignore_unavailable=True)
+        await self.ensure_index()
+
     async def scroll_all(self) -> AsyncIterator[dict[str, Any]]:
         """Every indexed segment, across all videos — P0.11b reads
         `transcript_text` back through here to embed, instead of re-running

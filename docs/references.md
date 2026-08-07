@@ -712,7 +712,9 @@ class TranscriptionInfo:
 
 ⇒ Ngoại suy 130,7 giờ (873 video) ≈ **10–12 giờ GPU**; pilot L21 (29 video) ≈ **[Cần đo]**. Vừa RTX 3070 8GB.
 
-**⚠️ PhoWhisper-large KHÔNG dùng được với faster-whisper.** Model card [vinai/PhoWhisper-large](https://huggingface.co/vinai/PhoWhisper-large) chỉ có bản HF `transformers` — **không có bản convert CTranslate2**, và không phơi `no_speech_prob` nên **không chạy được bộ lọc ảo giác**. Là bước nâng cấp **có đo** về sau, không phải baseline.
+~~**⚠️ PhoWhisper-large KHÔNG dùng được với faster-whisper.** Model card [vinai/PhoWhisper-large](https://huggingface.co/vinai/PhoWhisper-large) chỉ có bản HF `transformers` — **không có bản convert CTranslate2**, và không phơi `no_speech_prob` nên **không chạy được bộ lọc ảo giác**.~~
+
+**✅ Đính chính 2026-08-07 — sai cả hai vế** (fetch kiểm chứng 2026-08-05, chi tiết `docs/research-asr-phowhisper-batched.md` §3): **có** bản CTranslate2 công khai (`quocphu/PhoWhisper-ct2-FasterWhisper`, `kiendt/PhoWhisper-large-ct2`, `qbsmlabs/PhoWhisper-large`) hoặc tự convert một lệnh (`ct2-transformers-converter --model vinai/PhoWhisper-large ...`). `no_speech_prob`/`avg_logprob` là **output của bộ giải mã faster-whisper**, không phải thuộc tính checkpoint — mọi model qua `WhisperModel` đều có, kể cả bản fine-tune, kể cả chế độ batched. Bộ lọc ảo giác **chạy được với PhoWhisper**. Là bước nâng cấp **có đo** về sau, không phải baseline.
 
 ---
 
