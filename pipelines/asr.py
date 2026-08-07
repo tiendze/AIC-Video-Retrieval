@@ -32,6 +32,9 @@ logger = logging.getLogger(__name__)
 STATUS_DONE = "done"
 STATUS_FAILED = "failed"
 
+_SECONDS_PER_MINUTE = 60
+_SECONDS_PER_HOUR = 3600
+
 _REASON_NO_SPEECH = "no_speech"
 _REASON_LOW_CONFIDENCE = "low_confidence"
 _REASON_SHORT_TEXT = "short_text"
@@ -81,6 +84,66 @@ class AsrClient(Protocol):
     tests, or a different ASR backend (PhoWhisper, WhisperX) later."""
 
     def transcribe(self, video_path: str) -> Sequence[AsrSegment]: ...
+
+
+@dataclass(frozen=True)
+class VideoTiming:
+    """Wall-clock cost of one video, next to how much audio it bought.
+    `audio_sec` comes from the decoder (`frame_count / fps`), never from the
+    organiser's `media-info.length`, which is rounded to whole seconds."""
+
+    video_id: str
+    wall_sec: float
+    audio_sec: float
+
+
+@dataclass(frozen=True)
+class AsrTimingSummary:
+    """`speed_ratio` is the projection tool: audio seconds transcribed per
+    wall-clock second. Remaining corpus audio divided by it estimates the
+    remaining run time without measuring again."""
+
+    num_videos: int
+    total_wall_sec: float
+    mean_wall_sec: float
+    total_audio_sec: float
+    speed_ratio: float
+
+
+def summarize_timings(timings: Sequence[VideoTiming]) -> AsrTimingSummary:
+    """A run where every video was skipped as already `done` is a normal
+    outcome, so an empty input returns zeros rather than dividing by zero."""
+    if not timings:
+        return AsrTimingSummary(
+            num_videos=0,
+            total_wall_sec=0.0,
+            mean_wall_sec=0.0,
+            total_audio_sec=0.0,
+            speed_ratio=0.0,
+        )
+
+    total_wall_sec = sum(timing.wall_sec for timing in timings)
+    total_audio_sec = sum(timing.audio_sec for timing in timings)
+    return AsrTimingSummary(
+        num_videos=len(timings),
+        total_wall_sec=total_wall_sec,
+        mean_wall_sec=total_wall_sec / len(timings),
+        total_audio_sec=total_audio_sec,
+        speed_ratio=total_audio_sec / total_wall_sec if total_wall_sec else 0.0,
+    )
+
+
+def format_duration(seconds: float) -> str:
+    """`3725.0` -> `1h 02m 05s`. Multi-hour runs are the norm here, and a raw
+    second count is unreadable at that scale."""
+    total = int(seconds)
+    hours, remainder = divmod(total, _SECONDS_PER_HOUR)
+    minutes, secs = divmod(remainder, _SECONDS_PER_MINUTE)
+    if hours:
+        return f"{hours}h {minutes:02d}m {secs:02d}s"
+    if minutes:
+        return f"{minutes}m {secs:02d}s"
+    return f"{secs}s"
 
 
 @dataclass(frozen=True)

@@ -716,6 +716,25 @@ class TranscriptionInfo:
 
 ---
 
+### 5.4 `bge-m3` — encoder dense cho transcript (P0.11b)
+
+🔧 Dự án (P0.11b). Đã fetch kiểm chứng 2026-08-02 (model card HuggingFace + trang PyPI `sentence-transformers`).
+
+- Model card: https://huggingface.co/BAAI/bge-m3
+- **Dimension: 1024.** Max sequence length: 8192 token.
+- **Cài đặt:** `pip install sentence-transformers==5.6.1` (đã pin trong `pyproject.toml` nhóm `asr-embed`) — deps tương thích với `transformers==4.44.2` đã pin cho BEiT-3 (`sentence-transformers` yêu cầu `transformers<6,>=4.41`).
+- **Dùng qua `sentence-transformers`**, không dùng `FlagEmbedding` (package gốc của BAAI) — API đơn giản hơn vì chỉ cần vector dense, không cần sparse/ColBERT-style multi-vector mà `FlagEmbedding` mặc định trả về:
+  ```python
+  from sentence_transformers import SentenceTransformer
+  model = SentenceTransformer("BAAI/bge-m3", device="cuda")
+  embeddings = model.encode(sentences)  # (N, 1024)
+  ```
+- ⚠️ **Không rõ output có tự L2-normalize hay không** — model card không ghi rõ. `Bgem3Encoder` (app/encoders/bge_m3.py) **tự chuẩn hoá lại**, không tin vào default của thư viện (CLAUDE.md §3).
+- Đa ngôn ngữ ">100 ngôn ngữ hoạt động" — tiếng Việt không được liệt kê tường minh trong danh sách mẫu của model card, nhưng bge-m3 vốn huấn luyện đa ngôn ngữ quy mô lớn; **chất lượng tiếng Việt cụ thể [Cần đo]** khi có bộ eval ASR-aware (P0.11 Bước 3).
+- VRAM/tốc độ: **[Cần đo]** — chưa benchmark riêng trên RTX 3070; kế hoạch chạy tuần tự sau Whisper (không cùng lúc) trên 8GB.
+
+---
+
 ## 6. Backend
 
 ### 6.1 FastAPI

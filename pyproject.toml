@@ -50,7 +50,10 @@ asr = [
     "aic-video-retrieval[ingest]",
     "faster-whisper==1.2.1",
 ]
-
+asr-embed = [
+    "aic-video-retrieval[ingest]",
+    "sentence-transformers==5.6.1",
+]
 [build-system]
 requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"

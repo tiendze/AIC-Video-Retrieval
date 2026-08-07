@@ -1,0 +1,13 @@
+# Bgem3Encoder (app/encoders/bge_m3.py) -- P0.11b text-to-text embedding for
+# the ASR transcript channel. Model auto-downloads from HuggingFace Hub on
+# first run (~2GB) -- no manual checkpoint setup script needed, unlike BEiT-3.
+
+model_name: BAAI/bge-m3
+
+# model_id is embedded in the Milvus collection name (transcripts_{model_id})
+# per CLAUDE.md §3 -- changing model_name above must also change this.
+model_id: bge_m3
+
+# Sequential with Whisper on 8GB VRAM (plan P0.11b): run scripts/run_asr.py to
+# completion first, then this script -- never load both models at once.
+batch_size: 32

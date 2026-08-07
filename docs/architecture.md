@@ -143,6 +143,10 @@ flowchart TD
     P4 --> I4["Lọc ảo giác<br/>no_speech_prob / avg_logprob / độ dài text"]
     I4 --> K4[("Elasticsearch<br/>segment_id + text + frame window")]
 
+    K4 -.->|"scripts/embed_transcripts.py<br/>chạy riêng, sau — KHÔNG transcribe lại"| P5["bge-m3 encode<br/>(đọc text lại từ ES qua scroll API)"]
+    P5 --> J5["L2 normalize"]
+    J5 --> K5[("Milvus<br/>segment_id + vector dense (P0.11b)")]
+
     K1 --> Z["Ghi checkpoint theo video_id"]
     K2 --> Z
     K3 --> Z
@@ -155,11 +159,11 @@ flowchart TD
 
     classDef store fill:#eef6ff,stroke:#2563eb,stroke-width:2px,color:#1e3a8a
     classDef risk fill:#fff4e6,stroke:#d97706,stroke-width:2px,color:#7c2d12
-    class K1,K2,K3,K4 store
+    class K1,K2,K3,K4,K5 store
     class P,ERR risk
 ```
 
-**Bốn điểm cần chú ý trong sơ đồ này** (cộng thêm nhánh ASR ở điểm 6):
+**Các điểm cần chú ý trong sơ đồ này:**
 
 1. **Node `Gán global_index và tính s_v, e_v`** — 📄 Paper lưu ở MongoDB `{video_id, s_v, e_v}`. Đây là **điều kiện tiên quyết của DANTE**: thuật toán quy hoạch động chạy trên khoảng index `[s_v, e_v]` của từng video. Bỏ bước này thì DANTE không thể triển khai.
 
@@ -174,6 +178,8 @@ flowchart TD
 8. **Nguồn dữ liệu của lượt ingest hiện tại (2026-08-07)** 🔧 — sơ đồ trên mô tả pipeline baseline (`C → D → E → F` chạy TransNetV2 cục bộ). Trên thực tế, 873 video / 221.903 keyframe hiện có trong Milvus/MongoDB được import từ `data/embed_out/`: vector BEiT-3 encode **trên Kaggle**, không chạy lại `D`/`E`/`F`/`I1` cục bộ. `global_index`, `s_v`/`e_v` và `shot_id` (node `G`) vẫn được tính đúng như sơ đồ nhưng lúc **import**, bằng `pipelines/import_embed_out.py` — `shot_id` dùng shot boundary thật từ `data/shots.json` thay vì gọi lại TransNetV2. Quyết định và chi tiết đầy đủ: `.claude/plans/kaggle-offline-embed.plan.md`.
 
 6. **Nhánh ASR (`H4`) tách khỏi node `A`, không phải `G`** 🔧 — bổ sung 2026-08-02, ngoài đường găng P0 (`.claude/plans/p0-foundation.plan.md` §P0.11). Nó chỉ cần `.mp4` (đọc `fps`/`frame_count` bằng cv2, không đọc Mongo), nên chạy độc lập với checkpoint VISION/OCR — video ở trạng thái `embedded` hay `complete` không ảnh hưởng gì tới việc ASR đã chạy hay chưa. Trạng thái của nó ghi ở collection **riêng** `asr_runs`, không phải field trên `VideoDocument` (`upsert_video()` là `replace_one` toàn phần — thêm field ASR vào đó sẽ bị ingest ghi đè im lặng). `start_frame_idx`/`end_frame_idx` trong `Elasticsearch` là **cửa sổ truy hồi** suy từ `start_time`/`end_time` qua floor/ceil, không phải `frame_id` nộp BTC.
+
+7. **`K4 -.-> P5` là đường nét đứt có chủ đích** 🔧 — bổ sung P0.11b, 2026-08-02. Khác với ba nhánh còn lại (chạy trong cùng một lượt `ingest_video()`), bước `bge-m3 encode` chạy ở **một lời gọi CLI riêng** (`scripts/embed_transcripts.py`), **bất kỳ lúc nào sau khi** P0.11a đã index xong — không đồng bộ với transcribe. Lý do: transcribe tốn và không đảo ngược (~10h GPU/873 video); nếu sau này đo Hallucination Rate/WER (P0.11 Bước 1) ra ngưỡng lọc sai phải transcribe lại, thì embedding — vốn rẻ và **đọc lại `text` từ ES qua scroll API, không đụng tới audio gốc** — cũng phải làm lại theo, nhưng không kéo theo việc phải transcribe lại lần hai. Chưa có checkpoint riêng cho bước embed — chạy lại `embed_transcripts.py` sẽ re-embed toàn bộ (an toàn vì `upsert` theo `segment_id`, chỉ tốn thêm thời gian, không tạo bản ghi trùng).
 
 ### 3.3 ⭐ Luồng truy vấn Multimodal (online)
 
@@ -400,6 +406,16 @@ sequenceDiagram
 
 > ⚠️ Vì embedding đã L2-normalize, `COSINE` và `IP` cho cùng thứ hạng. Vẫn khai báo `COSINE` cho rõ ràng ngữ nghĩa.
 
+**Collection thứ hai — `transcripts_{model_id}` (P0.11b, 🔧 dự án 2026-08-02).** Kênh ASR dense, tách hẳn khỏi `keyframes_{model_id}` — khác cả schema lẫn encoder (`bge-m3`, text-to-text, không phải `beit3_base_itc`). Không vi phạm invariant "một encoder duy nhất" (CLAUDE.md §3): invariant đó nói ingest/query **trong cùng một kênh** phải cùng model, không cấm kênh khác dùng encoder riêng.
+
+| Trường | Kiểu | Ghi chú |
+|---|---|---|
+| `segment_id` | `VARCHAR(64)`, primary key | Dạng `{video_id}_seg{index}`, cùng quy ước với `AsrSegmentDocument` ở Elasticsearch |
+| `embedding` | `FLOAT_VECTOR(1024)` | Đã L2-normalize; `d = 1024` với `bge-m3` |
+| `video_id` | `VARCHAR(32)` | Lọc trong engine |
+| `start_frame_idx` / `end_frame_idx` | `INT64` | **Cửa sổ truy hồi**, suy từ `start_time`/`end_time` qua floor/ceil — không phải `frame_id` nộp BTC (frame_id luôn lấy từ keyframe) |
+| `start_time` / `end_time` | `FLOAT` | Giây, để hiển thị |
+
 ### 4.2 Elasticsearch — OCR text
 
 | Trường | Kiểu | Nguồn |
@@ -548,7 +564,9 @@ AIC-Video-Retrieval/
 │   ├── keyframe.py             lấy mẫu 4 vị trí mỗi shot
 │   ├── ocr.py                  lọc + dedupe + Gemini
 │   ├── embed.py                encode theo lô + ghi Milvus
-│   └── asr.py                  faster-whisper + lọc ảo giác (P0.11a, ngoài đường găng P0)
+│   ├── asr.py                  faster-whisper + lọc ảo giác (P0.11a, ngoài đường găng P0)
+│   ├── embed_transcripts.py    bge-m3 encode transcript → Milvus (P0.11b)
+│   └── export_asr.py           dump index asr_segments ra 1 file JSON chia sẻ (P0.11a)
 ├── datasets/                   base.py (Protocol) · aic2026.py
 ├── eval/
 │   ├── run.py                  điểm vào duy nhất
@@ -663,3 +681,4 @@ Nhánh cuối là ràng buộc quan trọng nhất trong sơ đồ: **đổi mod
 | Cổng grounding trước khi trả lời | 🔧 Dự án | Cần thiết để đo `Hallucination Rate` |
 | FastAPI + React/Vite | 🔧 Dự án | Paper không nêu framework |
 | Nhánh ASR (P0.11, faster-whisper) — đảo non-goal | 🔧 Chủ dự án 2026-08-02 | Baseline không có ASR; bản tin có lời dẫn nói ra nhiều thứ không hiện thành chữ (tên người, địa danh, số liệu) — bổ trợ OCR. Là job GPU offline không tốn quota Gemini nên chạy được đúng lúc nhánh OCR đang chờ quota, không chặn P0.8-P0.10 |
+| `bge-m3` làm encoder thứ ba cho transcript (P0.11b), không dùng lại BEiT-3 | 🔧 Dự án 2026-08-02 | `beit3_base_itc` học contrastive ảnh-chữ, không phải chữ-chữ; alignment học trên caption tiếng Anh nên vector tiếng Việt lệch. Lời nói tự phát (paraphrase cao) khó khớp BM25 hơn OCR nhiều — cần kênh dense riêng |

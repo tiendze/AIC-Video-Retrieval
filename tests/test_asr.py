@@ -8,7 +8,16 @@ convention as tests/test_ocr.py.
 
 from __future__ import annotations
 
-from pipelines.asr import AsrConfig, AsrSegment, is_hallucination, run_asr, to_frame_window
+from pipelines.asr import (
+    AsrConfig,
+    AsrSegment,
+    VideoTiming,
+    format_duration,
+    is_hallucination,
+    run_asr,
+    summarize_timings,
+    to_frame_window,
+)
 
 
 def _segment(
@@ -114,3 +123,46 @@ async def test_asr_summary_counts_each_drop_reason_separately():
     assert summary.dropped_no_speech == 1
     assert summary.dropped_low_confidence == 1
     assert summary.dropped_short_text == 1
+
+
+def test_timing_summary_reports_total_and_mean_wall_clock_per_video():
+    timings = [
+        VideoTiming(video_id="L21_V001", wall_sec=100.0, audio_sec=1200.0),
+        VideoTiming(video_id="L21_V002", wall_sec=60.0, audio_sec=800.0),
+    ]
+
+    summary = summarize_timings(timings)
+
+    assert summary.num_videos == 2
+    assert summary.total_wall_sec == 160.0
+    assert summary.mean_wall_sec == 80.0
+    assert summary.total_audio_sec == 2000.0
+
+
+def test_timing_summary_speed_ratio_is_audio_seconds_per_wall_second():
+    # 2000s of audio in 160s of wall clock = 12.5x realtime. This is the number
+    # that projects a full-corpus run without re-measuring: remaining audio
+    # divided by this ratio.
+    timings = [
+        VideoTiming(video_id="L21_V001", wall_sec=100.0, audio_sec=1200.0),
+        VideoTiming(video_id="L21_V002", wall_sec=60.0, audio_sec=800.0),
+    ]
+
+    assert summarize_timings(timings).speed_ratio == 12.5
+
+
+def test_timing_summary_of_a_run_that_transcribed_nothing_is_all_zeros():
+    # Every video already `done` is a normal outcome, not an error -- must not
+    # divide by zero.
+    summary = summarize_timings([])
+
+    assert summary.num_videos == 0
+    assert summary.total_wall_sec == 0.0
+    assert summary.mean_wall_sec == 0.0
+    assert summary.speed_ratio == 0.0
+
+
+def test_format_duration_scales_from_seconds_to_hours():
+    assert format_duration(45.4) == "45s"
+    assert format_duration(125.0) == "2m 05s"
+    assert format_duration(3725.0) == "1h 02m 05s"

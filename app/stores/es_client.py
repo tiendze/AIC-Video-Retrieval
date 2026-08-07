@@ -9,11 +9,12 @@ never one `index()` call per document.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from elasticsearch import AsyncElasticsearch
-from elasticsearch.helpers import async_bulk
+from elasticsearch.helpers import async_bulk, async_scan
 
 _ANALYZER_NAME = "vi_analyzer"
 
@@ -179,6 +180,23 @@ class AsrEsStore:
 
         response = await self._client.search(index=self._index_name, query=query, size=top_k)
         return [hit["_source"] | {"score": hit["_score"]} for hit in response["hits"]["hits"]]
+
+    async def refresh(self) -> None:
+        """Makes just-indexed segments visible to search/scroll immediately.
+        Elasticsearch is near-real-time (~1s refresh interval by default), so a
+        `scroll_all()` fired right after `bulk_index()` would silently miss the
+        last video's segments — an export that looks complete but isn't."""
+        await self._client.indices.refresh(index=self._index_name)
+
+    async def scroll_all(self) -> AsyncIterator[dict[str, Any]]:
+        """Every indexed segment, across all videos — P0.11b reads
+        `transcript_text` back through here to embed, instead of re-running
+        Whisper. Uses `helpers.async_scan` (the scroll API), not `search()`
+        with a large `size`, since the segment count can exceed any single
+        page Elasticsearch is willing to return."""
+        query = {"query": {"match_all": {}}}
+        async for hit in async_scan(self._client, index=self._index_name, query=query):
+            yield hit["_source"]
 
     async def close(self) -> None:
         await self._client.close()
