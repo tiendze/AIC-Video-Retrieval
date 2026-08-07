@@ -64,6 +64,17 @@ def batch_of(video_id: str) -> str:
     return video_id.split("_V", 1)[0]
 
 
+def is_video_already_imported(video_doc: dict | None) -> bool:
+    """`True` when `video_doc` (a raw MongoDB `videos` find result, or `None`
+    if no such video exists yet) already reached `STATUS_COMPLETE` — the
+    caller's cue to skip re-importing it. Without this check, re-running the
+    CLI over an already-imported video without `--reset` silently desyncs
+    `global_index`/`s_v`/`e_v` between Milvus (upserts to the new value) and
+    MongoDB `keyframes` (duplicate-key inserts are skipped, so the OLD value
+    survives there) — CLAUDE.md T1: a re-run must not corrupt prior state."""
+    return video_doc is not None and video_doc.get("ingest_status") == STATUS_COMPLETE
+
+
 def discover_video_ids(vectors_dir: Path) -> list[str]:
     """Sorted `video_id` list from `vectors/*.npy` — this sort order is what
     decides `global_index` assignment order across the whole import run
@@ -148,12 +159,20 @@ def build_imported_keyframes(
     so DANTE's `tau < t` ordering is preserved)."""
     batch = batch_of(video_id)
     records = []
+    previous_frame_idx: int | None = None
     for i, row in enumerate(jsonl_rows):
         if row["video_id"] != video_id:
             raise ValueError(
                 f"{video_id}: jsonl row {i} has video_id={row['video_id']!r}, expected {video_id!r}"
             )
         frame_idx = row["frame_idx"]
+        if previous_frame_idx is not None and frame_idx <= previous_frame_idx:
+            raise ValueError(
+                f"{video_id}: frame_idx not ascending at jsonl row {i} "
+                f"({frame_idx} after {previous_frame_idx}) — embed_out's row-order contract "
+                "(plan §3) is violated, global_index would desync from frame_idx order"
+            )
+        previous_frame_idx = frame_idx
         records.append(
             ImportedKeyframe(
                 keyframe_id=row["keyframe_id"],

@@ -20,6 +20,7 @@ from pipelines.import_embed_out import (
     build_imported_keyframes,
     build_video_document,
     discover_video_ids,
+    is_video_already_imported,
     load_shot_index,
     load_video_vectors,
     resolve_shot_id,
@@ -181,6 +182,30 @@ class TestBuildImportedKeyframes:
                 "L21_V001", vectors, rows, self._RANGES, fps=25.0, global_index_start=0, author=""
             )
 
+    def test_raises_when_frame_idx_not_strictly_ascending(self):
+        vectors = np.zeros((2, 2), dtype=np.float32)
+        rows = [
+            {"keyframe_id": "L21_V001_f20", "video_id": "L21_V001", "frame_idx": 20},
+            {"keyframe_id": "L21_V001_f10", "video_id": "L21_V001", "frame_idx": 10},
+        ]
+
+        with pytest.raises(ValueError, match="not ascending"):
+            build_imported_keyframes(
+                "L21_V001", vectors, rows, self._RANGES, fps=25.0, global_index_start=0, author=""
+            )
+
+    def test_raises_when_frame_idx_repeats(self):
+        vectors = np.zeros((2, 2), dtype=np.float32)
+        rows = [
+            {"keyframe_id": "L21_V001_f10", "video_id": "L21_V001", "frame_idx": 10},
+            {"keyframe_id": "L21_V001_f10", "video_id": "L21_V001", "frame_idx": 10},
+        ]
+
+        with pytest.raises(ValueError, match="not ascending"):
+            build_imported_keyframes(
+                "L21_V001", vectors, rows, self._RANGES, fps=25.0, global_index_start=0, author=""
+            )
+
 
 class TestToMilvusVectorAndKeyframeDocument:
     _KEYFRAME = ImportedKeyframe(
@@ -215,6 +240,17 @@ class TestToMilvusVectorAndKeyframeDocument:
         assert doc.thumbnail_path == expected_path
         assert doc.shot_id == "L21_V001_shot1"
         assert doc.global_index == 5
+
+
+class TestIsVideoAlreadyImported:
+    def test_false_when_no_document_exists(self):
+        assert is_video_already_imported(None) is False
+
+    def test_false_when_status_is_not_complete(self):
+        assert is_video_already_imported({"ingest_status": "failed"}) is False
+
+    def test_true_when_status_is_complete(self):
+        assert is_video_already_imported({"ingest_status": STATUS_COMPLETE}) is True
 
 
 class TestBuildVideoDocument:

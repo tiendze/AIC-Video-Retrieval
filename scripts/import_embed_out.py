@@ -46,6 +46,7 @@ from pipelines.import_embed_out import (
     build_imported_keyframes,
     build_video_document,
     discover_video_ids,
+    is_video_already_imported,
     load_shot_index,
     load_video_vectors,
     to_keyframe_document,
@@ -241,8 +242,17 @@ async def _main() -> int:
 
     global_index_start = await next_global_index_start(mongo)
     total_keyframes = 0
+    skipped_video_ids: list[str] = []
     failed_video_ids: list[str] = []
     for video_id in video_ids:
+        # Re-running without --reset must not re-import a video that already
+        # finished: doing so desyncs global_index between Milvus (upsert
+        # overwrites it) and MongoDB keyframes (duplicate-key inserts are
+        # skipped, so the old value survives) — is_video_already_imported's
+        # docstring has the full mechanism.
+        if is_video_already_imported(await mongo.get_video(video_id)):
+            skipped_video_ids.append(video_id)
+            continue
         try:
             written = await _import_video(
                 video_id,
@@ -262,8 +272,10 @@ async def _main() -> int:
         total_keyframes += written
 
     logger.info(
-        "Done: %d video(s), %d keyframe(s) written, %d failed",
-        len(video_ids) - len(failed_video_ids),
+        "Done: %d video(s) imported, %d skipped (already complete), "
+        "%d keyframe(s) written, %d failed",
+        len(video_ids) - len(failed_video_ids) - len(skipped_video_ids),
+        len(skipped_video_ids),
         total_keyframes,
         len(failed_video_ids),
     )
