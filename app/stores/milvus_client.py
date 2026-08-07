@@ -53,11 +53,24 @@ class MilvusStore:
         self._client = MilvusClient(uri=uri, token=token)
         self._collection_name = f"keyframes_{model_id}"
         self._search_ef = search_ef
+        self._embedding_dim = embedding_dim
+        self._hnsw_m = hnsw_m
+        self._hnsw_ef_construction = hnsw_ef_construction
         self._ensure_collection(embedding_dim, hnsw_m, hnsw_ef_construction)
 
     @property
     def collection_name(self) -> str:
         return self._collection_name
+
+    def drop_collection(self) -> None:
+        """Deletes the collection outright (not a row-level delete) — used to
+        wipe a keyframe source that's being replaced wholesale, so its rows
+        can never mix with the next source's under the same `model_id`
+        (CLAUDE.md §3, plan §9.5). Re-creates an empty collection immediately
+        so callers can keep using this store without re-instantiating it."""
+        if self._client.has_collection(self._collection_name):
+            self._client.drop_collection(self._collection_name)
+        self._ensure_collection(self._embedding_dim, self._hnsw_m, self._hnsw_ef_construction)
 
     def _ensure_collection(
         self, embedding_dim: int, hnsw_m: int, hnsw_ef_construction: int

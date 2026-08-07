@@ -92,6 +92,8 @@ flowchart LR
 | Backend | FastAPI + Pydantic | 🔧 Giả định | Paper không nêu framework |
 | Frontend | React + Vite + TS | 🔧 Giả định | Paper không nêu framework |
 
+⚠️ **Nguồn dữ liệu hiện đang chạy thật (2026-08-07):** hai dòng Shot segmentation / Visual-Text encoder ở trên mô tả kiến trúc baseline. Dữ liệu thật trong Milvus/MongoDB lúc này đến từ `data/embed_out/` — BEiT-3 encode **trên Kaggle** (không phải TransNetV2 + encoder chạy cục bộ như sơ đồ §3.2 vẽ), keyframe input do thành viên nhóm cung cấp sẵn. Chi tiết: `.claude/plans/kaggle-offline-embed.plan.md`, import bằng `scripts/import_embed_out.py`.
+
 ---
 
 ## 3. Luồng dữ liệu
@@ -168,6 +170,8 @@ flowchart TD
 3. **Vòng lặp checkpoint** — `Z → B` khép kín để pipeline resume được (yêu cầu T1).
 
 4. **Ba nhánh song song** — chúng độc lập, có thể chạy đồng thời hoặc tách thành ba lần chạy riêng. Trên máy 8GB VRAM, chạy tuần tự từng nhánh thường an toàn hơn.
+
+8. **Nguồn dữ liệu của lượt ingest hiện tại (2026-08-07)** 🔧 — sơ đồ trên mô tả pipeline baseline (`C → D → E → F` chạy TransNetV2 cục bộ). Trên thực tế, 873 video / 221.903 keyframe hiện có trong Milvus/MongoDB được import từ `data/embed_out/`: vector BEiT-3 encode **trên Kaggle**, không chạy lại `D`/`E`/`F`/`I1` cục bộ. `global_index`, `s_v`/`e_v` và `shot_id` (node `G`) vẫn được tính đúng như sơ đồ nhưng lúc **import**, bằng `pipelines/import_embed_out.py` — `shot_id` dùng shot boundary thật từ `data/shots.json` thay vì gọi lại TransNetV2. Quyết định và chi tiết đầy đủ: `.claude/plans/kaggle-offline-embed.plan.md`.
 
 6. **Nhánh ASR (`H4`) tách khỏi node `A`, không phải `G`** 🔧 — bổ sung 2026-08-02, ngoài đường găng P0 (`.claude/plans/p0-foundation.plan.md` §P0.11). Nó chỉ cần `.mp4` (đọc `fps`/`frame_count` bằng cv2, không đọc Mongo), nên chạy độc lập với checkpoint VISION/OCR — video ở trạng thái `embedded` hay `complete` không ảnh hưởng gì tới việc ASR đã chạy hay chưa. Trạng thái của nó ghi ở collection **riêng** `asr_runs`, không phải field trên `VideoDocument` (`upsert_video()` là `replace_one` toàn phần — thêm field ASR vào đó sẽ bị ingest ghi đè im lặng). `start_frame_idx`/`end_frame_idx` trong `Elasticsearch` là **cửa sổ truy hồi** suy từ `start_time`/`end_time` qua floor/ceil, không phải `frame_id` nộp BTC.
 
@@ -653,6 +657,7 @@ Nhánh cuối là ràng buộc quan trọng nhất trong sơ đồ: **đổi mod
 | `MultimodalEncoder` Protocol | 🔧 Dự án | Chống rủi ro cài đặt BEiT-3 (R1) |
 | `DatasetAdapter` Protocol | 🔧 Dự án | Đổi/mở rộng dataset không sửa pipeline (T3) |
 | Tự trích keyframe bằng TransNetV2, **không** dùng keyframe BTC trích sẵn | 🔧 Chủ dự án 2026-07-29 | Bám baseline. Đổi lại: tốn công giải mã 130,7 giờ video, và nhãn eval sinh từ chính shot của mình nên metric không phạt được lỗi cắt shot (rủi ro R10) |
+| Nguồn keyframe/vector hiện tại: BEiT-3 encode **trên Kaggle**, keyframe do thành viên nhóm cung cấp (không phải TransNetV2 tự trích + encode cục bộ như dòng trên) | 🔧 Chủ dự án 2026-08-04 | RTX 3070 8GB không đủ chạy encode 221k keyframe trong thời gian hợp lý; Kaggle cấp GPU rảnh. Nhóm đã kiểm tra kỹ bộ keyframe cung cấp, không đối chứng lại TransNetV2. Hợp đồng artifact + parity probe: `.claude/plans/kaggle-offline-embed.plan.md` |
 | Bộ eval **nhãn tự sinh** | 🔧 Chủ dự án 2026-07-29 | Dataset công khai không kèm nhãn; đáp án thật chỉ biết qua nộp bài. Không có nhãn thì không đo được, mà không đo được thì vi phạm nguyên tắc xuyên suốt của dự án |
 | `author` / `batch` thay `recipe_type` | 🔧 Dự án | Dataset AIC không có trường phân loại nội dung tương đương |
 | Cổng grounding trước khi trả lời | 🔧 Dự án | Cần thiết để đo `Hallucination Rate` |
