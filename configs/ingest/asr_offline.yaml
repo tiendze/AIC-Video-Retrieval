@@ -1,0 +1,30 @@
+# pipelines/import_asr_out.py tuning -- import Kaggle asr_out/ artifact into
+# local ES/Mongo (.claude/plans/kaggle-asr-transcribe.plan.md, Nhip A T1-T3).
+# Field names match the loader's kwargs; a caller loads this file and passes
+# the values in explicitly (CLAUDE.md sec 6: khong magic number).
+
+# F1 doi chieu cheo: sai lech cho phep giua fps/frame_count Kaggle xuat kem
+# (runs.jsonl, do trong session Kaggle) va fps/frame_count local tu doc lai
+# tu chinh file .mp4 (nguon su that). Vuot nguong -> raise, khong chi canh
+# bao -- lech qua nguong nghia la ban .mp4 tren hai may co the khac nhau, va
+# phep nhan ra chi so khung hinh se tro sai cho ma khong crash.
+fps_tolerance: 0.01
+frame_count_tolerance: 1
+
+# Nguong cong A/B (Q4, kaggle-asr-transcribe.plan.md muc "Quyet dinh can
+# chot"): so segment RAW + ty le khop text giua ban Kaggle va ban tuan tu
+# large-v3 cu tren cung 1 video (chi L21 co duong co so). CHUA DO, day la
+# khoi diem de xuat trong plan -- chinh lai sau khi nhin so that L21 dau
+# tien, dung nhin so roi moi chinh nguoc lai.
+segment_count_drop_tolerance_pct: 1.0
+text_match_ratio_min: 0.98
+
+# Chinh sach cat lai segment o local (2026-08-08, xem pipelines/asr.py's
+# resegment_by_pause docstring): batched mode khoa cung bien segment vao VAD
+# chunk (~30s), word_timestamps cho phep cat lai theo khoang lang giua tu.
+# Ngat khi khoang lang >= gia tri nay (giay). CHUA DO gia tri toi uu cho
+# Recall@K -- 0.5s la khoi diem hop ly (im lang cuoi cau trong tin tuc doc
+# thuong > 0.3s), can do lai khi co eval/run.py cho kenh ASR. Dat null de
+# GIU NGUYEN segment batched goc (khong cat lai) -- vi du khi mot artifact
+# cu khong co words.
+resegment_min_pause_sec: 0.5

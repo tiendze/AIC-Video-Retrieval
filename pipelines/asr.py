@@ -57,6 +57,17 @@ class AsrConfig:
     min_text_length: int = 2
     batched: bool = False
     batch_size: int = 8
+    # Extracts per-word timestamps (faster_whisper==1.2.1, verified against
+    # transcribe.py:32-36/58) -- the only way to re-cut a batched-mode
+    # segment locally without re-running Whisper. Batched mode hard-codes
+    # each segment's boundary to the VAD chunk (up to ~30s of continuous
+    # speech), not Whisper's own per-sentence token timestamps
+    # (transcribe.py:398-409: max_speech_duration_s is forced to
+    # chunk_length and any caller-supplied value is popped and discarded).
+    # With word_timestamps on, resegment_by_pause() below recovers
+    # sentence-length pieces from the pause between words -- a policy that
+    # can be retuned on CPU at import time, no GPU needed.
+    word_timestamps: bool = False
 
     def __post_init__(self) -> None:
         # faster_whisper/transcribe.py:413-419 (research-asr-phowhisper-batched
@@ -77,16 +88,32 @@ _DEFAULT_ASR_CONFIG = AsrConfig()
 
 
 @dataclass(frozen=True)
+class Word:
+    """One decoded word with its own timestamp (faster_whisper's `Word`,
+    references.md §5.3) — only populated when `AsrConfig.word_timestamps` is
+    True. `word` carries its own leading space when it isn't sentence-initial
+    (faster_whisper/transcribe.py:1917 relies on this), so reassembling text
+    from a list of `Word` is `"".join(w.word for w in words)`, never
+    `" ".join(...)`."""
+
+    start: float
+    end: float
+    word: str
+    probability: float
+
+
+@dataclass(frozen=True)
 class AsrSegment:
     """One segment as returned by faster-whisper's `Segment` (references.md
     §5.3) — only the fields the hallucination filter and frame-window math
-    need."""
+    need. `words` is `None` unless `AsrConfig.word_timestamps=True`."""
 
     start: float
     end: float
     text: str
     no_speech_prob: float
     avg_logprob: float
+    words: Sequence[Word] | None = None
 
 
 @dataclass(frozen=True)
@@ -251,6 +278,7 @@ class FasterWhisperClient:
             language=self._config.language,
             vad_filter=self._config.vad_filter,
             condition_on_previous_text=self._config.condition_on_previous_text,
+            word_timestamps=self._config.word_timestamps,
             **extra,
         )
         return [
@@ -260,9 +288,62 @@ class FasterWhisperClient:
                 text=segment.text,
                 no_speech_prob=segment.no_speech_prob,
                 avg_logprob=segment.avg_logprob,
+                words=(
+                    tuple(
+                        Word(start=w.start, end=w.end, word=w.word, probability=w.probability)
+                        for w in segment.words
+                    )
+                    if segment.words is not None
+                    else None
+                ),
             )
             for segment in segments
         ]
+
+
+def resegment_by_pause(
+    words: Sequence[Word],
+    *,
+    min_pause_sec: float,
+    no_speech_prob: float,
+    avg_logprob: float,
+) -> list[AsrSegment]:
+    """Re-cuts one long batched-mode segment into sentence-length pieces
+    using the gap between consecutive words as the cut signal — the only
+    signal available, since batched mode's segment boundary comes from the
+    VAD chunk, not from Whisper's own token timestamps (`AsrConfig.
+    word_timestamps` docstring; faster_whisper==1.2.1 transcribe.py:398-409
+    hard-codes `max_speech_duration_s=chunk_length`, discarding any
+    caller-supplied value).
+
+    `no_speech_prob`/`avg_logprob` are the ORIGINAL segment's values, carried
+    onto every sub-segment unchanged — batched mode already coarsens both to
+    one pair per VAD chunk (plan finding F2), so cutting the text finer
+    cannot manufacture a per-sub-segment confidence that was never measured.
+    A caller who wants finer confidence must set `batched=False`.
+    """
+    if not words:
+        return []
+
+    groups: list[list[Word]] = [[words[0]]]
+    # words/words[1:] intentionally differ by one element -- this pairs
+    # consecutive words to inspect the gap between them, so zip's shorter-
+    # wins truncation is correct here, not a bug (strict=False documents that).
+    for previous, current in zip(words, words[1:], strict=False):
+        if current.start - previous.end >= min_pause_sec:
+            groups.append([])
+        groups[-1].append(current)
+
+    return [
+        AsrSegment(
+            start=group[0].start,
+            end=group[-1].end,
+            text="".join(w.word for w in group),
+            no_speech_prob=no_speech_prob,
+            avg_logprob=avg_logprob,
+        )
+        for group in groups
+    ]
 
 
 async def run_asr(

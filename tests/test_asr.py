@@ -15,8 +15,10 @@ from pipelines.asr import (
     AsrConfig,
     AsrSegment,
     VideoTiming,
+    Word,
     format_duration,
     is_hallucination,
+    resegment_by_pause,
     run_asr,
     should_transcribe,
     summarize_timings,
@@ -309,3 +311,145 @@ class TestShouldTranscribe:
         existing_run = {"asr_status": STATUS_DONE, "model_id": "large-v3"}
 
         assert should_transcribe(existing_run, model_id="large-v3", force=True) is True
+
+
+class TestWordTimestampsConfig:
+    def test_word_timestamps_defaults_to_false(self):
+        assert AsrConfig().word_timestamps is False
+
+    def test_asr_segment_words_defaults_to_none(self):
+        segment = _segment()
+
+        assert segment.words is None
+
+
+class TestFasterWhisperClientWordTimestamps:
+    def test_passes_word_timestamps_flag_to_transcribe_call(self, monkeypatch):
+        monkeypatch.setattr("faster_whisper.WhisperModel", _FakeWhisperModel)
+        from pipelines.asr import FasterWhisperClient
+
+        config = AsrConfig(word_timestamps=True)
+        client = FasterWhisperClient(config=config)
+        client.transcribe("video.mp4")
+
+        _video_path, kwargs = client._model.transcribe_calls[0]
+        assert kwargs["word_timestamps"] is True
+
+    def test_converts_returned_words_onto_asr_segment(self, monkeypatch):
+        class _FakeWord:
+            def __init__(self, start, end, word, probability):
+                self.start = start
+                self.end = end
+                self.word = word
+                self.probability = probability
+
+        class _FakeSegmentWithWords:
+            def __init__(self):
+                self.start = 0.0
+                self.end = 2.0
+                self.text = " xin chao"
+                self.no_speech_prob = 0.1
+                self.avg_logprob = -0.2
+                self.words = [
+                    _FakeWord(0.0, 0.5, " xin", 0.9),
+                    _FakeWord(0.5, 1.0, " chao", 0.9),
+                ]
+
+        class _FakeWhisperModelWithWords:
+            def __init__(self, model_id, device, compute_type):
+                pass
+
+            def transcribe(self, video_path, **kwargs):
+                return [_FakeSegmentWithWords()], None
+
+        monkeypatch.setattr("faster_whisper.WhisperModel", _FakeWhisperModelWithWords)
+        from pipelines.asr import FasterWhisperClient
+
+        client = FasterWhisperClient(config=AsrConfig(word_timestamps=True))
+        segments = client.transcribe("video.mp4")
+
+        assert segments[0].words == (
+            Word(start=0.0, end=0.5, word=" xin", probability=0.9),
+            Word(start=0.5, end=1.0, word=" chao", probability=0.9),
+        )
+
+    def test_words_stays_none_when_backend_returns_none(self, monkeypatch):
+        monkeypatch.setattr("faster_whisper.WhisperModel", _FakeWhisperModel)
+        from pipelines.asr import FasterWhisperClient
+
+        client = FasterWhisperClient(config=AsrConfig(word_timestamps=False))
+        segments = client.transcribe("video.mp4")
+
+        assert segments == []  # _FakeWhisperModel.transcribe returns ([], None)
+
+
+class TestResegmentByPause:
+    """`batched=true` hard-codes segment boundaries to the VAD chunk
+    (~30s) instead of Whisper's own sentence-level token timestamps
+    (AsrConfig.word_timestamps docstring). resegment_by_pause() is the local,
+    GPU-free way to recover sentence-length pieces from word-level pauses."""
+
+    def _word(self, start: float, end: float, word: str = " tu") -> Word:
+        return Word(start=start, end=end, word=word, probability=0.9)
+
+    def test_empty_words_returns_empty_list(self):
+        assert resegment_by_pause([], min_pause_sec=0.5, no_speech_prob=0.1, avg_logprob=-0.2) == []
+
+    def test_single_word_becomes_one_segment(self):
+        words = [self._word(1.0, 1.5, " xin")]
+
+        result = resegment_by_pause(words, min_pause_sec=0.5, no_speech_prob=0.1, avg_logprob=-0.2)
+
+        assert len(result) == 1
+        assert result[0].start == 1.0
+        assert result[0].end == 1.5
+        assert result[0].text == " xin"
+
+    def test_gap_below_threshold_keeps_words_in_the_same_segment(self):
+        # Gap between word 1 (ends 1.5) and word 2 (starts 1.7) is 0.2s < 0.5s threshold.
+        words = [self._word(1.0, 1.5, " xin"), self._word(1.7, 2.0, " chao")]
+
+        result = resegment_by_pause(words, min_pause_sec=0.5, no_speech_prob=0.1, avg_logprob=-0.2)
+
+        assert len(result) == 1
+        assert result[0].text == " xin chao"
+        assert result[0].start == 1.0
+        assert result[0].end == 2.0
+
+    def test_gap_at_or_above_threshold_splits_into_a_new_segment(self):
+        # Gap is exactly 0.5s -- >= threshold splits (not strictly >), matching
+        # to_frame_window's "boundary widens, never narrows" spirit: a pause
+        # right at the threshold is treated as a real pause, not swallowed.
+        words = [self._word(1.0, 1.5, " xin"), self._word(2.0, 2.5, " chao")]
+
+        result = resegment_by_pause(words, min_pause_sec=0.5, no_speech_prob=0.1, avg_logprob=-0.2)
+
+        assert len(result) == 2
+        assert result[0].text == " xin"
+        assert result[0].start == 1.0
+        assert result[0].end == 1.5
+        assert result[1].text == " chao"
+        assert result[1].start == 2.0
+        assert result[1].end == 2.5
+
+    def test_original_no_speech_prob_and_avg_logprob_carried_to_every_sub_segment(self):
+        # Batched mode already coarsens both values to one pair per VAD chunk
+        # (plan finding F2) -- resegmenting the text must not invent
+        # per-sub-segment confidence that was never measured.
+        words = [self._word(1.0, 1.5, " xin"), self._word(3.0, 3.5, " chao")]
+
+        result = resegment_by_pause(
+            words, min_pause_sec=0.5, no_speech_prob=0.42, avg_logprob=-0.77
+        )
+
+        assert all(seg.no_speech_prob == 0.42 for seg in result)
+        assert all(seg.avg_logprob == -0.77 for seg in result)
+
+    def test_words_reassembled_without_inserting_extra_spaces(self):
+        # faster_whisper's Word.word already carries its own leading space
+        # (transcribe.py:1917) -- "".join is correct, " ".join would double-space.
+        words = [self._word(1.0, 1.2, " xin"), self._word(1.2, 1.5, " chao")]
+
+        result = resegment_by_pause(words, min_pause_sec=0.5, no_speech_prob=0.1, avg_logprob=-0.2)
+
+        assert result[0].text == " xin chao"

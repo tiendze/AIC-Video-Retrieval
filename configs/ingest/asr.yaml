@@ -65,6 +65,15 @@ batched: true
 # (hoặc thấp hơn), rủi ro CUDA OOM là thật, không phải lý thuyết.
 batch_size: 16
 
+# Trích timestamp từng từ (2026-08-08) -- lối thoát khỏi việc batched mode
+# khoá cứng biên segment vào VAD chunk (~30s, xem comment ở batched phía
+# trên). Có words thì local tự cắt lại segment theo khoảng lặng giữa các từ
+# (pipelines/asr.py resegment_by_pause()) mà không cần chạy lại Whisper --
+# đổi ngưỡng khoảng lặng bao nhiêu lần cũng chỉ tốn CPU. ⚠️ CHƯA ĐO thêm bao
+# nhiêu thời gian GPU (cross-attention DTW) -- xác nhận qua smoke test
+# (kaggle_asr_transcribe.ipynb mục 9) trước khi chạy full.
+word_timestamps: true
+
 # Step [1] of the hallucination filter: drop a segment when the model's own
 # "this might be silence/noise" probability exceeds this. Starting guess,
 # not yet measured -- tune after Bước 1 (Hallucination Rate + WER on L21,
