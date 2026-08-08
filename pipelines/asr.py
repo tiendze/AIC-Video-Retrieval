@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from app.stores.es_client import AsrEsStore, AsrSegmentDocument
+from pipelines.text_normalize import normalize_spoken_numbers
 
 logger = logging.getLogger(__name__)
 
@@ -378,13 +379,17 @@ async def run_asr(
             continue
 
         window = to_frame_window(segment, fps, frame_count)
+        # Normalized AFTER the hallucination filter above, which must judge
+        # Whisper's own raw output -- normalizing first would let a shrunk
+        # "sáu mươi giây" -> "60 giây" cross min_text_length differently
+        # than the un-normalized text the filter actually saw.
         documents.append(
             AsrSegmentDocument(
                 segment_id=f"{video_id}_seg{index}",
                 video_id=video_id,
                 start_time=segment.start,
                 end_time=segment.end,
-                text=segment.text,
+                text=normalize_spoken_numbers(segment.text),
                 start_frame_idx=window.start_frame_idx,
                 end_frame_idx=window.end_frame_idx,
             )

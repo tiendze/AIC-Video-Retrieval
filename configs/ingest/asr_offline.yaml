@@ -22,9 +22,12 @@ text_match_ratio_min: 0.98
 # Chinh sach cat lai segment o local (2026-08-08, xem pipelines/asr.py's
 # resegment_by_pause docstring): batched mode khoa cung bien segment vao VAD
 # chunk (~30s), word_timestamps cho phep cat lai theo khoang lang giua tu.
-# Ngat khi khoang lang >= gia tri nay (giay). CHUA DO gia tri toi uu cho
-# Recall@K -- 0.5s la khoi diem hop ly (im lang cuoi cau trong tin tuc doc
-# thuong > 0.3s), can do lai khi co eval/run.py cho kenh ASR. Dat null de
-# GIU NGUYEN segment batched goc (khong cat lai) -- vi du khi mot artifact
-# cu khong co words.
-resegment_min_pause_sec: 0.5
+# Ngat khi khoang lang >= gia tri nay (giay). Doi 0.5 -> 0.2 (2026-08-08) sau
+# khi doc that noi dung L21_V001: nguong 0.5 chi tach 1 doan dai 33.6s thanh
+# 3 manh (van gop 2 tin thoi su khac nhau lam mot); 0.2 tach duoc them 1 ranh
+# gioi tin ma 0.5 bo lot. Ha tiep xuong 0.15 khong cai thien dang ke (75.7 vs
+# 74.3 segment/video tren mau 3 video) -- nguoi doc tin lien tuc, khong con
+# khoang lang nao de cat them. CHUA DO tac dong len Recall@K, can do lai khi
+# co eval/run.py cho kenh ASR. Dat null de GIU NGUYEN segment batched goc
+# (khong cat lai) -- vi du khi mot artifact cu khong co words.
+resegment_min_pause_sec: 0.2
