@@ -55,10 +55,15 @@ condition_on_previous_text: false
 batched: true
 
 # Only takes effect when batched=true (rejected by the non-batched call).
-# 8, not 16 like faster-whisper's README benchmark: the RTX 3070 has 8GB
-# VRAM, and batch size doesn't scale speed linearly anyway (short chunks
-# still get padded to 30s, and the decoder waits for the longest chunk).
-batch_size: 8
+# Đổi 8 -> 16 (2026-08-08) để chạy trên Kaggle T4 (15GB VRAM, gấp ~2x RTX 3070
+# 8GB local) -- 16 là số benchmark gốc trong README faster-whisper mà 8 từng
+# né vì thiếu VRAM. ⚠️ CHƯA ĐO tốc độ/VRAM thật ở giá trị này -- xác nhận qua
+# smoke test (kaggle_asr_transcribe.ipynb mục 9) trước khi chạy full, vì batch
+# size không cho tăng tốc tuyến tính (chunk ngắn vẫn bị đệm đủ 30s, decoder
+# chờ chuỗi dài nhất trong batch). ⚠️ File này DÙNG CHUNG cho cả Kaggle lẫn
+# local -- nếu chạy ASR lại trên RTX 3070 8GB mà chưa trả giá trị này về 8
+# (hoặc thấp hơn), rủi ro CUDA OOM là thật, không phải lý thuyết.
+batch_size: 16
 
 # Step [1] of the hallucination filter: drop a segment when the model's own
 # "this might be silence/noise" probability exceeds this. Starting guess,
