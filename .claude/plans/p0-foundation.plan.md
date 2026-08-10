@@ -14,7 +14,7 @@
 | P0.6 ba store client | ✅ xong — đã bổ sung field `frame_idx` vào Milvus (2026-08-01, xem dưới) |
 | **P0.7 ingest** | 🟡 **VISION xong toàn kho (221.903 keyframe, 873 video `complete`) · TEXT/OCR *live* (`pipelines/ocr.py`) hoãn có chủ đích (2026-08-09) · ⭐ nhưng `ocr_keyframes` đã nạp đầy 2026-08-10 qua import offline riêng (`data/ocr_results.jsonl`, ngoài `pipelines/ocr.py`) — xem `pipelines/import_ocr_results.py`** |
 | P0.8 search + `/health` | ⬜ |
-| P0.9 `eval/run.py` | ⬜ |
+| P0.9 `eval/run.py` | 🟡 code xong 2026-08-10, chạy thật trên dữ liệu chưa (xem ghi chú dưới) |
 | P0.10 báo cáo phase | ⬜ |
 | P0.11a ASR → ES (BM25) | ✅ xong 2026-08-09 — toàn kho 873 video, 31.719 segment, verify khớp Mongo/ES |
 | P0.11b ASR → Milvus (dense) | ⬜ **optional** — chủ dự án 2026-08-07 (và tái xác nhận 2026-08-09): không cần cho lúc này |
@@ -321,6 +321,17 @@ keyframe → [1] lọc frame CÓ CHỮ → [2] dedupe perceptual hash → [3] Ge
 ---
 
 ## P0.9 — `eval/run.py` ⭐ phần quan trọng nhất của P0
+
+> 🟡 **2026-08-10: code xong, TDD RED→GREEN từng module, 79 test mới xanh (ruff sạch).** Gồm `eval/metrics/retrieval.py` (Recall@k/MRR/mAP/nDCG@10/median-rank/AIC Final Score + luật hit point-in-segment, cả video-level lẫn segment-level), `eval/metrics/leakage.py` (phép thử rò rỉ nhãn caption↔ocr_text), `eval/baselines/random.py` + `bm25.py`, `configs/eval/aic_pilot.yaml`, và `eval/run.py` (orchestration). Hai method mới ở store: `MongoStore.scroll_all_keyframes()` (pool cho random baseline) + `EsStore.get_by_ids()` (tra OCR text theo `keyframe_id` cho phép thử rò rỉ nhãn).
+>
+> **Quyết định đã xác nhận với chủ dự án (2026-08-10):** `bm25.py` là wrapper mỏng quanh `EsStore.search()` sẵn có (Elasticsearch mặc định *là* BM25) — số của baseline `bm25` và kênh `ocr` sẽ TRÙNG nhau, đây là chủ đích (bm25 đóng vai sàn so sánh, không phải kênh thứ ba).
+>
+> **Chưa chạy thật** (CLAUDE.md §10 — cần BEiT-3 GPU + Milvus/ES/Mongo thật đang chạy, để chủ dự án tự chạy):
+> ```powershell
+> docker compose up -d
+> python -m eval.run --config configs/eval/aic_pilot.yaml
+> ```
+> Sau khi chạy xong, đọc `reports/<timestamp>_<git_sha>/report.md` để lấy bảng số thật cho P0.10.
 
 **Làm gì:** biến hệ thống từ "chạy được" thành "đo được".
 
