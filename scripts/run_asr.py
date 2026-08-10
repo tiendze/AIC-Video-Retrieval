@@ -56,6 +56,7 @@ from app.config import Settings
 from app.stores.es_client import AsrEsStore
 from app.stores.mongo_client import AsrRunDocument, MongoStore
 from datasets.aic2026 import AIC2026Adapter
+from datasets.base import batch_of
 from pipelines.asr import (
     STATUS_DONE,
     STATUS_FAILED,
@@ -140,10 +141,6 @@ def _parse_args() -> argparse.Namespace:
 def _load_yaml(path: Path) -> dict:
     with path.open(encoding="utf-8") as f:
         return yaml.safe_load(f)
-
-
-def _batch_of(video_id: str) -> str:
-    return video_id.split("_V", 1)[0]
 
 
 def _log_timing_summary(timings: Sequence[VideoTiming]) -> None:
@@ -270,7 +267,7 @@ async def _main() -> int:
     videos = list(adapter.iter_videos(args.split))
     if args.batches:
         wanted_batches = {b.strip() for b in args.batches.split(",")}
-        videos = [v for v in videos if _batch_of(v.video_id) in wanted_batches]
+        videos = [v for v in videos if batch_of(v.video_id) in wanted_batches]
         if not videos:
             logger.warning("--batches=%s matched no video in split=%s", args.batches, args.split)
     if args.limit is not None:

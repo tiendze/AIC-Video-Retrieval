@@ -27,7 +27,6 @@ from pipelines.ingest import (
     STATUS_COMPLETE,
     STATUS_EMBEDDED,
     STATUS_FAILED,
-    _batch_of,
     build_extracted_keyframes,
     extract_keyframe_images,
     ingest_video,
@@ -242,11 +241,6 @@ async def test_ingest_video_writes_mongo_and_milvus_then_completes_ocr_branch(tm
     assert len(milvus.upsert_calls) == 1
     assert len(milvus.upsert_calls[0]) == 8
     assert len(es.bulk_index_calls) == 1  # OCR branch ran and indexed to ES
-
-
-def test_batch_of_derives_release_batch_from_video_id():
-    assert _batch_of("L21_V001") == "L21"
-    assert _batch_of("L24_V002") == "L24"
 
 
 async def test_run_ingest_derives_each_video_batch_independently(tmp_path):

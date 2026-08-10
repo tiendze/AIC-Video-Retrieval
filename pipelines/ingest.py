@@ -45,7 +45,7 @@ from app.encoders.base import MultimodalEncoder
 from app.stores.es_client import EsStore
 from app.stores.milvus_client import MilvusStore
 from app.stores.mongo_client import KeyframeDocument, MongoStore, VideoDocument
-from datasets.base import VideoRef
+from datasets.base import VideoRef, batch_of
 from pipelines.embed import KeyframeToEmbed, embed_and_write
 from pipelines.keyframe import keyframe_frame_indices
 from pipelines.ocr import OcrCandidate, OcrClient, OcrConfig, OcrRunSummary, run_ocr
@@ -122,15 +122,6 @@ def extract_keyframe_images(
     return images
 
 
-def _batch_of(video_id: str) -> str:
-    """Derives the release batch (e.g. "L21") from a video_id like
-    "L21_V001" — same convention as datasets/aic2026.py. A single
-    `run_ingest` call processes the whole pilot split (L21-L24 together), so
-    `batch` cannot be a constant passed in for the entire run; it must be
-    read per video from the video_id itself."""
-    return video_id.split("_V", 1)[0]
-
-
 def build_extracted_keyframes(
     video: VideoRef,
     shots: Sequence[Shot],
@@ -142,7 +133,7 @@ def build_extracted_keyframes(
     shot order — this order is also what `s_v`/`e_v` are derived from."""
     records: list[ExtractedKeyframe] = []
     global_index = global_index_start
-    batch = _batch_of(video.video_id)
+    batch = batch_of(video.video_id)
     for shot_index, shot in enumerate(shots):
         shot_id = f"{video.video_id}_shot{shot_index}"
         for frame_idx in keyframe_frame_indices(shot):
@@ -197,7 +188,7 @@ def _pending_video_document(video: VideoRef, status: str) -> VideoDocument:
         num_keyframes=0,
         ingest_status=status,
         author=video.category or "",
-        batch=_batch_of(video.video_id),
+        batch=batch_of(video.video_id),
         title=video.title or "",
         publish_date=video.publish_date or "",
         watch_url=video.watch_url or "",

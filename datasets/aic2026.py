@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 
-from datasets.base import GroundTruthSegment, VideoRef
+from datasets.base import GroundTruthSegment, VideoRef, batch_of
 
 PILOT_BATCHES = frozenset({"L21", "L22", "L23", "L24"})
 _VALID_SPLITS = frozenset({"pilot", "all"})
@@ -70,7 +70,7 @@ class AIC2026Adapter:
     def iter_videos(self, split: str) -> Iterator[VideoRef]:
         _validate_split(split)
         for video_id, video_path in sorted(self._discover_videos().items()):
-            if split == "pilot" and _batch_of(video_id) not in PILOT_BATCHES:
+            if split == "pilot" and batch_of(video_id) not in PILOT_BATCHES:
                 continue
             metadata = self._load_metadata(video_id)
             yield VideoRef(
@@ -102,7 +102,7 @@ class AIC2026Adapter:
                 caption=record["caption"],
             )
             for record in records
-            if split == "all" or _batch_of(record["video_id"]) in PILOT_BATCHES
+            if split == "all" or batch_of(record["video_id"]) in PILOT_BATCHES
         ]
 
     def publish_date(self, video_id: str) -> date:
@@ -189,10 +189,6 @@ class AIC2026Adapter:
             for path in sorted(self._dataset_root.rglob(f"{dir_name}/{pattern}")):
                 paths.setdefault(path.stem, path)
         return paths
-
-
-def _batch_of(video_id: str) -> str:
-    return video_id.split("_V", 1)[0]
 
 
 def _validate_split(split: str) -> None:

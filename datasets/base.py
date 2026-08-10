@@ -31,3 +31,10 @@ class GroundTruthSegment:
 class DatasetAdapter(Protocol):
     def iter_videos(self, split: str) -> Iterator[VideoRef]: ...
     def load_ground_truth(self, split: str) -> Sequence[GroundTruthSegment]: ...
+
+
+def batch_of(video_id: str) -> str:
+    """Derives the release batch (e.g. `L21`) from a `video_id` (e.g.
+    `L21_V005`). Shared by every reader of this `video_id` convention so the
+    split rule can't drift between callers."""
+    return video_id.split("_V", 1)[0]

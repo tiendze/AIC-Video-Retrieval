@@ -50,6 +50,7 @@ from app.stores.es_client import EsStore
 from app.stores.milvus_client import MilvusStore
 from app.stores.mongo_client import MongoStore
 from datasets.aic2026 import AIC2026Adapter
+from datasets.base import batch_of
 from pipelines.ingest import run_ingest
 from pipelines.ocr import GeminiOcrClient, OcrConfig
 from pipelines.shot_detect import ShotDetector
@@ -134,10 +135,6 @@ def _build_milvus_store(settings: Settings, encoder: BEiT3Encoder) -> MilvusStor
     )
 
 
-def _batch_of(video_id: str) -> str:
-    return video_id.split("_V", 1)[0]
-
-
 def _write_pilot_available_list(video_ids: list[str], out_path: Path) -> None:
     """Merges `video_ids` from this run into any list already on disk (union
     by video_id), so a narrower `--batches` run never erases entries a prior
@@ -192,7 +189,7 @@ async def _main() -> int:
     videos = list(adapter.iter_videos(args.split))
     if args.batches:
         wanted_batches = {b.strip() for b in args.batches.split(",")}
-        videos = [v for v in videos if _batch_of(v.video_id) in wanted_batches]
+        videos = [v for v in videos if batch_of(v.video_id) in wanted_batches]
         if not videos:
             logger.warning("--batches=%s matched no video in split=%s", args.batches, args.split)
     logger.info(
