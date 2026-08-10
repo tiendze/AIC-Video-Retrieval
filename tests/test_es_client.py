@@ -36,12 +36,25 @@ class _FakeAsyncElasticsearch:
         self.indices = _FakeIndicesClient()
         self.delete_by_query_calls: list[dict] = []
         self.ping_result = True
+        self.mget_docs: dict[str, dict] = {}
 
     async def delete_by_query(self, index, query):
         self.delete_by_query_calls.append({"index": index, "query": query})
 
     async def ping(self):
         return self.ping_result
+
+    async def mget(self, index, ids):
+        return {
+            "docs": [
+                (
+                    {"_id": doc_id, "found": True, "_source": self.mget_docs[doc_id]}
+                    if doc_id in self.mget_docs
+                    else {"_id": doc_id, "found": False}
+                )
+                for doc_id in ids
+            ]
+        }
 
 
 def _store(monkeypatch) -> AsrEsStore:
@@ -98,3 +111,33 @@ async def test_recreate_index_leaves_the_index_usable_afterwards(monkeypatch):
     # create -- proves recreate_index() left the store in a normal "exists" state.
     await store.ensure_index()
     assert len(store._client.indices.create_calls) == 1
+
+
+async def test_get_by_ids_returns_ocr_text_keyed_by_keyframe_id(monkeypatch):
+    # eval/metrics/leakage.py (plan §P0.9) needs the OCR text of specific
+    # answer keyframes, not a full-text search() match.
+    store = _ocr_store(monkeypatch)
+    store._client.mget_docs = {
+        "L21_V001_10": {"ocr_text": "tin tuc", "video_id": "L21_V001", "timestamp": 0.4},
+    }
+
+    result = await store.get_by_ids(["L21_V001_10"])
+
+    assert result == {"L21_V001_10": "tin tuc"}
+
+
+async def test_get_by_ids_omits_ids_not_found_in_elasticsearch(monkeypatch):
+    # No OCR text for a keyframe is expected data (OCR ingest is still
+    # partial, plan §P0.7) -- omitted, not raised.
+    store = _ocr_store(monkeypatch)
+    store._client.mget_docs = {"found": {"ocr_text": "x", "video_id": "v", "timestamp": 0.0}}
+
+    result = await store.get_by_ids(["found", "missing"])
+
+    assert set(result.keys()) == {"found"}
+
+
+async def test_get_by_ids_returns_empty_dict_for_empty_input(monkeypatch):
+    store = _ocr_store(monkeypatch)
+
+    assert await store.get_by_ids([]) == {}

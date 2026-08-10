@@ -94,6 +94,21 @@ class EsStore:
         )
         await async_bulk(self._client, actions)
 
+    async def get_by_ids(self, keyframe_ids: Sequence[str]) -> dict[str, str]:
+        """Batch OCR-text lookup by exact `keyframe_id`, via `mget` -- used
+        by `eval/metrics/leakage.py` (plan §P0.9), which needs the OCR text
+        of specific answer keyframes, not a `search()` full-text match. A
+        missing id is silently omitted, mirroring
+        `MongoStore.get_keyframes_by_ids`'s convention: no OCR text for a
+        keyframe is expected data (OCR ingest is still partial), not an
+        error."""
+        if not keyframe_ids:
+            return {}
+        response = await self._client.mget(index=self._index_name, ids=list(keyframe_ids))
+        return {
+            doc["_id"]: doc["_source"]["ocr_text"] for doc in response["docs"] if doc.get("found")
+        }
+
     async def search(self, query_text: str, top_k: int, video_id: str | None = None) -> list[dict]:
         """Full-text OCR search. `video_id` filter runs inside ES, never after the fact."""
         query: dict = {"match": {"ocr_text": query_text}}

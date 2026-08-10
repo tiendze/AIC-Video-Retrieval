@@ -12,7 +12,7 @@ duplicate-key error per row instead of creating a second record.
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -150,6 +150,16 @@ class MongoStore:
         cursor = self.keyframes.find({"keyframe_id": {"$in": list(keyframe_ids)}})
         docs = [doc async for doc in cursor]
         return {doc["keyframe_id"]: doc for doc in docs}
+
+    async def scroll_all_keyframes(self) -> AsyncIterator[dict[str, Any]]:
+        """Every persisted keyframe row across the whole corpus, unfiltered
+        -- the sampling pool `eval/baselines/random.py` (plan §P0.9) draws
+        from. Deliberately different from `get_keyframes_for_video`/
+        `get_keyframes_by_ids`: the random baseline needs to sample from
+        every ingested keyframe, not one video or one id list."""
+        cursor = self.keyframes.find({})
+        async for doc in cursor:
+            yield doc
 
     async def max_keyframe_global_index(self) -> int | None:
         """Highest `global_index` actually claimed by a written keyframe row

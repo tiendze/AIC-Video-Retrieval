@@ -39,6 +39,8 @@ class _FakeKeyframesCollection:
     def find(self, filter: Mapping[str, Any] | None = None):
         filter = filter or {}
         self.find_calls.append(filter)
+        if not filter:
+            return _FakeCursor(self._docs)
         wanted = set(filter.get("keyframe_id", {}).get("$in", []))
         matched = [d for d in self._docs if d["keyframe_id"] in wanted]
         return _FakeCursor(matched)
@@ -139,3 +141,27 @@ async def test_ping_returns_false_instead_of_raising_when_mongo_is_unreachable(m
     store._client.admin.raise_on_command = True
 
     assert await store.ping() is False
+
+
+async def test_scroll_all_keyframes_yields_every_document_across_the_corpus(monkeypatch):
+    # eval/baselines/random.py's sampling pool (plan §P0.9) -- unlike
+    # get_keyframes_for_video/get_keyframes_by_ids, this is deliberately
+    # unfiltered: the random baseline needs to sample from every ingested
+    # keyframe, not one video or one id list.
+    docs = [
+        {"keyframe_id": "a", "video_id": "v1", "frame_idx": 1, "timestamp": 0.04},
+        {"keyframe_id": "b", "video_id": "v2", "frame_idx": 2, "timestamp": 0.08},
+    ]
+    store = _store(monkeypatch, docs)
+
+    result = [doc async for doc in store.scroll_all_keyframes()]
+
+    assert {doc["keyframe_id"] for doc in result} == {"a", "b"}
+
+
+async def test_scroll_all_keyframes_yields_nothing_for_an_empty_corpus(monkeypatch):
+    store = _store(monkeypatch, [])
+
+    result = [doc async for doc in store.scroll_all_keyframes()]
+
+    assert result == []
