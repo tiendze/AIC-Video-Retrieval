@@ -36,7 +36,7 @@ import json
 import logging
 import subprocess
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -51,7 +51,7 @@ from app.stores.es_client import EsStore
 from app.stores.milvus_client import MilvusStore
 from app.stores.mongo_client import MongoStore
 from datasets.aic2026 import AIC2026Adapter
-from datasets.base import GroundTruthSegment
+from datasets.base import GroundTruthSegment, batch_of
 from eval.baselines.bm25 import BM25Baseline
 from eval.baselines.random import KeyframeRecord, RandomBaseline
 from eval.metrics.leakage import LeakageRecord, LeakageReport, compute_leakage_report
@@ -67,6 +67,7 @@ from eval.metrics.retrieval import (
     recall_at_k,
     recall_at_k_by_group,
 )
+from eval.query_translation import build_query_transform, load_translations
 
 for _stream in (sys.stdout, sys.stderr):
     if hasattr(_stream, "reconfigure"):
@@ -97,6 +98,16 @@ class EvalRunConfig:
     leakage_jaccard_threshold: float = 0.5
     vietnamese_stopwords: tuple[str, ...] = ()
     reports_dir: str = "reports"
+    # Optional VI->EN query sidecar (eval/query_translation.py). When set, each
+    # mode in `query_translation_modes` is ALSO scored with English queries and
+    # reported as a separate `<mode>@en` channel -- the Vietnamese channels
+    # still run unchanged, so the two sit side by side in one report. Empty
+    # string = feature off, no extra channels, no behaviour change.
+    query_translation_path: str = ""
+    # `ocr` is deliberately NOT translated by default: the indexed OCR text is
+    # Vietnamese, so an English query there would measure translation loss
+    # rather than anything about the retrieval channel.
+    query_translation_modes: tuple[str, ...] = ("semantic",)
 
 
 @dataclass(frozen=True)
@@ -123,6 +134,9 @@ class PerQueryResult:
     channel: str
     rank_video: int | None
     rank_segment: int | None
+    # Defaults to `caption` so existing callers keep their meaning; differs
+    # only on channels whose query text was transformed (e.g. `semantic@en`).
+    query_sent: str = ""
 
 
 class ChannelSearcher(Protocol):
@@ -155,10 +169,6 @@ def filter_ground_truth_to_available(
     return [s for s in segments if s.video_id in available_video_ids]
 
 
-def _batch_of(video_id: str) -> str:
-    return video_id.split("_V", 1)[0]
-
-
 def build_author_map(adapter: AIC2026Adapter, split: str) -> dict[str, str]:
     return {v.video_id: (v.category or "unknown") for v in adapter.iter_videos(split)}
 
@@ -180,13 +190,23 @@ def _hit_to_retrieved(hit: Any) -> RetrievedHit:
 
 
 async def score_channel(
-    searcher: ChannelSearcher, queries: Sequence[GroundTruthSegment], top_k: int
+    searcher: ChannelSearcher,
+    queries: Sequence[GroundTruthSegment],
+    top_k: int,
+    query_transform: Callable[[GroundTruthSegment], str] | None = None,
 ) -> list[tuple[GroundTruthSegment, int | None, int | None]]:
-    """Runs every query's caption through `searcher.search()`, returns
-    `(ground_truth, rank_video, rank_segment)` triples."""
+    """Runs every query through `searcher.search()`, returns
+    `(ground_truth, rank_video, rank_segment)` triples.
+
+    `query_transform` rewrites the TEXT sent to the searcher (e.g. the VI->EN
+    sidecar) while the ground truth used to score the hits stays untouched --
+    that asymmetry is the whole point: it isolates the query side without
+    editing a single label (CLAUDE.md §8). Default is the caption verbatim.
+    """
     results: list[tuple[GroundTruthSegment, int | None, int | None]] = []
     for gt in queries:
-        raw_hits = await searcher.search(gt.caption, top_k)
+        query_text = gt.caption if query_transform is None else query_transform(gt)
+        raw_hits = await searcher.search(query_text, top_k)
         hits = [_hit_to_retrieved(h) for h in raw_hits]
         gt_query = GroundTruthQuery(
             video_id=gt.video_id, start_sec=gt.start_sec, end_sec=gt.end_sec
@@ -231,7 +251,7 @@ def aggregate_channel(
     segment_metrics = compute_channel_metrics(channel, "segment", segment_ranks, top_ks)
 
     ranks_with_author = [(r[2], author_map.get(r[0].video_id, "unknown")) for r in scored]
-    ranks_with_batch = [(r[2], _batch_of(r[0].video_id)) for r in scored]
+    ranks_with_batch = [(r[2], batch_of(r[0].video_id)) for r in scored]
     by_author = recall_at_k_by_group(ranks_with_author, breakdown_k)
     by_batch = recall_at_k_by_group(ranks_with_batch, breakdown_k)
     return video_metrics, segment_metrics, by_author, by_batch
@@ -394,6 +414,7 @@ def _write_per_query_csv(path: Path, per_query: Sequence[PerQueryResult]) -> Non
                 "channel",
                 "rank_video",
                 "rank_segment",
+                "query_sent",
             ]
         )
         for r in per_query:
@@ -407,6 +428,7 @@ def _write_per_query_csv(path: Path, per_query: Sequence[PerQueryResult]) -> Non
                     r.channel,
                     r.rank_video,
                     r.rank_segment,
+                    r.query_sent,
                 ]
             )
 
@@ -491,6 +513,9 @@ def _load_config(path: Path) -> EvalRunConfig:
     raw["top_ks"] = tuple(raw.get("top_ks", EvalRunConfig().top_ks))
     raw["modes"] = tuple(raw.get("modes", EvalRunConfig().modes))
     raw["vietnamese_stopwords"] = tuple(raw.get("vietnamese_stopwords", ()))
+    raw["query_translation_modes"] = tuple(
+        raw.get("query_translation_modes", EvalRunConfig().query_translation_modes)
+    )
     return EvalRunConfig(**raw)
 
 
@@ -541,16 +566,9 @@ class _SemanticSearcher:
         return await self._search_service.search(query, mode=self._mode, top_k=top_k)
 
 
-async def _main() -> int:
-    args = _parse_args()
-    config = _load_config(args.config)
-    settings = Settings()
-    top_k = max(config.top_ks)
-
-    adapter = AIC2026Adapter(
-        dataset_root=_REPO_ROOT / config.dataset_root,
-        eval_set_path=_REPO_ROOT / config.eval_set_path,
-    )
+def _prepare_ground_truth(
+    config: EvalRunConfig, adapter: AIC2026Adapter
+) -> tuple[list[GroundTruthSegment], frozenset[str]]:
     ground_truth_raw = adapter.load_ground_truth(config.split)
     available = load_pilot_available(_REPO_ROOT / config.pilot_available_path)
     ground_truth = filter_ground_truth_to_available(ground_truth_raw, available)
@@ -560,9 +578,12 @@ async def _main() -> int:
         len(ground_truth),
         len(available),
     )
-    author_map = build_author_map(adapter, config.split)
+    return ground_truth, available
 
-    encoder = _build_encoder(args.device)
+
+def _build_stores(
+    settings: Settings, encoder: BEiT3Encoder
+) -> tuple[MongoStore, MilvusStore, EsStore, SearchService]:
     mongo = MongoStore(uri=settings.mongo_uri)
     milvus = _build_milvus_store(settings, encoder)
     es = EsStore(
@@ -573,63 +594,151 @@ async def _main() -> int:
     search_service = SearchService(
         encoder=encoder, milvus_store=milvus, es_store=es, mongo_store=mongo
     )
+    return mongo, milvus, es, search_service
 
-    channel_metrics: list[ChannelMetrics] = []
-    author_breakdown: dict[str, dict[str, float]] = {}
-    batch_breakdown: dict[str, dict[str, float]] = {}
-    per_query: list[PerQueryResult] = []
 
-    async def _run_and_collect(channel_name: str, searcher: ChannelSearcher) -> None:
-        scored = await score_channel(searcher, ground_truth, top_k)
+class _ResultAccumulator:
+    """Collects channel metrics + per-query rows across every channel/baseline
+    run in one `eval.run` pass -- replaces a closure over `_main()`'s locals
+    so each channel run stays a single call, not an inline nested function."""
+
+    def __init__(
+        self,
+        ground_truth: Sequence[GroundTruthSegment],
+        top_k: int,
+        top_ks: Sequence[int],
+        author_map: Mapping[str, str],
+        breakdown_k: int,
+    ) -> None:
+        self._ground_truth = ground_truth
+        self._top_k = top_k
+        self._top_ks = top_ks
+        self._author_map = author_map
+        self._breakdown_k = breakdown_k
+        self.channel_metrics: list[ChannelMetrics] = []
+        self.author_breakdown: dict[str, dict[str, float]] = {}
+        self.batch_breakdown: dict[str, dict[str, float]] = {}
+        self.per_query: list[PerQueryResult] = []
+
+    async def run_and_collect(
+        self,
+        channel_name: str,
+        searcher: ChannelSearcher,
+        query_transform: Callable[[GroundTruthSegment], str] | None = None,
+    ) -> None:
+        scored = await score_channel(searcher, self._ground_truth, self._top_k, query_transform)
         video_m, segment_m, by_author, by_batch = aggregate_channel(
-            channel_name, scored, config.top_ks, author_map, _AUTHOR_BATCH_BREAKDOWN_K
+            channel_name, scored, self._top_ks, self._author_map, self._breakdown_k
         )
-        channel_metrics.extend([video_m, segment_m])
-        author_breakdown[channel_name] = by_author
-        batch_breakdown[channel_name] = by_batch
+        self.channel_metrics.extend([video_m, segment_m])
+        self.author_breakdown[channel_name] = by_author
+        self.batch_breakdown[channel_name] = by_batch
         for gt, rank_video, rank_segment in scored:
-            per_query.append(
+            self.per_query.append(
                 PerQueryResult(
                     video_id=gt.video_id,
                     order_index=gt.order_index,
                     caption=gt.caption,
-                    batch=_batch_of(gt.video_id),
-                    author=author_map.get(gt.video_id, "unknown"),
+                    batch=batch_of(gt.video_id),
+                    author=self._author_map.get(gt.video_id, "unknown"),
                     channel=channel_name,
                     rank_video=rank_video,
                     rank_segment=rank_segment,
+                    # The text actually sent to the searcher. Without this a
+                    # `semantic@en` row is indistinguishable from a `semantic`
+                    # row in the CSV, and the run stops being auditable.
+                    query_sent=gt.caption if query_transform is None else query_transform(gt),
                 )
             )
 
-    for mode in config.modes:
-        await _run_and_collect(mode, _SemanticSearcher(search_service, mode))
 
-    keyframe_pool = await build_keyframe_pool(mongo)
-    await _run_and_collect("random", RandomBaseline(keyframe_pool, config.random_baseline_seed))
-    await _run_and_collect("bm25", BM25Baseline(es))
+_TRANSLATED_CHANNEL_SUFFIX = "@en"
 
-    leakage_report: LeakageReport | None = None
-    leakage_records = await build_leakage_records(ground_truth, mongo, es)
-    stopwords = frozenset(config.vietnamese_stopwords)
-    if any(r.ocr_texts for r in leakage_records):
-        leakage_report = compute_leakage_report(
-            leakage_records, stopwords=stopwords, threshold=config.leakage_jaccard_threshold
+
+async def _collect_translated_channels(
+    config: EvalRunConfig,
+    accumulator: _ResultAccumulator,
+    search_service: SearchService,
+    ground_truth: Sequence[GroundTruthSegment],
+) -> None:
+    """Scores `<mode>@en` for every mode in `query_translation_modes`.
+
+    No-op when `query_translation_path` is empty, so an unconfigured run
+    behaves exactly as before. When it IS configured, a bad sidecar raises out
+    of here rather than being skipped with a warning: a report silently
+    missing its English channel is the one outcome that would waste the whole
+    diagnostic (CLAUDE.md §7).
+    """
+    if not config.query_translation_path:
+        return
+
+    translations = load_translations(_REPO_ROOT / config.query_translation_path)
+    transform = build_query_transform(ground_truth, translations)
+    logger.info(
+        "Loaded %d translated quer(ies) from %s -- scoring %s channel(s)",
+        len(translations),
+        config.query_translation_path,
+        ", ".join(f"{m}{_TRANSLATED_CHANNEL_SUFFIX}" for m in config.query_translation_modes),
+    )
+    for mode in config.query_translation_modes:
+        await accumulator.run_and_collect(
+            f"{mode}{_TRANSLATED_CHANNEL_SUFFIX}",
+            _SemanticSearcher(search_service, mode),
+            transform,
         )
-    else:
+
+
+async def _build_leakage_report_or_none(
+    ground_truth: Sequence[GroundTruthSegment],
+    mongo: MongoStore,
+    es: EsStore,
+    stopwords: frozenset[str],
+    threshold: float,
+) -> LeakageReport | None:
+    leakage_records = await build_leakage_records(ground_truth, mongo, es)
+    if not any(r.ocr_texts for r in leakage_records):
         logger.warning(
             "build_leakage_records: no OCR text found for any ground-truth keyframe -- "
             "leakage report skipped (see report.md 'not_measured')"
         )
+        return None
+    return compute_leakage_report(leakage_records, stopwords=stopwords, threshold=threshold)
 
-    eval_set_hash_path = (_REPO_ROOT / config.eval_set_path).with_name(
-        (_REPO_ROOT / config.eval_set_path).name + ".sha256"
-    )
-    eval_set_hash = (
-        eval_set_hash_path.read_text(encoding="utf-8").strip()
-        if eval_set_hash_path.exists()
-        else "unknown"
-    )
 
+def _resolve_eval_set_hash(eval_set_path: Path) -> str:
+    hash_path = eval_set_path.with_name(eval_set_path.name + ".sha256")
+    if not hash_path.exists():
+        return "unknown"
+    return hash_path.read_text(encoding="utf-8").strip()
+
+
+async def _run_all_channels(
+    accumulator: _ResultAccumulator,
+    config: EvalRunConfig,
+    mongo: MongoStore,
+    es: EsStore,
+    search_service: SearchService,
+    ground_truth: Sequence[GroundTruthSegment],
+) -> None:
+    for mode in config.modes:
+        await accumulator.run_and_collect(mode, _SemanticSearcher(search_service, mode))
+
+    await _collect_translated_channels(config, accumulator, search_service, ground_truth)
+
+    keyframe_pool = await build_keyframe_pool(mongo)
+    await accumulator.run_and_collect(
+        "random", RandomBaseline(keyframe_pool, config.random_baseline_seed)
+    )
+    await accumulator.run_and_collect("bm25", BM25Baseline(es))
+
+
+def _write_final_report(
+    config: EvalRunConfig,
+    ground_truth: Sequence[GroundTruthSegment],
+    available: frozenset[str],
+    accumulator: _ResultAccumulator,
+    leakage_report: LeakageReport | None,
+) -> Path:
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     git_sha = _git_sha()
     output_dir = _REPO_ROOT / config.reports_dir / f"{timestamp}_{git_sha}"
@@ -637,16 +746,49 @@ async def _main() -> int:
         output_dir,
         git_sha=git_sha,
         eval_set_version="v1",
-        eval_set_hash=eval_set_hash,
+        eval_set_hash=_resolve_eval_set_hash(_REPO_ROOT / config.eval_set_path),
         num_video_ids=len(available),
         num_queries=len(ground_truth),
         seed=config.random_baseline_seed,
-        channel_metrics=channel_metrics,
-        author_breakdown=author_breakdown,
-        batch_breakdown=batch_breakdown,
+        channel_metrics=accumulator.channel_metrics,
+        author_breakdown=accumulator.author_breakdown,
+        batch_breakdown=accumulator.batch_breakdown,
         leakage_report=leakage_report,
-        per_query=per_query,
+        per_query=accumulator.per_query,
     )
+    return output_dir
+
+
+async def _main() -> int:
+    args = _parse_args()
+    config = _load_config(args.config)
+    settings = Settings()
+    top_k = max(config.top_ks)
+
+    adapter = AIC2026Adapter(
+        dataset_root=_REPO_ROOT / config.dataset_root,
+        eval_set_path=_REPO_ROOT / config.eval_set_path,
+    )
+    ground_truth, available = _prepare_ground_truth(config, adapter)
+    author_map = build_author_map(adapter, config.split)
+
+    encoder = _build_encoder(args.device)
+    mongo, _milvus, es, search_service = _build_stores(settings, encoder)
+
+    accumulator = _ResultAccumulator(
+        ground_truth, top_k, config.top_ks, author_map, _AUTHOR_BATCH_BREAKDOWN_K
+    )
+    await _run_all_channels(accumulator, config, mongo, es, search_service, ground_truth)
+
+    leakage_report = await _build_leakage_report_or_none(
+        ground_truth,
+        mongo,
+        es,
+        frozenset(config.vietnamese_stopwords),
+        config.leakage_jaccard_threshold,
+    )
+
+    output_dir = _write_final_report(config, ground_truth, available, accumulator, leakage_report)
     logger.info("Wrote report to %s", output_dir)
 
     await mongo.close()

@@ -1,0 +1,34 @@
+# scripts/diagnose_embedding_space.py -- CollapseThresholds
+# (eval/diagnostics/embedding_space.py). Field names match the dataclass
+# exactly (same convention as build_eval_set.yaml -> BuildEvalSetConfig).
+#
+# These are DIAGNOSTIC cutoffs, not quality gates: they separate "the
+# embedding space is degenerate" from "retrieval is merely weak". Nothing
+# here refuses to write a report, and no number produced under these
+# thresholds may be quoted as a retrieval-quality metric (PRD §6 owns those).
+
+# Mean pairwise cosine between DIFFERENT queries' text vectors. Unrelated
+# sentences in a healthy L2-normalized space sit far below this; at/above it
+# the text tower is mapping distinct questions to nearly one point, which
+# makes ANN search return nearly the same neighbours no matter what is asked.
+query_cosine_mean: 0.80
+
+# Mean Jaccard between two different queries' top-k keyframe id sets.
+# News corpora legitimately repeat visually (studio shots, anchors), so this
+# sits well above what near-duplicate frames alone would produce.
+result_jaccard_mean: 0.30
+
+# distinct keyframes reached / (num_queries * top_k). Low means the whole
+# query batch only ever touches a narrow slice of the 873-video corpus --
+# the mechanism by which a real retriever can score BELOW a uniform random
+# baseline (reports/20260810T161049Z_a40aac8: semantic 0.0451 < random 0.0809).
+union_ratio: 0.25
+
+# Mean COSINE score gap between rank 1 and rank k within one query. Near zero
+# means the ordering inside top-k carries no signal even when the set varies.
+score_gap: 0.05
+
+# How many of the four signals must fire before `collapsed: true`. Kept above
+# 1 deliberately: each signal alone has an innocent explanation, several
+# firing together do not.
+min_signals: 2

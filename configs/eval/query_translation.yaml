@@ -1,0 +1,70 @@
+# scripts/translate_eval_queries.py -- VI->EN query sidecar generation.
+#
+# This translates QUERIES ONLY. The label set (configs/eval/aic_eval_v1.json)
+# and its .sha256 are never rewritten, so metrics stay comparable to the
+# 2026-08-10 baseline (CLAUDE.md §8: "Không sửa bộ eval để cải thiện số").
+
+# Must match configs/aic_pilot.yaml's own split/paths, otherwise the sidecar
+# covers a different query population than the one eval/run.py scores and the
+# join in eval/query_translation.py fails loudly at run time.
+split: all
+dataset_root: data
+eval_set_path: configs/eval/aic_eval_v1.json
+pilot_available_path: configs/eval/pilot_available_v1.txt
+
+# Sidecar written here; point EvalRunConfig.query_translation_path at it to
+# score the `semantic@en` channel.
+output_path: configs/eval/aic_eval_v1.queries_en.json
+
+# Which implementation does the translating: "local" (offline, free) or
+# "gemini" (API, spends quota). Override per run with --translator.
+#
+# Default is "local": the diagnostic must not be blocked on Gemini quota, and
+# translation here is a mechanical VI->EN transform, not a judgement call that
+# needs a frontier model.
+translator: local
+
+# --- local (offline, free) ---------------------------------------------------
+# VietAI/envit5-translation: EnViT5 trained on MTet + PhoMT, reported
+# state-of-the-art en<->vi BLEU at T5-base size. Downloads once from HuggingFace
+# (~1GB), then runs with no network. `transformers` + `torch` are already
+# project dependencies -- nothing new to install.
+#
+# device "cpu" on purpose: 173 short sentences take a couple of minutes on CPU,
+# and keeping the 8GB of VRAM free avoids competing with BEiT-3 (CLAUDE.md §1.4).
+# Switch to "cuda" if the GPU is idle.
+local_model_id: VietAI/envit5-translation
+local_device: cpu
+
+# EnViT5 is prompted with a language tag and echoes the target tag back, so the
+# raw decode is "en: A mother donkey...". Both tags are config, not constants:
+# VinAI-Translate (vinai/vinai-translate-vi2en-v2) needs neither, so swapping
+# to it means setting both of these to "" -- no code change.
+local_source_prefix: "vi: "
+local_target_prefix: "en: "
+
+# Generation cap. Eval captions are one sentence; 128 leaves headroom without
+# letting a degenerate decode run away.
+local_max_new_tokens: 128
+
+# --- gemini (API, spends quota) ----------------------------------------------
+# Same model already used for OCR (configs/ingest/ocr.yaml:33) and caption
+# generation (configs/eval/build_eval_set.yaml:101). Re-confirm the model id
+# at implementation time per CLAUDE.md §5.
+#
+# NOTE on CLAUDE.md §3 "Model sinh nhãn ≠ model bị đánh giá": Gemini generated
+# the Vietnamese captions and would also translate them on this branch. That is
+# acceptable ONLY because translation is a query-side transform that is not
+# itself being scored -- the retriever under test (BEiT-3) is still a different
+# model. If a Gemini-based retriever is ever evaluated, this stops being safe.
+gemini_model: gemini-3.6-flash
+
+# GeminiQueryTranslator retry policy: exponential backoff,
+# retry_base_delay_seconds * 2^attempt (mirrors pipelines/ocr.py).
+max_retries: 3
+retry_base_delay_seconds: 1.0
+
+# Flush the sidecar to disk every N translations so a quota/rate-limit error
+# mid-run never discards calls already paid for (same resume discipline as
+# eval/build_eval_set.py's on_progress checkpoint).
+checkpoint_every: 20

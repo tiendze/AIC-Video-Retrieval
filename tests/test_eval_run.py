@@ -114,6 +114,32 @@ async def test_score_channel_calls_searcher_with_each_query_caption_and_top_k():
     assert searcher.calls == [("chay rung", 7)]
 
 
+async def test_score_channel_sends_the_transformed_query_when_one_is_given():
+    # The VI->EN sidecar path: the searcher must receive the English text.
+    searcher = _FakeSearcher([])
+    queries = [_gt(video_id="L21_V001", caption="chay rung")]
+
+    await score_channel(searcher, queries, top_k=7, query_transform=lambda gt: "forest fire")
+
+    assert searcher.calls == [("forest fire", 7)]
+
+
+async def test_score_channel_still_scores_against_the_untransformed_ground_truth():
+    # Only the QUERY is translated -- video_id/start_sec/end_sec must keep
+    # deciding the hit, so a translated run stays comparable to the baseline.
+    searcher = _FakeSearcher([_Hit("L21_V001", 11.0)])
+    queries = [_gt(video_id="L21_V001", start=10.0, end=12.0, caption="chay rung")]
+
+    result = await score_channel(
+        searcher, queries, top_k=5, query_transform=lambda gt: "forest fire"
+    )
+
+    gt, rank_video, rank_segment = result[0]
+    assert gt.caption == "chay rung"  # ground truth untouched
+    assert rank_video == 1
+    assert rank_segment == 1
+
+
 # --------------------------------------------------------------------------
 # compute_channel_metrics
 # --------------------------------------------------------------------------

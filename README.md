@@ -49,6 +49,55 @@ Verify `vi_analyzer` tách theo từ ghép (không chạy trong `pytest` mặc �
 ./.venv/Scripts/python.exe -m pytest tests/integration -m integration -v
 ```
 
+## Chẩn đoán không gian embedding (điều tra `semantic` < `random`)
+
+Báo cáo `reports/20260810T161049Z_a40aac8` cho thấy kênh `semantic` (AIC 0.0451)
+thấp hơn baseline `random` (0.0809). Hai công cụ dưới đây tách "text tower không
+đọc được tiếng Việt" khỏi "phía ảnh/index hỏng" — **không re-embed gì cả** và
+**không sửa bộ nhãn** (`aic_eval_v1.json` + `.sha256` giữ nguyên).
+
+Bước 0 — đo mode collapse **không cần bản dịch nào**, không tốn quota:
+
+```powershell
+docker compose up -d
+./.venv/Scripts/python.exe -m scripts.diagnose_embedding_space
+```
+
+`collapsed: true` kèm `query_cosine_mean` cao và `union_ratio` thấp là đã đủ kết
+luận không gian vector suy biến. Bước 1–2 chỉ cần khi muốn tách tiếp "text tower
+hỏng" khỏi "phía ảnh hỏng".
+
+Bước 1 — sinh sidecar truy vấn tiếng Anh. Mặc định dùng **dịch offline miễn phí**
+(`VietAI/envit5-translation`, tải ~1GB lần đầu rồi chạy không cần mạng, không cần
+API key):
+
+```powershell
+./.venv/Scripts/python.exe -m scripts.translate_eval_queries --limit 5   # thử
+./.venv/Scripts/python.exe -m scripts.translate_eval_queries             # 173 câu
+```
+
+Đổi model dịch: sửa `local_model_id` trong `configs/eval/query_translation.yaml`
+(ví dụ `vinai/vinai-translate-vi2en-v2` — model này không cần tag ngôn ngữ nên
+đặt `local_source_prefix`/`local_target_prefix` thành `""`). Dùng Gemini thay thế:
+`--translator gemini`. Script resume được và ghi `translator_model` cho **từng
+dòng**, nên sidecar sinh dở bằng Gemini rồi dịch nốt bằng model offline vẫn truy
+được nguồn gốc.
+
+Bước 2 — đo lại kèm truy vấn tiếng Anh (cần Milvus + GPU):
+
+```powershell
+docker compose up -d
+./.venv/Scripts/python.exe -m scripts.diagnose_embedding_space `
+    --translations configs/eval/aic_eval_v1.queries_en.json
+```
+
+Kết quả: `reports/diagnostics/<timestamp>_<git_sha>/embedding_space_{vi,en}.{json,md}`.
+
+Bước 3 — chấm kênh `semantic@en` cạnh `semantic` trong cùng một báo cáo: đặt
+`query_translation_path: configs/eval/aic_eval_v1.queries_en.json` trong
+`configs/eval/aic_pilot.yaml` rồi chạy lại `python -m eval.run`. Để trống khoá
+này là tắt hẳn tính năng, hành vi không đổi.
+
 ## Trạng thái
 
 🚧 P0 — Nền móng đang thực thi. P0.1 (scaffold, config, FastAPI app) và P0.2 (docker-compose: Milvus + Elasticsearch `vi_analyzer` + MongoDB) đã xong. Xem [`.claude/plans/p0-foundation.plan.md`](./.claude/plans/p0-foundation.plan.md).

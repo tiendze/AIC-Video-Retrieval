@@ -85,3 +85,26 @@ vietnamese_stopwords:
 # Output root -- eval/run.py writes reports/<timestamp>_<git_sha>/
 # {metrics.json, report.md, per_query.csv} under this directory.
 reports_dir: reports
+
+# VI->EN query sidecar (eval/query_translation.py), OFF while empty.
+#
+# Diagnostic for reports/20260810T161049Z_a40aac8, where `semantic` (AIC
+# 0.0451) scored BELOW `random` (0.0809). BEiT-3's image-text contrastive
+# stage was trained on English pairs, so a Vietnamese query is
+# off-distribution for the TEXT tower while the image tower is untouched.
+# Scoring this same collection with English queries separates the two
+# hypotheses with zero re-embedding:
+#   semantic@en >> semantic  -> the text tower is the fault; a multilingual
+#                               encoder swap should pay off
+#   semantic@en ~= random    -> the fault is image-side; swapping the encoder
+#                               will not fix it
+#
+# Generate the sidecar first: python -m scripts.translate_eval_queries
+# Labels are NOT touched -- aic_eval_v1.json and its .sha256 stay identical,
+# so numbers remain comparable to the 2026-08-10 baseline (CLAUDE.md §8).
+query_translation_path: ""
+
+# Which modes also get an `<mode>@en` channel. `ocr` is excluded on purpose:
+# the indexed OCR text is Vietnamese, so an English query there would measure
+# translation loss rather than anything about the retrieval channel.
+query_translation_modes: [semantic]
