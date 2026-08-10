@@ -10,8 +10,7 @@ import pytest
 from eval.baselines.random import KeyframeRecord, RandomBaseline
 
 _POOL = [
-    KeyframeRecord(keyframe_id=f"k{i}", video_id=f"v{i}", timestamp=float(i))
-    for i in range(10)
+    KeyframeRecord(keyframe_id=f"k{i}", video_id=f"v{i}", timestamp=float(i)) for i in range(10)
 ]
 
 

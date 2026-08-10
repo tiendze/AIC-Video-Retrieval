@@ -28,7 +28,9 @@ def _hits(*pairs: tuple[str, float]) -> list[RetrievedHit]:
     return [RetrievedHit(video_id=video_id, timestamp=timestamp) for video_id, timestamp in pairs]
 
 
-def _gt(video_id: str = "L21_V001", start_sec: float = 10.0, end_sec: float = 12.0) -> GroundTruthQuery:
+def _gt(
+    video_id: str = "L21_V001", start_sec: float = 10.0, end_sec: float = 12.0
+) -> GroundTruthQuery:
     return GroundTruthQuery(video_id=video_id, start_sec=start_sec, end_sec=end_sec)
 
 
@@ -57,7 +59,7 @@ def test_first_hit_rank_segment_level_requires_timestamp_inside_window():
     assert first_hit_rank(hits, _gt(start_sec=10.0, end_sec=12.0), level="segment") == 1
 
 
-def test_first_hit_rank_segment_level_returns_none_when_timestamp_outside_window_even_if_video_matches():
+def test_first_hit_rank_segment_level_returns_none_when_timestamp_outside_window():
     # Same video, but the keyframe timestamp falls outside [start_sec, end_sec]
     # -- this is exactly the video-level-high/segment-level-low split the plan
     # calls out as diagnostic of a keyframe-sampling bug, not an embedding bug.

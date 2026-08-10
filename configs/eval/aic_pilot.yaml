@@ -1,0 +1,87 @@
+# eval/run.py EvalRunConfig -- P0.9 evaluation run configuration (plan
+# §P0.9). Field names match EvalRunConfig exactly (mirrors the
+# build_eval_set.yaml -> BuildEvalSetConfig convention).
+#
+# ⚠️ Filename kept as "aic_pilot.yaml" because plan §P0.9's own verify
+# command names this path literally ("python -m eval.run --config
+# configs/eval/aic_pilot.yaml"), but split=all below covers the FULL
+# 873-video corpus, not just the original L21-L24 pilot -- the eval set
+# itself outgrew "pilot" scope on 2026-08-09 (plan §P0.4' history) while
+# this file's name did not follow. Flagged here rather than silently
+# renamed (CLAUDE.md §2: mismatch phải báo ra).
+split: all
+
+dataset_root: data
+eval_set_path: configs/eval/aic_eval_v1.json
+
+# Denominator: only ground-truth records whose video_id is in this file are
+# scored. A video not yet ingest-"complete" has no keyframes to be found by
+# -- leaving it in would silently deflate every Recall for reasons that have
+# nothing to do with retrieval quality (CLAUDE.md §8: "số video_id duy nhất
+# thực tế đánh giá được" must be reported, and this file IS that count).
+pilot_available_path: configs/eval/pilot_available_v1.txt
+
+# AIC 2026's own submission scoring mesh (references.md §1.2). top_k passed
+# to SearchService.search() is max(top_ks), so one call per query covers
+# every K without re-querying.
+top_ks: [1, 5, 20, 50, 100]
+
+# Channels reported independently (plan §P0.8/§P0.9). "hybrid" (RRF) is
+# P1.3 -- deliberately excluded, it needs both channels measured alone
+# first before a combination is meaningful to compare against.
+modes: [semantic, ocr]
+
+# RandomBaseline determinism -- same "seed cố định" convention as
+# build_eval_set.yaml (PRD §6.1.2 step 1), independent seed/value since it
+# seeds a different sampling process (keyframe pool, not shot sampling).
+random_baseline_seed: 20260810
+
+# eval/metrics/leakage.py reporting cutoff: a caption<->ocr_text Jaccard
+# overlap at or above this is flagged as a likely leak in report.md. This is
+# a REPORTING cutoff, not a quality gate like build_eval_set.py's 30%
+# rejection-rate gate -- CLAUDE.md §4 "con người chốt đáp án cuối", a human
+# reads the flagged rows and decides, this file never refuses to write a
+# report over it.
+leakage_jaccard_threshold: 0.5
+
+# Vietnamese stopwords for content_words() (eval/build_eval_set.py, reused
+# by eval/metrics/leakage.py) -- intentionally the SAME list as
+# build_eval_set.yaml so "content word" means the same thing in both eval
+# artifacts. Duplicated here rather than one config importing the other:
+# the two CLIs (`eval.build_eval_set`, `eval.run`) are loaded independently
+# and neither should need to know the other's file layout to run standalone.
+vietnamese_stopwords:
+  - "một"
+  - "các"
+  - "là"
+  - "và"
+  - "có"
+  - "của"
+  - "trong"
+  - "được"
+  - "này"
+  - "đang"
+  - "với"
+  - "cho"
+  - "tại"
+  - "về"
+  - "người"
+  - "đó"
+  - "khi"
+  - "đã"
+  - "sẽ"
+  - "những"
+  - "trên"
+  - "bị"
+  - "để"
+  - "ra"
+  - "vào"
+  - "lên"
+  - "theo"
+  - "hay"
+  - "hoặc"
+  - "rất"
+
+# Output root -- eval/run.py writes reports/<timestamp>_<git_sha>/
+# {metrics.json, report.md, per_query.csv} under this directory.
+reports_dir: reports

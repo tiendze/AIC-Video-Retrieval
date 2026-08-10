@@ -55,8 +55,12 @@ def test_caption_ocr_jaccard_returns_0_when_caption_has_no_content_words():
 
 def test_compute_leakage_report_aggregates_mean_median_and_high_overlap_rate():
     records = [
-        LeakageRecord(video_id="L21_V001", order_index=1, caption="chay rung nui", ocr_texts=["chay rung nui"]),
-        LeakageRecord(video_id="L21_V002", order_index=2, caption="chay rung nui", ocr_texts=["hop bao"]),
+        LeakageRecord(
+            video_id="L21_V001", order_index=1, caption="chay rung nui", ocr_texts=["chay rung nui"]
+        ),
+        LeakageRecord(
+            video_id="L21_V002", order_index=2, caption="chay rung nui", ocr_texts=["hop bao"]
+        ),
     ]
 
     report = compute_leakage_report(records, stopwords=_STOPWORDS, threshold=0.5)

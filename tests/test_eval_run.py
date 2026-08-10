@@ -1,0 +1,281 @@
+"""RED reproducer for eval/run.py (plan §P0.9) -- the single evaluation
+entry point. Tests the pure/semi-pure orchestration functions with fake
+stores/searchers (no Docker, no GPU, no real Milvus/ES/Mongo) -- the actual
+`python -m eval.run --config configs/eval/aic_pilot.yaml` run against real
+data is a manual step (CLAUDE.md §10), not exercised here.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+
+from datasets.base import GroundTruthSegment
+from eval.run import (
+    PerQueryResult,
+    aggregate_channel,
+    build_keyframe_pool,
+    build_leakage_records,
+    compute_channel_metrics,
+    filter_ground_truth_to_available,
+    keyframes_in_window,
+    load_pilot_available,
+    score_channel,
+    write_report,
+)
+
+
+def _gt(
+    video_id="L21_V001", start=10.0, end=12.0, order_index=0, caption="x"
+) -> GroundTruthSegment:
+    return GroundTruthSegment(
+        video_id=video_id, start_sec=start, end_sec=end, order_index=order_index, caption=caption
+    )
+
+
+# --------------------------------------------------------------------------
+# load_pilot_available / filter_ground_truth_to_available
+# --------------------------------------------------------------------------
+
+
+def test_load_pilot_available_reads_nonblank_lines_as_a_set(tmp_path):
+    path = tmp_path / "pilot_available_v1.txt"
+    path.write_text("L21_V001\nL21_V002\n\n", encoding="utf-8")
+
+    assert load_pilot_available(path) == frozenset({"L21_V001", "L21_V002"})
+
+
+def test_load_pilot_available_raises_when_file_missing(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        load_pilot_available(tmp_path / "missing.txt")
+
+
+def test_filter_ground_truth_to_available_drops_unavailable_video_ids():
+    segments = [_gt(video_id="L21_V001"), _gt(video_id="L21_V999")]
+
+    result = filter_ground_truth_to_available(segments, frozenset({"L21_V001"}))
+
+    assert [s.video_id for s in result] == ["L21_V001"]
+
+
+# --------------------------------------------------------------------------
+# score_channel -- drives a searcher (SearchService/RandomBaseline/
+# BM25Baseline all share the async `search(query, top_k) -> hits` shape)
+# --------------------------------------------------------------------------
+
+
+class _FakeSearcher:
+    def __init__(self, hits: list[Any]) -> None:
+        self._hits = hits
+        self.calls: list[tuple[str, int]] = []
+
+    async def search(self, query: str, top_k: int):
+        self.calls.append((query, top_k))
+        return self._hits
+
+
+class _Hit:
+    def __init__(self, video_id: str, timestamp: float) -> None:
+        self.video_id = video_id
+        self.timestamp = timestamp
+
+
+async def test_score_channel_computes_video_and_segment_rank_per_query():
+    searcher = _FakeSearcher([_Hit("L21_V999", 0.0), _Hit("L21_V001", 11.0)])
+    queries = [_gt(video_id="L21_V001", start=10.0, end=12.0)]
+
+    result = await score_channel(searcher, queries, top_k=5)
+
+    assert len(result) == 1
+    gt, rank_video, rank_segment = result[0]
+    assert gt.video_id == "L21_V001"
+    assert rank_video == 2
+    assert rank_segment == 2
+
+
+async def test_score_channel_accepts_dict_shaped_hits_from_es():
+    # BM25Baseline/EsStore hits are raw dicts, not dataclasses.
+    searcher = _FakeSearcher([{"video_id": "L21_V001", "timestamp": 11.0}])
+    queries = [_gt(video_id="L21_V001", start=10.0, end=12.0)]
+
+    result = await score_channel(searcher, queries, top_k=5)
+
+    assert result[0][1] == 1  # rank_video
+    assert result[0][2] == 1  # rank_segment
+
+
+async def test_score_channel_calls_searcher_with_each_query_caption_and_top_k():
+    searcher = _FakeSearcher([])
+    queries = [_gt(video_id="L21_V001", caption="chay rung")]
+
+    await score_channel(searcher, queries, top_k=7)
+
+    assert searcher.calls == [("chay rung", 7)]
+
+
+# --------------------------------------------------------------------------
+# compute_channel_metrics
+# --------------------------------------------------------------------------
+
+
+def test_compute_channel_metrics_reports_recall_at_every_configured_k():
+    metrics = compute_channel_metrics(
+        "semantic", "segment", [1, None, 30], top_ks=(1, 5, 20, 50, 100)
+    )
+
+    assert metrics.recall_at_k[1] == pytest.approx(1 / 3)
+    assert metrics.recall_at_k[50] == pytest.approx(2 / 3)
+    assert metrics.num_queries == 3
+    assert metrics.num_found == 2
+
+
+# --------------------------------------------------------------------------
+# aggregate_channel -- video+segment metrics AND author/batch breakdown
+# --------------------------------------------------------------------------
+
+
+def test_aggregate_channel_reports_recall_by_author_and_batch():
+    scored = [
+        (_gt(video_id="L21_V001"), 1, 1),
+        (_gt(video_id="L22_V001"), None, None),
+    ]
+    author_map = {"L21_V001": "author_a", "L22_V001": "author_b"}
+
+    video_m, segment_m, by_author, by_batch = aggregate_channel(
+        "semantic", scored, top_ks=(1, 5, 20, 50, 100), author_map=author_map, breakdown_k=1
+    )
+
+    assert video_m.level == "video"
+    assert segment_m.level == "segment"
+    assert by_author == {"author_a": pytest.approx(1.0), "author_b": pytest.approx(0.0)}
+    assert by_batch == {"L21": pytest.approx(1.0), "L22": pytest.approx(0.0)}
+
+
+# --------------------------------------------------------------------------
+# keyframes_in_window / build_leakage_records
+# --------------------------------------------------------------------------
+
+
+def test_keyframes_in_window_filters_by_inclusive_timestamp_range():
+    docs = [
+        {"keyframe_id": "a", "timestamp": 9.0},
+        {"keyframe_id": "b", "timestamp": 10.5},
+        {"keyframe_id": "c", "timestamp": 13.0},
+    ]
+
+    assert keyframes_in_window(docs, start_sec=10.0, end_sec=12.0) == ["b"]
+
+
+class _FakeMongoStore:
+    def __init__(self, keyframes_by_video: dict[str, list[dict]]) -> None:
+        self._keyframes_by_video = keyframes_by_video
+        self.calls: list[str] = []
+
+    async def get_keyframes_for_video(self, video_id: str) -> list[dict]:
+        self.calls.append(video_id)
+        return self._keyframes_by_video.get(video_id, [])
+
+
+class _FakeEsStore:
+    def __init__(self, ocr_by_id: dict[str, str]) -> None:
+        self._ocr_by_id = ocr_by_id
+
+    async def get_by_ids(self, keyframe_ids):
+        return {kid: self._ocr_by_id[kid] for kid in keyframe_ids if kid in self._ocr_by_id}
+
+
+async def test_build_leakage_records_joins_mongo_window_with_es_ocr_text():
+    mongo = _FakeMongoStore({"L21_V001": [{"keyframe_id": "k1", "timestamp": 11.0}]})
+    es = _FakeEsStore({"k1": "tin tuc"})
+    ground_truth = [_gt(video_id="L21_V001", start=10.0, end=12.0, caption="chay rung")]
+
+    records = await build_leakage_records(ground_truth, mongo, es)
+
+    assert len(records) == 1
+    assert records[0].caption == "chay rung"
+    assert records[0].ocr_texts == ["tin tuc"]
+
+
+async def test_build_leakage_records_caches_mongo_lookup_per_video():
+    mongo = _FakeMongoStore({"L21_V001": [{"keyframe_id": "k1", "timestamp": 11.0}]})
+    es = _FakeEsStore({})
+    ground_truth = [
+        _gt(video_id="L21_V001", start=10.0, end=12.0, order_index=0),
+        _gt(video_id="L21_V001", start=10.0, end=12.0, order_index=1),
+    ]
+
+    await build_leakage_records(ground_truth, mongo, es)
+
+    assert mongo.calls == ["L21_V001"]  # not called twice for the same video
+
+
+# --------------------------------------------------------------------------
+# build_keyframe_pool
+# --------------------------------------------------------------------------
+
+
+class _FakeScrollMongoStore:
+    def __init__(self, docs: list[dict]) -> None:
+        self._docs = docs
+
+    async def scroll_all_keyframes(self):
+        for doc in self._docs:
+            yield doc
+
+
+async def test_build_keyframe_pool_converts_every_scrolled_document():
+    mongo = _FakeScrollMongoStore([{"keyframe_id": "a", "video_id": "v1", "timestamp": 1.0}])
+
+    pool = await build_keyframe_pool(mongo)
+
+    assert len(pool) == 1
+    assert pool[0].keyframe_id == "a"
+
+
+# --------------------------------------------------------------------------
+# write_report
+# --------------------------------------------------------------------------
+
+
+def test_write_report_creates_metrics_json_report_md_and_per_query_csv(tmp_path):
+    video_metrics = compute_channel_metrics(
+        "semantic", "video", [1, None], top_ks=(1, 5, 20, 50, 100)
+    )
+    segment_metrics = compute_channel_metrics(
+        "semantic", "segment", [1, None], top_ks=(1, 5, 20, 50, 100)
+    )
+    per_query = [
+        PerQueryResult(
+            video_id="L21_V001",
+            order_index=0,
+            caption="x",
+            batch="L21",
+            author="a",
+            channel="semantic",
+            rank_video=1,
+            rank_segment=1,
+        )
+    ]
+
+    write_report(
+        tmp_path,
+        git_sha="abc123",
+        eval_set_version="v1",
+        eval_set_hash="deadbeef",
+        num_video_ids=1,
+        num_queries=2,
+        seed=42,
+        channel_metrics=[video_metrics, segment_metrics],
+        author_breakdown={"semantic": {"a": 1.0}},
+        batch_breakdown={"semantic": {"L21": 1.0}},
+        leakage_report=None,
+        per_query=per_query,
+    )
+
+    assert (tmp_path / "metrics.json").exists()
+    assert (tmp_path / "report.md").exists()
+    assert (tmp_path / "per_query.csv").exists()
+    metrics_doc = (tmp_path / "metrics.json").read_text(encoding="utf-8")
+    assert "abc123" in metrics_doc
+    assert "v1" in metrics_doc
