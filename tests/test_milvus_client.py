@@ -6,6 +6,7 @@ the real-server counterpart.
 
 from __future__ import annotations
 
+import numpy as np
 from pymilvus.exceptions import MilvusException
 
 from app.stores.milvus_client import MilvusStore, TranscriptMilvusStore
@@ -39,6 +40,11 @@ class _FakeMilvusClient:
         self.drop_collection_calls: list[str] = []
         self.create_collection_calls: list[str] = []
         self.raise_on_list_collections = False
+        self.search_calls: list[dict] = []
+
+    def search(self, **kwargs):
+        self.search_calls.append(kwargs)
+        return [[]]
 
     @classmethod
     def create_schema(cls, **kwargs):
@@ -81,6 +87,17 @@ def test_collection_name_embeds_model_id(monkeypatch):
     store = _store(monkeypatch)
 
     assert store.collection_name == "transcripts_bge_m3"
+
+
+def test_transcript_search_clamps_ef_to_top_k_when_configured_ef_is_lower(monkeypatch):
+    """Same HNSW ef>=k invariant as MilvusStore.search() -- TranscriptMilvusStore
+    has a structurally identical search() and must not reproduce the same crash."""
+    store = _store(monkeypatch)  # search_ef=64
+
+    store.search(np.zeros(1024, dtype=np.float32), top_k=100)
+
+    sent_ef = store._client.search_calls[0]["search_params"]["params"]["ef"]
+    assert sent_ef == 100
 
 
 def test_drop_collection_drops_then_recreates_the_same_collection_name(monkeypatch):
@@ -131,3 +148,26 @@ def test_ping_returns_false_instead_of_raising_when_milvus_is_unreachable(monkey
     store._client.raise_on_list_collections = True
 
     assert store.ping() is False
+
+
+def test_search_clamps_ef_to_top_k_when_configured_ef_is_lower(monkeypatch):
+    """Milvus HNSW rejects any search where ef < k (top_k) -- eval/run.py
+    hit this in production requesting top_k=100 against search_ef=64
+    (MilvusException 'ef(64) should be larger than k(100)'). The store must
+    never send a search that violates this invariant, regardless of what
+    search_ef the config was set to."""
+    store = _keyframe_store(monkeypatch)  # search_ef=64
+
+    store.search(np.zeros(768, dtype=np.float32), top_k=100)
+
+    sent_ef = store._client.search_calls[0]["search_params"]["params"]["ef"]
+    assert sent_ef == 100
+
+
+def test_search_keeps_configured_ef_when_it_already_covers_top_k(monkeypatch):
+    store = _keyframe_store(monkeypatch)  # search_ef=64
+
+    store.search(np.zeros(768, dtype=np.float32), top_k=10)
+
+    sent_ef = store._client.search_calls[0]["search_params"]["params"]["ef"]
+    assert sent_ef == 64

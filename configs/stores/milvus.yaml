@@ -3,4 +3,8 @@
 # (architecture.md §4.1). search_ef trades recall for latency.
 hnsw_m: 16
 hnsw_ef_construction: 200
-search_ef: 64
+# Must stay >= 100: the competition allows submitting up to 100 ranked
+# answers per query (PRD §1.2), and Milvus HNSW rejects any search where
+# ef < top_k outright. MilvusStore.search() also clamps ef up defensively
+# at call time, but this default should not rely on that safety net alone.
+search_ef: 128

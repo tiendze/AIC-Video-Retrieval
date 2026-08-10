@@ -154,13 +154,20 @@ class MilvusStore:
         consistency can make a search miss a write from moments earlier
         (this store's own idempotent-upsert invariant depends on searches
         reliably seeing prior writes, not just eventually).
+
+        HNSW requires `ef >= top_k` or Milvus rejects the search outright
+        (segcore error). `search_ef` is a fixed config value while `top_k`
+        varies per caller (the competition allows submitting up to 100
+        ranked answers per query, PRD §1.2), so it is clamped up here rather
+        than trusted to always be configured high enough.
         """
+        effective_ef = max(self._search_ef, top_k)
         results = self._client.search(
             collection_name=self._collection_name,
             anns_field="embedding",
             data=[query_vector.tolist()],
             limit=top_k,
-            search_params={"params": {"ef": self._search_ef}},
+            search_params={"params": {"ef": effective_ef}},
             filter=filter_expr,
             output_fields=[
                 "video_id",
@@ -286,13 +293,16 @@ class TranscriptMilvusStore:
         self._client.upsert(collection_name=self._collection_name, data=rows)
 
     def search(self, query_vector: np.ndarray, top_k: int, filter_expr: str = "") -> list[dict]:
-        """ANN search. See `MilvusStore.search` for the `consistency_level` rationale."""
+        """ANN search. See `MilvusStore.search` for the `consistency_level` rationale
+        and the `ef >= top_k` HNSW clamp rationale (same fixed config vs. variable
+        top_k mismatch applies here)."""
+        effective_ef = max(self._search_ef, top_k)
         results = self._client.search(
             collection_name=self._collection_name,
             anns_field="embedding",
             data=[query_vector.tolist()],
             limit=top_k,
-            search_params={"params": {"ef": self._search_ef}},
+            search_params={"params": {"ef": effective_ef}},
             filter=filter_expr,
             output_fields=[
                 "video_id",

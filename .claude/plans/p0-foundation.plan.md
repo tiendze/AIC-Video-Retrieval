@@ -14,7 +14,7 @@
 | P0.6 ba store client | ✅ xong — đã bổ sung field `frame_idx` vào Milvus (2026-08-01, xem dưới) |
 | **P0.7 ingest** | 🟡 **VISION xong toàn kho (221.903 keyframe, 873 video `complete`) · TEXT/OCR *live* (`pipelines/ocr.py`) hoãn có chủ đích (2026-08-09) · ⭐ nhưng `ocr_keyframes` đã nạp đầy 2026-08-10 qua import offline riêng (`data/ocr_results.jsonl`, ngoài `pipelines/ocr.py`) — xem `pipelines/import_ocr_results.py`** |
 | P0.8 search + `/health` | ⬜ |
-| P0.9 `eval/run.py` | 🟡 code xong 2026-08-10, chạy thật trên dữ liệu chưa (xem ghi chú dưới) |
+| P0.9 `eval/run.py` | 🟡 code xong + đã chạy thật 2026-08-10 — **chưa qua gate verify của chính P0.9** (semantic thua random), chặn bởi encoder, xem ghi chú dưới |
 | P0.10 báo cáo phase | ⬜ |
 | P0.11a ASR → ES (BM25) | ✅ xong 2026-08-09 — toàn kho 873 video, 31.719 segment, verify khớp Mongo/ES |
 | P0.11b ASR → Milvus (dense) | ⬜ **optional** — chủ dự án 2026-08-07 (và tái xác nhận 2026-08-09): không cần cho lúc này |
@@ -328,13 +328,21 @@ keyframe → [1] lọc frame CÓ CHỮ → [2] dedupe perceptual hash → [3] Ge
 >
 > ⚠️ **2026-08-10 phát hiện qua review: `configs/eval/pilot_available_v1.txt` bị STALE — chỉ 29/873 video_id.** File này chỉ được `scripts/run_ingest.py` ghi (lần chạy pilot cục bộ `--batches L21`); đường Kaggle-offline-embed (`scripts/import_embed_out.py` + `scripts/import_ocr_results.py`) ghi `ingest_status` thẳng vào MongoDB cho 844 video còn lại nhưng không đụng tới file này — nên nó "đứng hình" trong khi corpus thật đã lên 873. Đã sửa: thêm `MongoStore.scroll_all_videos()` + `scripts/write_pilot_available_list.py` (đọc `ingest_status` thật từ Mongo, ghi lại file + hash). **Phải chạy script này TRƯỚC `eval.run`**, nếu không P0.9 sẽ tính trên mẫu số sai.
 >
-> **Chưa chạy thật** (CLAUDE.md §10 — cần BEiT-3 GPU + Milvus/ES/Mongo thật đang chạy, để chủ dự án tự chạy):
-> ```powershell
-> docker compose up -d
-> python scripts/write_pilot_available_list.py       # regenerate denominator từ Mongo thật
-> python -m eval.run --config configs/eval/aic_pilot.yaml
-> ```
-> Sau khi chạy xong, đọc `reports/<timestamp>_<git_sha>/report.md` để lấy bảng số thật cho P0.10.
+> **Đã chạy thật 2026-08-10.** Lần chạy đầu tiên crash: `configs/stores/milvus.yaml` đặt `search_ef: 64` cố định trong khi `eval/run.py` cần `top_k=100` (PRD §1.2 — nộp tối đa 100 đáp án/truy vấn) — Milvus HNSW đòi `ef ≥ k`, `64 < 100` ⇒ `MilvusException`. Đã sửa: `MilvusStore.search()` giờ kẹp `ef = max(search_ef, top_k)` tại thời điểm gọi (không tin config luôn đủ lớn) + `search_ef` mặc định tăng lên `128`. Test: `test_search_clamps_ef_to_top_k_when_configured_ef_is_lower`, `test_search_keeps_configured_ef_when_it_already_covers_top_k`.
+>
+> **Kết quả thật** (`reports/20260810T161049Z_a40aac83…/report.md`, 173 query, 873 video_id, seed `20260810`):
+>
+> | channel | level | AIC Final Score | R@1 | R@100 | found/173 |
+> |---|---|---|---|---|---|
+> | semantic | video | 0.0451 | 0.000 | 0.121 | 21 |
+> | semantic | segment | 0.0012 | 0.000 | 0.006 | 1 |
+> | random | video | **0.0809** | 0.000 | 0.208 | 36 |
+> | ocr | video | 0.1341 | 0.023 | 0.306 | 53 |
+> | bm25 | video | 0.1341 | 0.023 | 0.306 | 53 |
+>
+> ⚠️ **`semantic` thua `random` ở cả hai mức** — vi phạm thẳng câu Verify của chính mục P0.9: *"Hệ thống phải vượt xa baseline random. Không vượt ⇒ có bug, không phải 'cần tối ưu'."* Đã loại trừ: thiếu ingest (Milvus 221.903 row khớp Mongo), lệch `model_id` (cùng giá trị `beit3_base_itc_patch16_224` ở ingest lẫn eval), rò rỉ nhãn (`mean_overlap=0.0158`, `high_overlap_rate=0.0`), bug tầng chấm điểm (`bm25` == `ocr` khớp từng chữ số — đúng thiết kế sanity floor). Nghi vấn chính còn lại: checkpoint `beit3_base_itc_patch16_224` là bản ITC fine-tune trên caption **tiếng Anh** (COCO/Flickr); tháp text dùng `XLMRobertaTokenizer` nên tokenize được tiếng Việt, nhưng phần liên kết ảnh↔chữ nhiều khả năng không zero-shot tốt sang tiếng Việt — đúng rủi ro R1 đã ghi trong CLAUDE.md §5 ("Timebox 1 ngày — quá thì chuyển `SigLIPEncoder`").
+>
+> **Quyết định chủ dự án (2026-08-10):** đổi sang `SigLIPEncoder` **sau**, không phải ngay bây giờ. P0.9 giữ nguyên 🟡 (không đánh dấu ✅) cho đến khi encoder mới chạy lại `eval/run.py` và vượt qua gate verify ở trên. **Chưa sang P0.10** (báo cáo phase + hiệu chỉnh PRD §6.7) với bộ số này — hiệu chỉnh mục tiêu trên một kênh đã biết là bug sẽ phải làm lại toàn bộ khi đổi encoder.
 
 **Làm gì:** biến hệ thống từ "chạy được" thành "đo được".
 
