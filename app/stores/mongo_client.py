@@ -151,6 +151,18 @@ class MongoStore:
         docs = [doc async for doc in cursor]
         return {doc["keyframe_id"]: doc for doc in docs}
 
+    async def scroll_all_videos(self) -> AsyncIterator[dict[str, Any]]:
+        """Every persisted video row (with its `ingest_status`), unfiltered --
+        the live-state source `scripts/write_pilot_available_list.py`
+        (2026-08-10 follow-up) reads to regenerate `pilot_available_v1.txt`.
+        Needed because the Kaggle-offline-embed import path
+        (`scripts/import_embed_out.py`) writes `ingest_status` straight to
+        this collection and never touches that file -- only
+        `scripts/run_ingest.py`'s own local runs did."""
+        cursor = self.videos.find({})
+        async for doc in cursor:
+            yield doc
+
     async def scroll_all_keyframes(self) -> AsyncIterator[dict[str, Any]]:
         """Every persisted keyframe row across the whole corpus, unfiltered
         -- the sampling pool `eval/baselines/random.py` (plan §P0.9) draws

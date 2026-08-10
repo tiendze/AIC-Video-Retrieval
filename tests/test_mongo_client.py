@@ -165,3 +165,25 @@ async def test_scroll_all_keyframes_yields_nothing_for_an_empty_corpus(monkeypat
     result = [doc async for doc in store.scroll_all_keyframes()]
 
     assert result == []
+
+
+async def test_scroll_all_videos_yields_every_document_across_the_corpus(monkeypatch):
+    # scripts/write_pilot_available_list.py's live-state source (2026-08-10
+    # follow-up) -- the Kaggle-offline-embed import path writes ingest_status
+    # straight to MongoDB and never touches configs/eval/pilot_available_v1.txt,
+    # so that file needs to be regenerated FROM here, not trusted as-is.
+    monkeypatch.setattr(
+        "app.stores.mongo_client.AsyncMongoClient",
+        lambda uri: _FakeAsyncMongoClient([]),
+    )
+    store = MongoStore(uri="mongodb://fake")
+    store.videos = _FakeKeyframesCollection(
+        [
+            {"video_id": "L21_V001", "ingest_status": "complete"},
+            {"video_id": "L25_V009", "ingest_status": "embedded"},
+        ]
+    )
+
+    result = [doc async for doc in store.scroll_all_videos()]
+
+    assert {doc["video_id"] for doc in result} == {"L21_V001", "L25_V009"}
