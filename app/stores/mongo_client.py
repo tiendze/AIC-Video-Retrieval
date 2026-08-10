@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from pymongo import AsyncMongoClient, InsertOne
-from pymongo.errors import BulkWriteError
+from pymongo.errors import BulkWriteError, PyMongoError
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +77,16 @@ class MongoStore:
         self.videos = self._db["videos"]
         self.asr_runs = self._db["asr_runs"]
 
+    async def ping(self) -> bool:
+        """Connectivity check for `/health` (plan §P0.8). A store being
+        unreachable is expected degraded-mode data (CLAUDE.md §4), not a
+        bug -- returns False instead of letting `PyMongoError` propagate."""
+        try:
+            await self._client.admin.command("ping")
+            return True
+        except PyMongoError:
+            return False
+
     async def ensure_indexes(self) -> None:
         await self.keyframes.create_index("keyframe_id", unique=True)
         await self.videos.create_index("video_id", unique=True)
@@ -128,6 +138,18 @@ class MongoStore:
         already finished in an earlier run, without redoing shot detection."""
         cursor = self.keyframes.find({"video_id": video_id}).sort("global_index", 1)
         return [doc async for doc in cursor]
+
+    async def get_keyframes_by_ids(self, keyframe_ids: Sequence[str]) -> dict[str, dict[str, Any]]:
+        """Batch lookup by primary key, keyed by `keyframe_id` in the result --
+        used by SearchService to join `frame_idx`/`thumbnail_path` onto search
+        hits. Elasticsearch OCR hits carry no `frame_idx` at all (CLAUDE.md §3
+        only requires it in Milvus/MongoDB), so OCR-mode results need this
+        lookup just to be submittable."""
+        if not keyframe_ids:
+            return {}
+        cursor = self.keyframes.find({"keyframe_id": {"$in": list(keyframe_ids)}})
+        docs = [doc async for doc in cursor]
+        return {doc["keyframe_id"]: doc for doc in docs}
 
     async def max_keyframe_global_index(self) -> int | None:
         """Highest `global_index` actually claimed by a written keyframe row

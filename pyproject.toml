@@ -46,9 +46,17 @@ ocr = [
     "aic-video-retrieval[ingest]",
     "google-genai==2.16.0",
 ]
+eval = [
+    # eval/build_eval_set.py needs exactly what [ocr] already bundles --
+    # google-genai (caption generation) + pillow (keyframe image loading).
+    # Reuses the extra instead of duplicating its pins (P0.4', .claude/plans/
+    # p0-4-build-eval-set.plan.md).
+    "aic-video-retrieval[ocr]",
+]
 asr = [
     "aic-video-retrieval[ingest]",
     "faster-whisper==1.2.1",
+    "ctranslate2==4.6.2",
 ]
 asr-embed = [
     "aic-video-retrieval[ingest]",
@@ -75,6 +83,13 @@ target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# FastAPI's Depends(...) default-argument pattern is the framework's own
+# documented idiom (fastapi.md), not the mutable-default-arg bug B008 warns
+# about -- Depends() calls are stateless factories re-evaluated per request.
+"app/api/*.py" = ["B008"]
+"app/dependencies.py" = ["B008"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

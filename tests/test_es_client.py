@@ -6,7 +6,7 @@ for the real-server counterpart.
 
 from __future__ import annotations
 
-from app.stores.es_client import AsrEsStore
+from app.stores.es_client import AsrEsStore, EsStore
 
 
 class _FakeIndicesClient:
@@ -35,14 +35,36 @@ class _FakeAsyncElasticsearch:
     def __init__(self, *args, **kwargs) -> None:
         self.indices = _FakeIndicesClient()
         self.delete_by_query_calls: list[dict] = []
+        self.ping_result = True
 
     async def delete_by_query(self, index, query):
         self.delete_by_query_calls.append({"index": index, "query": query})
+
+    async def ping(self):
+        return self.ping_result
 
 
 def _store(monkeypatch) -> AsrEsStore:
     monkeypatch.setattr("app.stores.es_client.AsyncElasticsearch", _FakeAsyncElasticsearch)
     return AsrEsStore(url="http://unused", index_name="asr_segments")
+
+
+def _ocr_store(monkeypatch) -> EsStore:
+    monkeypatch.setattr("app.stores.es_client.AsyncElasticsearch", _FakeAsyncElasticsearch)
+    return EsStore(url="http://unused", index_name="ocr_keyframes")
+
+
+async def test_ping_returns_true_when_the_connection_is_healthy(monkeypatch):
+    store = _ocr_store(monkeypatch)
+
+    assert await store.ping() is True
+
+
+async def test_ping_returns_false_when_elasticsearch_is_unreachable(monkeypatch):
+    store = _ocr_store(monkeypatch)
+    store._client.ping_result = False
+
+    assert await store.ping() is False
 
 
 async def test_delete_by_video_runs_delete_by_query_in_engine_not_client_side(monkeypatch):

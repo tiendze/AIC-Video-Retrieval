@@ -14,6 +14,7 @@ from dataclasses import dataclass
 
 import numpy as np
 from pymilvus import DataType, MilvusClient
+from pymilvus.exceptions import MilvusException
 
 _METRIC_TYPE = "COSINE"
 _INDEX_TYPE = "HNSW"
@@ -62,6 +63,16 @@ class MilvusStore:
     @property
     def collection_name(self) -> str:
         return self._collection_name
+
+    def ping(self) -> bool:
+        """Connectivity check for `/health` (plan §P0.8). A store being
+        unreachable is expected degraded-mode data (CLAUDE.md §4), not a
+        bug -- returns False instead of letting `MilvusException` propagate."""
+        try:
+            self._client.list_collections()
+            return True
+        except MilvusException:
+            return False
 
     def drop_collection(self) -> None:
         """Deletes the collection outright (not a row-level delete) — used to

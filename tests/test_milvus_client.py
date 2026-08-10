@@ -6,7 +6,9 @@ the real-server counterpart.
 
 from __future__ import annotations
 
-from app.stores.milvus_client import TranscriptMilvusStore
+from pymilvus.exceptions import MilvusException
+
+from app.stores.milvus_client import MilvusStore, TranscriptMilvusStore
 
 
 class _FakeSchema:
@@ -36,6 +38,7 @@ class _FakeMilvusClient:
         self.collections: set[str] = set()
         self.drop_collection_calls: list[str] = []
         self.create_collection_calls: list[str] = []
+        self.raise_on_list_collections = False
 
     @classmethod
     def create_schema(cls, **kwargs):
@@ -54,6 +57,11 @@ class _FakeMilvusClient:
     def drop_collection(self, collection_name):
         self.collections.discard(collection_name)
         self.drop_collection_calls.append(collection_name)
+
+    def list_collections(self):
+        if self.raise_on_list_collections:
+            raise MilvusException("connection refused")
+        return list(self.collections)
 
 
 def _store(monkeypatch) -> TranscriptMilvusStore:
@@ -97,3 +105,29 @@ def test_drop_collection_is_a_no_op_on_the_underlying_drop_call_when_collection_
 
     assert store._client.drop_collection_calls == []
     assert store._client.has_collection("transcripts_bge_m3") is True
+
+
+def _keyframe_store(monkeypatch) -> MilvusStore:
+    monkeypatch.setattr("app.stores.milvus_client.MilvusClient", _FakeMilvusClient)
+    return MilvusStore(
+        uri="http://unused",
+        token="unused",
+        model_id="beit3_base_itc",
+        embedding_dim=768,
+        hnsw_m=16,
+        hnsw_ef_construction=200,
+        search_ef=64,
+    )
+
+
+def test_ping_returns_true_when_the_connection_is_healthy(monkeypatch):
+    store = _keyframe_store(monkeypatch)
+
+    assert store.ping() is True
+
+
+def test_ping_returns_false_instead_of_raising_when_milvus_is_unreachable(monkeypatch):
+    store = _keyframe_store(monkeypatch)
+    store._client.raise_on_list_collections = True
+
+    assert store.ping() is False

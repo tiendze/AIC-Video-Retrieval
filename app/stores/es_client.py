@@ -53,6 +53,13 @@ class EsStore:
     def index_name(self) -> str:
         return self._index_name
 
+    async def ping(self) -> bool:
+        """Connectivity check for `/health` (plan §P0.8). `AsyncElasticsearch.ping()`
+        already catches transport/API errors itself and returns False --
+        nothing to wrap here (CLAUDE.md §4 degraded mode: unreachable is
+        expected data, not a bug)."""
+        return await self._client.ping()
+
     async def ensure_index(self) -> None:
         if await self._client.indices.exists(index=self._index_name):
             return

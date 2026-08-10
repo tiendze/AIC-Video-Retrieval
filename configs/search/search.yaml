@@ -1,0 +1,6 @@
+# SearchService/API top_k bounds (app/schemas/request/search.py, app/api/search.py).
+# max_top_k=100 mirrors the AIC 2026 submission cap -- "tối đa 100 đáp án đã
+# xếp hạng" (references.md §1.2) -- there is never a reason to ask a store
+# for more hits than the contest will accept.
+default_top_k: 20
+max_top_k: 100

@@ -1,7 +1,7 @@
 # P0 — Nền móng
 
 > **Quay lại:** [`roadmap.plan.md`](./roadmap.plan.md) · **Tiếp theo:** [`p1-search.plan.md`](./p1-search.plan.md)
-> **Trạng thái:** 🟡 đang chạy — **P0.1 → P0.6 xong**; **P0.7 gần xong** (nhánh VISION đã chạy hết, chỉ còn OCR đang chờ quota Gemini); mở thêm **P0.11 — nhánh ASR** để lấp khoảng trống chờ quota
+> **Trạng thái:** 🟡 đang chạy — **P0.1 → P0.6 xong**; **VISION + ASR đã ingest xong toàn kho 873 video** (qua đường Kaggle-offline-embed + P0.11a); **OCR *live* (`pipelines/ocr.py`, gọi Gemini) hoãn có chủ đích** (chủ dự án 2026-08-09, quota không còn là lý do — quyết định sản phẩm); ⭐ **2026-08-10: `ocr_keyframes` đã nạp đầy toàn kho 873 video qua đường import offline riêng** (`data/ocr_results.jsonl` — OCR đã chạy từ trước, ngoài `pipelines/ocr.py` — xem `pipelines/import_ocr_results.py`), quyết định hoãn live-OCR ở trên **vẫn giữ nguyên**, nhưng kênh `ocr` giờ có dữ liệu thật để P0.8 dùng; **P0.4′ đã `freeze` `aic_eval_v1` v1 — NHƯNG là bộ nhãn RÚT GỌN, review tay bị BỎ QUA có chủ đích (xem cảnh báo dưới)**
 
 | Bước | Trạng thái |
 |---|---|
@@ -9,15 +9,15 @@
 | P0.2 docker-compose | ✅ xong (host port đã trả về mặc định `19530` / `9200` / `9000` khi chuyển từ server về laptop) |
 | P0.3 `DatasetAdapter` + `AIC2026Adapter` | ✅ xong — đã đổi tên từ `AIC2025Adapter` và sửa theo layout mới |
 | P0.4 downloader | ❌ đã bỏ (2026-07-29) |
-| P0.4′ sinh bộ eval | ⬜ chờ P0.7 |
+| P0.4′ sinh bộ eval | 🟡 **`aic_eval_v1.json` đã freeze 2026-08-10 nhưng RÚT GỌN — 173/~800 shot dự kiến, review tay BỊ BỎ QUA** (chủ dự án 2026-08-10, hết quota Gemini + thời gian cấp bách). Xem chi tiết ngay dưới bảng. |
 | P0.5 `BEiT3Encoder` | ✅ xong — checkpoint thật đã tải + verify 2026-08-01: `embedding_dim=768`, 6/6 test pass, batch=8 ảnh ~1,1GB VRAM đỉnh trên RTX 3070 |
 | P0.6 ba store client | ✅ xong — đã bổ sung field `frame_idx` vào Milvus (2026-08-01, xem dưới) |
-| **P0.7 ingest** | 🟡 **đang làm — bước kế tiếp** |
+| **P0.7 ingest** | 🟡 **VISION xong toàn kho (221.903 keyframe, 873 video `complete`) · TEXT/OCR *live* (`pipelines/ocr.py`) hoãn có chủ đích (2026-08-09) · ⭐ nhưng `ocr_keyframes` đã nạp đầy 2026-08-10 qua import offline riêng (`data/ocr_results.jsonl`, ngoài `pipelines/ocr.py`) — xem `pipelines/import_ocr_results.py`** |
 | P0.8 search + `/health` | ⬜ |
 | P0.9 `eval/run.py` | ⬜ |
 | P0.10 báo cáo phase | ⬜ |
-| P0.11a ASR → ES (BM25) | ⬜ **ngoài đường găng** — thêm 2026-08-02 |
-| P0.11b ASR → Milvus (dense) | ⬜ **optional** — chủ dự án 2026-08-07: tốn thời gian, làm sau nếu còn dư, không chặn P0.11 "xong" |
+| P0.11a ASR → ES (BM25) | ✅ xong 2026-08-09 — toàn kho 873 video, 31.719 segment, verify khớp Mongo/ES |
+| P0.11b ASR → Milvus (dense) | ⬜ **optional** — chủ dự án 2026-08-07 (và tái xác nhận 2026-08-09): không cần cho lúc này |
 
 **Exit criteria (PRD §4):** search một truy vấn bất kỳ ra kết quả từ đầu đến cuối; `eval/run.py` chạy được và in ra Recall@k **dù số còn thấp**.
 
@@ -153,27 +153,42 @@ Vẫn giữ một ý tưởng từ task cũ: **đóng băng danh sách video th�
 
 ## P0.4′ — Sinh bộ eval ⭐ **task mới, chạy SAU P0.7**
 
+> 🟡 **2026-08-09: code xong (`eval/build_eval_set.py` + `tests/test_build_eval_set.py`, 33 test xanh, coverage 81%).** Chi tiết quyết định + kiểm chứng: `.claude/plans/p0-4-build-eval-set.plan.md`.
+>
+> ⚠️ **2026-08-10 — `generate` chạy thật nhưng dừng giữa chừng vì hết quota Gemini: 173/~800 task hoàn thành** (144 KIS + 29 TRAKE, 267 shot `failed`, 61 video khác nhau — xem `configs/eval/aic_eval_v1.candidates.json`). Vì thời gian cấp bách, chủ dự án quyết định (2026-08-10) **BỎ QUA bước review tay** thay vì chờ review ≥ 100 mẫu như kế hoạch gốc: đã set `approved=true` cho toàn bộ 173 candidate không xem lại, rồi `freeze` thẳng → `configs/eval/aic_eval_v1.json` (sha256 `008f368e…`), `.sha256`, `.quality_report.md`.
+>
+> **Hệ quả cần nhớ khi đọc số liệu P0.9 trở đi:**
+> - Cổng chất lượng PRD §6.1.3 (loại > 30% khi review) **không có ý nghĩa ở v1** — `rejection_rate` báo cáo là 0.0% vì không ai từ chối gì, không phải vì caption thật sự tốt 100%. **Không dùng con số này để kết luận chất lượng nhãn.**
+> - Bộ nhãn v1 **nhỏ hơn nhiều** so với mục tiêu ban đầu (~600 KIS + 40×5 TRAKE): chỉ 173/800 task, tất cả rơi vào 61/873 video. Metric P0.9 tính trên v1 sẽ có **phương sai cao** và không đại diện tốt cho toàn kho.
+> - Phép thử rò rỉ nhãn `caption` ↔ `ocr_text` vẫn **chưa chạy được** (OCR hoãn) — không đổi so với trước.
+> - **Kế hoạch nối tiếp:** khi quota Gemini hồi phục, chạy lại đúng lệnh cũ (`python -m eval.build_eval_set generate`) — script tự resume, không trả tiền lại cho 173 record đã có (xem docstring `eval/build_eval_set.py:20-27`). Sau khi có đủ mẫu, **review tay thật** rồi `freeze` lại thành `v2`, và mọi báo cáo metric dùng `v1` phải được chạy lại với `v2` trước khi coi là số liệu chính thức.
+
 **Làm gì:** dataset **không kèm nhãn nào**. Không có nhãn thì `eval/run.py` ở P0.9 không có gì để chấm, và cả dự án mất khả năng chứng minh mọi tuyên bố "cải thiện".
 
 - `eval/build_eval_set.py` — thực hiện giao thức **PRD §6.1.2**, 5 bước: lấy mẫu shot (phân tầng theo `batch` + `author`, seed cố định) → Gemini sinh caption tiếng Việt → lọc caption chung chung → **review tay ≥ 100 mẫu** → đóng băng `configs/eval/aic_eval_v1.json` + hash.
-- Ngữ cảnh đưa vào prompt sinh caption: keyframe giữa shot + `media-info.title` + `objects[].detection_class_entities`.
-- Gemini: `client.interactions.create(...)`, **structured output** qua `model_json_schema()` — không parse regex.
-- Quy mô v1: ~600 shot từ pilot `L21`–`L24`.
+- Ngữ cảnh đưa vào prompt sinh caption: keyframe giữa shot + `media-info.title`. ~~`objects[].detection_class_entities`~~ **bỏ** — thư mục `objects/` cố ý không tải, pipeline tự chạy chưa xây (PRD §6.1.2 đã cập nhật 2026-08-09).
+- Gemini: `client.interactions.create(...)`, **structured output** qua `model_json_schema()` — không parse regex. Model `gemini-3.6-flash`. ⚠️ Đã thử `gemini-2.5-flash` (rẻ hơn) 2026-08-09 rồi đảo lại cùng ngày — model đó **lờ hoàn toàn `response_format`**, verify bằng test trực tiếp trên ảnh thật (xem `references.md` §5.1).
+- Quy mô v1: ~600 shot, **toàn kho 873 video** (đổi từ pilot `L21`–`L24` — cả kho đã ingest xong tính đến 2026-08-09), phân bổ tầng **căn bậc hai**. Thêm 40 chuỗi × 5 shot liên tiếp cho TRAKE, sinh cùng đợt.
 
 **🛑 Ràng buộc bất biến — model sinh nhãn phải KHÁC model bị đánh giá.** Gemini sinh caption, BEiT-3/SigLIP đi tìm. Vi phạm điều này thì mọi con số ở P0.9 vô nghĩa, và đây đúng là loại lỗi *không crash, chỉ làm điểm số sai một cách khó truy vết*.
 
 **Đầu ra bắt buộc kèm bộ nhãn** (PRD §6.1.3 — không đo cái thước thì không biết số đo đáng tin đến đâu):
 - Tỉ lệ caption bị loại khi review tay
-- Độ đồng thuận giữa 2 người review trên ≥ 30 mẫu chồng nhau
-- Tỉ lệ caption "chung chung" (khớp > X shot khác nhau khi tìm ngược)
+- ⚠️ Độ đồng thuận giữa 2 người review trên ≥ 30 mẫu chồng nhau — **`not_measured` ở v1** (chỉ 1 reviewer, chủ dự án 2026-08-09)
+- Tỉ lệ caption "chung chung" — đo bằng proxy Jaccard trên tập từ nội dung (chưa có search engine thật ở P0 để tìm ngược)
 
 **Verify:**
 - `test_eval_set_sampling_is_deterministic_given_seed`
 - `test_eval_set_is_stratified_across_batch_and_author`
 - `test_eval_set_hash_changes_when_content_changes`
 - `test_trake_sequences_are_contiguous_and_time_ordered`
+- (+ 29 test khác trong `tests/test_build_eval_set.py`, xem file đó)
 
-**Rủi ro cần theo dõi (R6, R9):** đây là mắt xích yếu nhất của cả P0. Nếu tỉ lệ caption bị loại khi review > 30%, **dừng lại báo cáo** — bộ nhãn kém thì mọi metric phía sau chỉ là nhiễu.
+**Rủi ro cần theo dõi (R6, R9):** đây là mắt xích yếu nhất của cả P0. Nếu tỉ lệ caption bị loại khi review > 30%, **dừng lại báo cáo** — bộ nhãn kém thì mọi metric phía sau chỉ là nhiễu. Cổng này đã code cứng trong `eval/build_eval_set.py freeze` (từ chối ghi file nếu vượt ngưỡng).
+
+**Known gap:** phép thử rò rỉ nhãn `caption` ↔ `ocr_text` (PRD §6.1.3/§6.1.2, dùng để phát hiện Gemini chép chữ trên màn hình) **chưa chạy được** — nhánh OCR đang hoãn (chủ dự án 2026-08-09), `ocr_keyframes` index rỗng. Đo bổ sung khi OCR chạy.
+
+**Còn lại để coi P0.4′ "xong":** chạy `python -m eval.build_eval_set generate --limit-shots 5` để mắt thấy tai nghe caption thật (đã chạy 1 lần 2026-08-09, phát hiện `gemini-2.5-flash` không dùng được — đã sửa về `gemini-3.6-flash`, cần chạy lại `--limit-shots 5` để xác nhận), rồi chạy full, review tay ≥ 100 mẫu, `freeze`, và báo cáo phase theo CLAUDE.md §8.
 
 ---
 
