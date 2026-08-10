@@ -326,9 +326,12 @@ keyframe → [1] lọc frame CÓ CHỮ → [2] dedupe perceptual hash → [3] Ge
 >
 > **Quyết định đã xác nhận với chủ dự án (2026-08-10):** `bm25.py` là wrapper mỏng quanh `EsStore.search()` sẵn có (Elasticsearch mặc định *là* BM25) — số của baseline `bm25` và kênh `ocr` sẽ TRÙNG nhau, đây là chủ đích (bm25 đóng vai sàn so sánh, không phải kênh thứ ba).
 >
+> ⚠️ **2026-08-10 phát hiện qua review: `configs/eval/pilot_available_v1.txt` bị STALE — chỉ 29/873 video_id.** File này chỉ được `scripts/run_ingest.py` ghi (lần chạy pilot cục bộ `--batches L21`); đường Kaggle-offline-embed (`scripts/import_embed_out.py` + `scripts/import_ocr_results.py`) ghi `ingest_status` thẳng vào MongoDB cho 844 video còn lại nhưng không đụng tới file này — nên nó "đứng hình" trong khi corpus thật đã lên 873. Đã sửa: thêm `MongoStore.scroll_all_videos()` + `scripts/write_pilot_available_list.py` (đọc `ingest_status` thật từ Mongo, ghi lại file + hash). **Phải chạy script này TRƯỚC `eval.run`**, nếu không P0.9 sẽ tính trên mẫu số sai.
+>
 > **Chưa chạy thật** (CLAUDE.md §10 — cần BEiT-3 GPU + Milvus/ES/Mongo thật đang chạy, để chủ dự án tự chạy):
 > ```powershell
 > docker compose up -d
+> python scripts/write_pilot_available_list.py       # regenerate denominator từ Mongo thật
 > python -m eval.run --config configs/eval/aic_pilot.yaml
 > ```
 > Sau khi chạy xong, đọc `reports/<timestamp>_<git_sha>/report.md` để lấy bảng số thật cho P0.10.
