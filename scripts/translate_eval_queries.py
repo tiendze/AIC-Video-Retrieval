@@ -8,14 +8,23 @@ Why this exists: BEiT-3's image-text contrastive stage was trained on English
 pairs, so a Vietnamese query is off-distribution for the text tower while the
 image tower is untouched. Scoring the SAME Milvus collection with English
 queries tells us which tower is at fault before any GPU time is spent
-re-embedding 873 videos under a new model.
+re-embedding 873 videos under a new model. Confirmed 2026-08-11: AIC Final
+Score went 0.0451 -> 0.6208 -- the text tower is the fault, and translating
+the query at search time (app/services/query_translator.py, wired into
+SearchService) is the production fix, not an encoder swap.
+
+Translator is `LocalNmtTranslator` (app/services/query_translator.py) only --
+no Gemini branch. Settings come from `configs/model/query_translator.yaml`,
+the SAME file `app/main.py` reads for the production SearchService, so a
+sidecar generated here and a live query translated in production never drift
+apart.
 
 Resumable: the sidecar is flushed every `checkpoint_every` translations and
-re-read on startup, so a quota or rate-limit error never discards calls
-already paid for (same discipline as eval/build_eval_set.py).
+re-read on startup, so an interrupted run never discards translations already
+computed (same discipline as eval/build_eval_set.py).
 
-Per CLAUDE.md §10 this is prepared for the project owner to run -- it spends
-Gemini quota:
+Per CLAUDE.md §10 this is prepared for the project owner to run -- it loads a
+local translation model:
 
   python -m scripts.translate_eval_queries --limit 10   # cheap smoke test
   python -m scripts.translate_eval_queries              # full 173 captions
@@ -27,17 +36,15 @@ import argparse
 import json
 import logging
 import sys
-import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field
 
-from app.config import Settings
+from app.services.query_translator import LocalNmtTranslator, QueryTranslator
 from datasets.aic2026 import AIC2026Adapter
 from datasets.base import GroundTruthSegment
 from eval.query_translation import (
@@ -57,6 +64,7 @@ logger = logging.getLogger(__name__)
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _CONFIG_PATH = _REPO_ROOT / "configs" / "eval" / "query_translation.yaml"
+_QUERY_TRANSLATOR_CONFIG_PATH = _REPO_ROOT / "configs" / "model" / "query_translator.yaml"
 _MAX_REPORTED_FAILURES = 10
 
 
@@ -69,170 +77,21 @@ class TranslationConfig:
     eval_set_path: str
     pilot_available_path: str
     output_path: str
-    translator: str
-    gemini_model: str
-    local_model_id: str
-    local_device: str
-    local_source_prefix: str
-    local_target_prefix: str
-    local_max_new_tokens: int
-    max_retries: int
-    retry_base_delay_seconds: float
     checkpoint_every: int
 
 
-class QueryTranslation(BaseModel):
-    """Structured-output schema -- no regex over free text (CLAUDE.md §5)."""
-
-    english_query: str = Field(
-        description=(
-            "Faithful English translation of the Vietnamese sentence, phrased as a "
-            "natural image-caption style description. Preserve every visual detail "
-            "(objects, people, actions, colours, setting). Do not add detail that is "
-            "not in the Vietnamese sentence, and do not explain or comment."
-        )
-    )
-
-
-class Translator(Protocol):
-    @property
-    def model_id(self) -> str:
-        """Stamped onto every row this translator writes, so a sidecar built
-        across a Gemini run and a local run records which model wrote what."""
-        ...
-
-    def translate(self, vietnamese: str) -> str: ...
-
-
-def strip_target_prefix(decoded: str, target_prefix: str) -> str:
-    """EnViT5 echoes the target-language tag it was trained with, so a decode
-    comes back as `"en: A mother donkey..."`. Leaving the tag in would make it
-    part of the query text that gets embedded and searched.
-
-    Only strips at the start and only the configured tag -- a caption that
-    legitimately contains "en:" mid-sentence is left alone. Models that need no
-    tag (VinAI-Translate) get `target_prefix=""` and pass through untouched.
-    """
-    if not target_prefix:
-        return decoded.strip()
-    text = decoded.strip()
-    return text[len(target_prefix) :].strip() if text.startswith(target_prefix) else text
-
-
-class GeminiQueryTranslator:
-    """Wraps `client.interactions.create(...)` -- the current Gemini
-    Interactions API (references.md §5.1), never `generate_content`. Retry
-    policy mirrors `pipelines/ocr.py:GeminiOcrClient`."""
-
-    def __init__(self, api_key: str, config: TranslationConfig) -> None:
-        from google import genai  # lazy: only needed when this class is used
-
-        self._client = genai.Client(api_key=api_key)
-        self._config = config
-
-    @property
-    def model_id(self) -> str:
-        return self._config.gemini_model
-
-    def translate(self, vietnamese: str) -> str:
-        last_exc: Exception | None = None
-        for attempt in range(self._config.max_retries):
-            try:
-                return self._call_once(vietnamese)
-            except (TimeoutError, ConnectionError, OSError) as exc:
-                last_exc = exc
-                time.sleep(self._config.retry_base_delay_seconds * (2**attempt))
-        raise RuntimeError(
-            f"Gemini translation failed after {self._config.max_retries} attempts"
-        ) from last_exc
-
-    def _call_once(self, vietnamese: str) -> str:
-        prompt = (
-            "Dịch câu tiếng Việt sau sang tiếng Anh, giữ nguyên MỌI chi tiết hình "
-            "ảnh (người, vật, hành động, màu sắc, bối cảnh). Viết theo văn phong "
-            "mô tả ảnh tự nhiên. KHÔNG thêm chi tiết không có trong câu gốc, "
-            "KHÔNG giải thích.\n\n"
-            f"Câu tiếng Việt: {vietnamese}"
-        )
-        interaction = self._client.interactions.create(
-            model=self._config.gemini_model,
-            input=[{"type": "text", "text": prompt}],
-            response_format={
-                "type": "text",
-                "mime_type": "application/json",
-                "schema": QueryTranslation.model_json_schema(),
-            },
-        )
-        return QueryTranslation.model_validate_json(interaction.output_text).english_query
-
-
-class LocalNmtTranslator:
-    """Offline VI->EN translation — no API key, no quota, no network after the
-    first model download.
-
-    Default is `VietAI/envit5-translation` (EnViT5, trained on MTet + PhoMT):
-    a T5-base-sized seq2seq that reports state-of-the-art en<->vi BLEU while
-    staying small enough to run on CPU, so it does not compete with BEiT-3 for
-    the 8GB of VRAM (CLAUDE.md §1.4). Greedy decoding (no sampling) keeps the
-    sidecar reproducible -- the same caption must translate identically on a
-    re-run, otherwise resuming a partial file would mix two different English
-    queries for the same label.
-    """
-
-    def __init__(self, config: TranslationConfig) -> None:
-        import torch  # lazy: only needed when this class is used
-        from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
-
-        self._config = config
-        self._torch = torch
-        self._device = torch.device(config.local_device)
-        logger.info("Loading %s on %s ...", config.local_model_id, config.local_device)
-        self._tokenizer = AutoTokenizer.from_pretrained(config.local_model_id)
-        self._model = AutoModelForSeq2SeqLM.from_pretrained(config.local_model_id)
-        self._model.to(self._device).eval()
-
-    @property
-    def model_id(self) -> str:
-        return self._config.local_model_id
-
-    def translate(self, vietnamese: str) -> str:
-        prompt = f"{self._config.local_source_prefix}{vietnamese}"
-        encoded = self._tokenizer(prompt, return_tensors="pt", padding=True)
-        encoded = {key: value.to(self._device) for key, value in encoded.items()}
-        with self._torch.no_grad():
-            generated = self._model.generate(
-                **encoded,
-                max_new_tokens=self._config.local_max_new_tokens,
-                num_beams=1,
-                do_sample=False,
-            )
-        decoded = self._tokenizer.batch_decode(generated, skip_special_tokens=True)[0]
-        english = strip_target_prefix(decoded, self._config.local_target_prefix)
-        if not english:
-            # An empty translation would be embedded as an empty query and
-            # silently score 0 -- fail the row instead (CLAUDE.md §7).
-            raise ValueError(f"empty translation for {vietnamese!r} (decoded={decoded!r})")
-        return english
-
-
-_TRANSLATOR_LOCAL = "local"
-_TRANSLATOR_GEMINI = "gemini"
-
-
-def build_translator(config: TranslationConfig) -> Translator:
-    """Picks the implementation named by `config.translator`.
-
-    `Settings()` is constructed only on the Gemini branch: it validates
-    `gemini_api_key` at construction, and the offline path must run on a
-    machine with no Gemini key and no quota at all.
-    """
-    if config.translator == _TRANSLATOR_LOCAL:
-        return LocalNmtTranslator(config)
-    if config.translator == _TRANSLATOR_GEMINI:
-        return GeminiQueryTranslator(Settings().gemini_api_key.get_secret_value(), config)
-    raise ValueError(
-        f"unknown translator {config.translator!r} -- "
-        f"expected {_TRANSLATOR_LOCAL!r} or {_TRANSLATOR_GEMINI!r}"
+def build_translator() -> QueryTranslator:
+    """Reads the SAME model config app/main.py uses for the production
+    SearchService, so this sidecar and a live query are translated
+    identically."""
+    with _QUERY_TRANSLATOR_CONFIG_PATH.open(encoding="utf-8") as f:
+        config = yaml.safe_load(f)
+    return LocalNmtTranslator(
+        model_id=config["model_id"],
+        device=config["device"],
+        source_prefix=config["source_prefix"],
+        target_prefix=config["target_prefix"],
+        max_new_tokens=config["max_new_tokens"],
     )
 
 
@@ -291,7 +150,7 @@ def _write_sidecar(
 
 def translate_all(
     ground_truth: Sequence[GroundTruthSegment],
-    translator: Translator,
+    translator: QueryTranslator,
     existing: dict[str, TranslatedQuery],
     config: TranslationConfig,
     on_checkpoint: Callable[[Sequence[TranslatedQuery]], None],
@@ -300,8 +159,8 @@ def translate_all(
     `(all translations, failed keys)`.
 
     A per-caption failure is recorded and skipped rather than aborting the
-    batch: one rate-limited call must not discard the other 172 (CLAUDE.md §7
-    -- logged with its key, surfaced in the return value, never swallowed).
+    batch: one bad generation must not discard the other 172 (CLAUDE.md §7 --
+    logged with its key, surfaced in the return value, never swallowed).
     """
     results = dict(existing)
     failed: list[str] = []
@@ -312,11 +171,9 @@ def translate_all(
         key = key_of(gt)
         try:
             english = translator.translate(gt.caption)
-        except Exception as exc:  # noqa: BLE001 -- see eval/build_eval_set.py
-            # google-genai raises from two unrelated hierarchies (documented
-            # `google.genai.errors.*` and `_gaos.lib.compat_errors.*`), neither
-            # an OSError/RuntimeError subclass, so there is no narrower type to
-            # catch without letting one bad call kill the whole batch.
+        except (RuntimeError, ValueError) as exc:
+            # RuntimeError: torch/CUDA generation failure. ValueError:
+            # LocalNmtTranslator's own empty-decode guard.
             logger.error("%s: translation failed: %s", key, exc)
             failed.append(key)
             continue
@@ -343,12 +200,6 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--limit", type=int, default=0, help="translate at most N captions (smoke test); 0 = all"
     )
-    parser.add_argument(
-        "--translator",
-        choices=[_TRANSLATOR_LOCAL, _TRANSLATOR_GEMINI],
-        default=None,
-        help="override the translator in --config",
-    )
     return parser.parse_args()
 
 
@@ -358,8 +209,6 @@ def main() -> int:
     )
     args = _parse_args()
     config = _load_config(args.config)
-    if args.translator is not None:
-        config = replace(config, translator=args.translator)
 
     ground_truth = _load_ground_truth(config)
     if args.limit > 0:
@@ -373,7 +222,7 @@ def main() -> int:
     output_path = _REPO_ROOT / config.output_path
     eval_set_sha256 = _eval_set_sha256(config)
     existing = _load_existing(output_path)
-    translator = build_translator(config)
+    translator = build_translator()
 
     already_used = models_used(list(existing.values()))
     if already_used and translator.model_id not in already_used:

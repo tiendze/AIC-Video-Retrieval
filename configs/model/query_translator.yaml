@@ -1,0 +1,25 @@
+# LocalNmtTranslator config (app/services/query_translator.py). Shared by
+# both entry points that need identical VI->EN translation -- app/main.py
+# (production SearchService) and scripts/translate_eval_queries.py (the
+# eval/query_translation.py `semantic@en` sidecar) -- so a query translated
+# in production and a query translated for the diagnostic never drift apart.
+#
+# Swapping to a different local NMT model (e.g. a more Vietnamese-specialized
+# one) is a config-only change: every caller talks to the QueryTranslator
+# Protocol, never to this class directly (CLAUDE.md §6).
+model_id: VietAI/envit5-translation
+
+# CPU on purpose: keeps the 8GB of VRAM free for BEiT-3 (CLAUDE.md §1.4).
+# Switch to "cuda" only if query-latency becomes the bottleneck and the GPU
+# has headroom during search (it does not during ingest).
+device: cpu
+
+# EnViT5 is prompted with a language tag and echoes the target tag back, so
+# the raw decode is "en: A mother donkey...". Both are config, not constants:
+# a model needing neither tag (e.g. VinAI-Translate) sets both to "".
+source_prefix: "vi: "
+target_prefix: "en: "
+
+# Generation cap. Search queries are short phrases/sentences; 128 leaves
+# headroom without letting a degenerate decode run away.
+max_new_tokens: 128

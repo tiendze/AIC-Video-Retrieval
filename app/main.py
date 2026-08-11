@@ -11,12 +11,14 @@ from app.api.search import router as search_router
 from app.config import Settings
 from app.encoders.base import MultimodalEncoder
 from app.encoders.beit3 import BEiT3Encoder
+from app.services.query_translator import LocalNmtTranslator
 from app.stores.es_client import EsStore
 from app.stores.milvus_client import MilvusStore
 from app.stores.mongo_client import MongoStore
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _BEIT3_CONFIG_PATH = _REPO_ROOT / "configs" / "model" / "beit3.yaml"
+_QUERY_TRANSLATOR_CONFIG_PATH = _REPO_ROOT / "configs" / "model" / "query_translator.yaml"
 _MILVUS_CONFIG_PATH = _REPO_ROOT / "configs" / "stores" / "milvus.yaml"
 # Mirrors scripts/run_ingest.py's _ES_OCR_INDEX_NAME -- the OCR branch writes
 # to this same index name, so the API must read from it, not a new default.
@@ -64,6 +66,17 @@ def _build_mongo_store(settings: Settings) -> MongoStore:
     return MongoStore(uri=settings.mongo_uri)
 
 
+def _build_query_translator() -> LocalNmtTranslator:
+    config = _load_yaml(_QUERY_TRANSLATOR_CONFIG_PATH)
+    return LocalNmtTranslator(
+        model_id=config["model_id"],
+        device=config["device"],
+        source_prefix=config["source_prefix"],
+        target_prefix=config["target_prefix"],
+        max_new_tokens=config["max_new_tokens"],
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = Settings()
@@ -72,6 +85,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.milvus_store = _build_milvus_store(settings, app.state.encoder)
     app.state.es_store = _build_es_store(settings)
     app.state.mongo_store = _build_mongo_store(settings)
+    app.state.query_translator = _build_query_translator()
     await app.state.mongo_store.ensure_indexes()
     await app.state.es_store.ensure_index()
     yield

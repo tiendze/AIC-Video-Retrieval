@@ -86,7 +86,8 @@ vietnamese_stopwords:
 # {metrics.json, report.md, per_query.csv} under this directory.
 reports_dir: reports
 
-# VI->EN query sidecar (eval/query_translation.py), OFF while empty.
+# VI->EN query sidecar (eval/query_translation.py). Set to "" to turn this
+# channel off.
 #
 # Diagnostic for reports/20260810T161049Z_a40aac8, where `semantic` (AIC
 # 0.0451) scored BELOW `random` (0.0809). BEiT-3's image-text contrastive
@@ -99,10 +100,10 @@ reports_dir: reports
 #   semantic@en ~= random    -> the fault is image-side; swapping the encoder
 #                               will not fix it
 #
-# Generate the sidecar first: python -m scripts.translate_eval_queries
+# Sidecar regenerated via: python -m scripts.translate_eval_queries
 # Labels are NOT touched -- aic_eval_v1.json and its .sha256 stay identical,
 # so numbers remain comparable to the 2026-08-10 baseline (CLAUDE.md §8).
-query_translation_path: ""
+query_translation_path: "configs/eval/aic_eval_v1.queries_en.json"
 
 # Which modes also get an `<mode>@en` channel. `ocr` is excluded on purpose:
 # the indexed OCR text is Vietnamese, so an English query there would measure

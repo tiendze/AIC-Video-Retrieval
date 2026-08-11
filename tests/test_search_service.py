@@ -70,11 +70,26 @@ class _FakeMongoStore:
         return {kid: self._docs_by_id[kid] for kid in keyframe_ids if kid in self._docs_by_id}
 
 
+class _FakeQueryTranslator:
+    def __init__(self, translated: str) -> None:
+        self._translated = translated
+        self.translate_calls: list[str] = []
+
+    @property
+    def model_id(self) -> str:
+        return "fake-translator"
+
+    def translate(self, vietnamese: str) -> str:
+        self.translate_calls.append(vietnamese)
+        return self._translated
+
+
 def _service(
     milvus_hits: list[dict] | None = None,
     es_hits: list[dict] | None = None,
     mongo_docs: dict[str, dict] | None = None,
     query_vector: np.ndarray | None = None,
+    query_translator: _FakeQueryTranslator | None = None,
 ) -> tuple[SearchService, _FakeEncoder, _FakeMilvusStore, _FakeEsStore, _FakeMongoStore]:
     default_vector = np.zeros((1, 4), dtype=np.float32)
     encoder = _FakeEncoder(query_vector if query_vector is not None else default_vector)
@@ -82,7 +97,11 @@ def _service(
     es_store = _FakeEsStore(es_hits or [])
     mongo_store = _FakeMongoStore(mongo_docs or {})
     service = SearchService(
-        encoder=encoder, milvus_store=milvus_store, es_store=es_store, mongo_store=mongo_store
+        encoder=encoder,
+        milvus_store=milvus_store,
+        es_store=es_store,
+        mongo_store=mongo_store,
+        query_translator=query_translator,
     )
     return service, encoder, milvus_store, es_store, mongo_store
 
@@ -199,3 +218,29 @@ async def test_unknown_mode_raises_search_service_error():
 
     with pytest.raises(SearchServiceError):
         await service.search("query", mode="hybrid", top_k=5)  # type: ignore[arg-type]
+
+
+async def test_semantic_mode_translates_query_before_encoding_when_translator_configured():
+    # Confirmed 2026-08-11 (reports/20260811T080907Z_fc0edde): scoring the
+    # same BEiT-3 collection with English queries lifted AIC Final Score from
+    # 0.0451 to 0.6208 -- the text tower is English-only, translate at query
+    # time rather than re-embed the corpus.
+    translator = _FakeQueryTranslator("a scene of a burnt forest")
+    service, encoder, *_ = _service(query_translator=translator)
+
+    await service.search("một khu rừng bị cháy", mode="semantic", top_k=5)
+
+    assert translator.translate_calls == ["một khu rừng bị cháy"]
+    assert encoder.encode_text_calls == [["a scene of a burnt forest"]]
+
+
+async def test_ocr_mode_never_translates_the_query():
+    # The `ocr_keyframes` ES index holds Vietnamese OCR text -- translating
+    # an OCR query would measure translation loss, not the retrieval channel.
+    translator = _FakeQueryTranslator("should never be used")
+    service, _, _, es_store, _ = _service(es_hits=[], query_translator=translator)
+
+    await service.search("tin tuc", mode="ocr", top_k=5)
+
+    assert translator.translate_calls == []
+    assert es_store.search_calls == [("tin tuc", 5)]

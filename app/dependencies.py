@@ -11,6 +11,7 @@ from fastapi import Depends, Request
 
 from app.encoders.base import MultimodalEncoder
 from app.services.health_service import HealthService
+from app.services.query_translator import QueryTranslator
 from app.services.search_service import SearchService
 from app.stores.es_client import EsStore
 from app.stores.milvus_client import MilvusStore
@@ -19,6 +20,10 @@ from app.stores.mongo_client import MongoStore
 
 def get_encoder(request: Request) -> MultimodalEncoder:
     return request.app.state.encoder
+
+
+def get_query_translator(request: Request) -> QueryTranslator:
+    return request.app.state.query_translator
 
 
 def get_milvus_store(request: Request) -> MilvusStore:
@@ -46,7 +51,12 @@ def get_search_service(
     milvus_store: MilvusStore = Depends(get_milvus_store),
     es_store: EsStore = Depends(get_es_store),
     mongo_store: MongoStore = Depends(get_mongo_store),
+    query_translator: QueryTranslator = Depends(get_query_translator),
 ) -> SearchService:
     return SearchService(
-        encoder=encoder, milvus_store=milvus_store, es_store=es_store, mongo_store=mongo_store
+        encoder=encoder,
+        milvus_store=milvus_store,
+        es_store=es_store,
+        mongo_store=mongo_store,
+        query_translator=query_translator,
     )

@@ -56,9 +56,16 @@ class _FakeMongoStore:
         self.closed = True
 
 
+class _FakeQueryTranslator:
+    model_id = "fake-translator"
+
+    def translate(self, vietnamese: str) -> str:  # pragma: no cover - unused here
+        raise NotImplementedError
+
+
 def _stub_real_infra(monkeypatch: pytest.MonkeyPatch) -> None:
     """Every lifespan test below needs the app to start without a GPU or
-    Docker -- these stub out exactly the four factory functions main.py
+    Docker -- these stub out exactly the five factory functions main.py
     calls, leaving lifespan's own wiring (order, app.state assignment,
     ensure_index/ensure_indexes, close on shutdown) genuinely exercised."""
     monkeypatch.setattr(main_module, "_build_encoder", lambda: _FakeEncoder())
@@ -67,6 +74,7 @@ def _stub_real_infra(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     monkeypatch.setattr(main_module, "_build_es_store", lambda settings: _FakeEsStore())
     monkeypatch.setattr(main_module, "_build_mongo_store", lambda settings: _FakeMongoStore())
+    monkeypatch.setattr(main_module, "_build_query_translator", lambda: _FakeQueryTranslator())
 
 
 def test_create_app_returns_configured_fastapi_instance(
@@ -127,6 +135,7 @@ def test_lifespan_builds_encoder_and_all_three_stores_onto_app_state(
         assert isinstance(state.milvus_store, _FakeMilvusStore)
         assert isinstance(state.es_store, _FakeEsStore)
         assert isinstance(state.mongo_store, _FakeMongoStore)
+        assert isinstance(state.query_translator, _FakeQueryTranslator)
         assert state.mongo_store.ensure_indexes_called is True
         assert state.es_store.ensure_index_called is True
 

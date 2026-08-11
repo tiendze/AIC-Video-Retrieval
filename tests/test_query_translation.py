@@ -13,6 +13,7 @@ import json
 
 import pytest
 
+from app.services.query_translator import strip_target_prefix
 from datasets.base import GroundTruthSegment
 from eval.query_translation import (
     QueryTranslationError,
@@ -26,7 +27,6 @@ from eval.query_translation import (
     to_payload,
     translation_key,
 )
-from scripts.translate_eval_queries import strip_target_prefix
 
 _VI_ONE = "Một con lừa mẹ và lừa con đang đứng cạnh nhau."
 _VI_TWO = "Cận cảnh các tang vật gồm tiền mặt và một chiếc cốc màu đỏ."
