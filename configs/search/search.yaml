@@ -12,3 +12,12 @@ allowed_upload_mime_types:
   - image/jpeg
   - image/png
   - image/webp
+
+# hybrid mode -- Reciprocal Rank Fusion of semantic + ocr (plan §P1.3).
+# RRF(d) = Σ_c weight_c / (hybrid_rrf_k + rank_c(d)). 60 is RRF's own
+# well-known literature default, not tuned yet -- adjust here (never in
+# code, CLAUDE.md §6) if `test_hybrid_not_worse_than_best_single_channel`
+# on the eval set shows hybrid losing to the best single channel.
+hybrid_rrf_k: 60
+hybrid_semantic_weight: 1.0
+hybrid_ocr_weight: 1.0

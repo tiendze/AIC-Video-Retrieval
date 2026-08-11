@@ -26,9 +26,20 @@ pilot_available_path: configs/eval/pilot_available_v1.txt
 # every K without re-querying.
 top_ks: [1, 5, 20, 50, 100]
 
-# Channels reported independently (plan §P0.8/§P0.9). "hybrid" (RRF) is
-# P1.3 -- deliberately excluded, it needs both channels measured alone
-# first before a combination is meaningful to compare against.
+# Channels reported independently (plan §P0.8/§P0.9). "hybrid" (RRF, plan
+# §P1.3) is deliberately OFF the routine list: F4 was measured and dropped
+# 2026-08-12 via tests/integration/test_hybrid_fusion.py
+# (test_hybrid_not_worse_than_best_single_channel) -- RRF's default equal
+# weighting loses to the best single channel in BOTH directions measured on
+# this pilot corpus (untranslated: ocr 0.0254 > hybrid 0.0162 > semantic
+# 0.0012; translated, the fair comparison since production always
+# translates: semantic_live_en 0.4809 > hybrid_live_en 0.4428 > ocr 0.0254).
+# RRF fuses by RANK, not score magnitude, so mixing a much weaker channel
+# into a much stronger one drags the strong one down either way. The
+# SearchService "hybrid" mode itself is kept (tested, not deleted) in case a
+# future OCR-quality improvement or a genuine per-query weighting scheme
+# changes this -- see .claude/plans/p1-search.plan.md §P1.3 for the full
+# writeup. Re-add "hybrid" here only after a NEW decisive run.
 modes: [semantic, ocr]
 
 # RandomBaseline determinism -- same "seed cố định" convention as

@@ -49,6 +49,7 @@ import yaml
 
 from app.config import Settings
 from app.encoders.beit3 import BEiT3Encoder
+from app.schemas.request.search import HYBRID_OCR_WEIGHT, HYBRID_RRF_K, HYBRID_SEMANTIC_WEIGHT
 from app.services.query_translator import LocalNmtTranslator
 from app.services.search_service import SearchService
 from app.stores.es_client import EsStore
@@ -608,7 +609,13 @@ def _build_stores(
         api_key=settings.elastic_api_key.get_secret_value() if settings.elastic_api_key else None,
     )
     search_service = SearchService(
-        encoder=encoder, milvus_store=milvus, es_store=es, mongo_store=mongo
+        encoder=encoder,
+        milvus_store=milvus,
+        es_store=es,
+        mongo_store=mongo,
+        rrf_k=HYBRID_RRF_K,
+        semantic_weight=HYBRID_SEMANTIC_WEIGHT,
+        ocr_weight=HYBRID_OCR_WEIGHT,
     )
     return mongo, milvus, es, search_service
 
@@ -634,13 +641,20 @@ def _build_live_translated_search_service(
     but wired with the real production QueryTranslator -- exercises the exact
     code path a live user query goes through (SearchService._search_semantic
     translating internally), unlike `semantic@en` which translates via a
-    precomputed sidecar entirely outside SearchService."""
+    precomputed sidecar entirely outside SearchService. Also the service a
+    fair `hybrid` measurement must use (plan §P1.3): production's SearchService
+    (app/dependencies.py) always translates the semantic leg, so a hybrid
+    channel measured without a translator understates what a live query
+    actually gets -- see tests/integration/test_hybrid_fusion.py."""
     return SearchService(
         encoder=encoder,
         milvus_store=milvus,
         es_store=es,
         mongo_store=mongo,
         query_translator=_build_query_translator(),
+        rrf_k=HYBRID_RRF_K,
+        semantic_weight=HYBRID_SEMANTIC_WEIGHT,
+        ocr_weight=HYBRID_OCR_WEIGHT,
     )
 
 

@@ -54,7 +54,7 @@ Tóm tắt: R4 đóng (video tin tức đầy chữ) nên OCR ở P0 **đo đư�
 
 ---
 
-## P1.3 — Hybrid fusion (RRF)
+## P1.3 — Hybrid fusion (RRF) — ❌ F4 bị bỏ 2026-08-12 (đo thật, giữ code)
 
 **Làm gì:** hợp nhất kênh semantic và kênh OCR.
 
@@ -69,6 +69,35 @@ Tóm tắt: R4 đóng (video tin tức đầy chữ) nên OCR ở P0 **đo đư�
 ⚠️ **Kỳ vọng đã đảo so với bản trước.** Trên YouCook2 kênh OCR gần như rỗng nên hybrid dự kiến ≈ semantic. Trên video tin tức, kênh OCR **giàu tín hiệu**, nên hybrid có cơ hội thật sự vượt semantic — và ngược lại, nếu hybrid **vẫn** ≈ semantic thì đó là tín hiệu đáng nghi, phải điều tra chứ đừng chấp nhận.
 
 ⚠️ Cảnh báo riêng cho bộ nhãn tự sinh: caption do Gemini sinh **từ chính keyframe đáp án**, mà keyframe đó có thể chứa chữ. Nếu Gemini chép lại chữ trên màn hình vào caption thì kênh OCR sẽ khớp gần như hoàn hảo và hybrid trông xuất sắc một cách giả tạo. **Đối chiếu với kết quả BM25 ở P0.9** — BM25 cao bất thường là dấu hiệu của đúng bệnh này. Kết quả vẫn phải báo cáo đúng như đo được, không cố làm cho hybrid "trông tốt hơn".
+
+**Đã làm (2026-08-11, TDD RED→GREEN):**
+- `app/services/search_service.py`: `SearchMode` thêm `"hybrid"`; `SearchService.__init__` thêm `rrf_k`/`semantic_weight`/`ocr_weight` (default 60/1.0/1.0, plan mặc định); `_search_hybrid()` chạy song song `_search_semantic` + `_search_ocr` (`asyncio.gather`) rồi hợp nhất bằng hàm thuần `_reciprocal_rank_fusion()` — `mode` vẫn là một tham số, không phải code path riêng (CLAUDE.md §4).
+- `configs/search/search.yaml`: thêm `hybrid_rrf_k: 60`, `hybrid_semantic_weight: 1.0`, `hybrid_ocr_weight: 1.0` — không hard-code (CLAUDE.md §6).
+- `app/schemas/request/search.py`: đọc 3 giá trị trên thành `HYBRID_RRF_K`/`HYBRID_SEMANTIC_WEIGHT`/`HYBRID_OCR_WEIGHT`; `SearchRequest.mode` thêm `"hybrid"`.
+- `app/dependencies.py` + `eval/run.py` (`_build_stores`): truyền 3 hằng số trên vào `SearchService(...)` — API sống và `eval/run.py` dùng CHUNG một giá trị cấu hình.
+- `configs/eval/aic_pilot.yaml`: `modes` thêm `hybrid` — lần chạy `eval/run.py` tới sẽ tự đo cả 3 kênh.
+- `tests/test_search_service.py`: 7 test mới (RRF đúng công thức, trọng số kênh, `k` cấu hình được, cắt top_k sau fusion, top_k truyền xuống cả 2 kênh con, chỉ nhánh semantic được dịch, hit OCR thiếu Mongo vẫn bị loại trong hybrid).
+- `tests/test_search_api.py`: sửa test mode-không-hợp-lệ (đổi từ `"hybrid"` sang `"video"` vì hybrid giờ hợp lệ) + thêm test `"hybrid"` trả 200.
+- `tests/integration/test_hybrid_fusion.py` (MỚI): chuẩn bị (chưa chạy) `test_hybrid_not_worse_than_best_single_channel` — tái dùng thẳng các hàm của `eval/run.py` (`_build_stores`, `score_channel`, ...) trên bộ eval thật, so `aic_final_score` segment-level của hybrid với max(semantic, ocr). Cần docker-compose + checkpoint BEiT-3 thật (CLAUDE.md §10 — chủ dự án tự chạy):
+  ```
+  docker compose up -d
+  BEIT3_CHECKPOINT_PATH=models/beit3/beit3_base_itc_patch16_224.pth \
+  BEIT3_SPM_PATH=models/beit3/beit3.spm \
+  pytest -m "integration and model" tests/integration/test_hybrid_fusion.py -v
+  ```
+- Verify đã chạy: `pytest --cov=app` → 444 passed, 4 skipped (integration/model tự skip), `app/services/search_service.py` + `app/api/search.py` + `app/schemas/request/search.py` = 100% coverage; `ruff check` + `black --check` sạch trên toàn bộ file đã sửa.
+
+**Kết quả `test_hybrid_not_worse_than_best_single_channel` (2026-08-12, chạy thật trên docker-compose + BEiT-3 thật, `split=all`, corpus pilot 873 video):**
+
+| Lần đo | semantic | ocr | hybrid |
+|---|---|---|---|
+| 1 — semantic KHÔNG dịch (khớp quy ước eval/run.py cho kênh `semantic` độc lập) | 0.0012 | 0.0254 | 0.0162 |
+| 2 — semantic ĐÃ dịch VI→EN (khớp `SearchService` sống thật, luôn có `query_translator`) | 0.4809 | 0.0254 | 0.4428 |
+
+Cả 2 lần đo — dù kênh nào mạnh/yếu đổi chỗ cho nhau — hybrid đều **thấp hơn** kênh đơn tốt nhất. Nguyên nhân: RRF cộng dồn theo **hạng**, không theo **độ lớn điểm**; khi trộn một kênh rất mạnh với một kênh rất yếu, kênh yếu vẫn "có phiếu" theo hạng của nó và kéo tụt kênh mạnh, bất kể chiều nào yếu/mạnh. Trên corpus pilot này, OCR không mang đủ tín hiệu độc lập để bù lại phần nó làm giảm hạng.
+
+**Quyết định (chủ dự án, 2026-08-12):** bỏ F4 khỏi luồng mặc định — `configs/eval/aic_pilot.yaml` `modes` trở lại `[semantic, ocr]`, không tự động đo hybrid trong báo cáo eval thường kỳ nữa; P1.6 (frontend) sẽ không đưa "hybrid" làm lựa chọn mode. **Giữ nguyên code** (`SearchService` hybrid mode, RRF fusion, config `hybrid_rrf_k`/weight, toàn bộ test) — không xóa, vì đây là hạ tầng đã test đúng, có thể bật lại nếu sau này kênh OCR mạnh lên hoặc có sơ đồ trọng số theo từng truy vấn (per-query weighting) thay vì trọng số cố định.
+- **Còn thiếu:** không còn — F4 đã có số đo thật và quyết định cuối cùng. Việc còn lại nếu muốn hồi sinh F4: cải thiện chất lượng kênh OCR trước, hoặc thử RRF có trọng số động theo loại truy vấn.
 
 ---
 

@@ -147,10 +147,20 @@ def test_search_rejects_an_unknown_mode_before_reaching_the_service():
     service = _FakeSearchService(hits=[])
     client = _client(service)
 
-    response = client.post("/api/search", json={"query": "x", "mode": "hybrid"})
+    response = client.post("/api/search", json={"query": "x", "mode": "video"})
 
     assert response.status_code == 422
     assert not service.search_calls
+
+
+def test_search_accepts_hybrid_mode():
+    service = _FakeSearchService(hits=[])
+    client = _client(service)
+
+    response = client.post("/api/search", json={"query": "x", "mode": "hybrid"})
+
+    assert response.status_code == 200
+    assert service.search_calls == [("x", "hybrid", 20)]
 
 
 def test_search_service_error_maps_to_unified_400_error_schema():

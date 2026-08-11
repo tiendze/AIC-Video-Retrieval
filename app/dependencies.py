@@ -10,6 +10,7 @@ from __future__ import annotations
 from fastapi import Depends, Request
 
 from app.encoders.base import MultimodalEncoder
+from app.schemas.request.search import HYBRID_OCR_WEIGHT, HYBRID_RRF_K, HYBRID_SEMANTIC_WEIGHT
 from app.services.health_service import HealthService
 from app.services.query_translator import QueryTranslator
 from app.services.search_service import SearchService
@@ -59,4 +60,7 @@ def get_search_service(
         es_store=es_store,
         mongo_store=mongo_store,
         query_translator=query_translator,
+        rrf_k=HYBRID_RRF_K,
+        semantic_weight=HYBRID_SEMANTIC_WEIGHT,
+        ocr_weight=HYBRID_OCR_WEIGHT,
     )
