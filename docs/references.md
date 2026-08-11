@@ -581,6 +581,17 @@ Quy đổi trên số keyframe **BTC trích sẵn** (mốc tham chiếu — số
 
 Đây chính là cơ sở của rủi ro R2 trong PRD và lý do phải lọc frame có chữ + dedupe **trước** khi gọi. Khác YouCook2 ở một điểm quan trọng: video tin tức có **tỉ lệ frame chứa chữ rất cao**, nên bước lọc [1] sẽ cắt được ít hơn kỳ vọng — bước dedupe [2] mới là chỗ tiết kiệm chính (bản tin giữ nguyên khung đồ hoạ suốt nhiều giây liền).
 
+**💵 Giá model (fetch 2026-08-09, `https://ai.google.dev/gemini-api/docs/pricing`, paid tier, USD/1M token):**
+
+| Model | Input | Output | Ghi chú |
+|---|---|---|---|
+| `gemini-3.6-flash` | $1,50 | $7,50 | Mặc định `configs/ingest/ocr.yaml` (nhánh OCR, đang hoãn) |
+| `gemini-2.5-flash` | **$0,30** | **$2,50** | Dùng cho `eval/build_eval_set.py` (sinh caption bộ nhãn), chủ dự án chốt 2026-08-09 |
+
+Đã kiểm chứng `gemini-2.5-flash` **có** trong bảng model được **Interactions API** hỗ trợ (`https://ai.google.dev/gemini-api/docs/interactions.md.txt`: *"Gemini 2.5 Flash | Model | gemini-2.5-flash"*) — không bị ép dùng `generate_content`.
+
+🛑 **Nhưng KHÔNG dùng `gemini-2.5-flash` cho bất kỳ nhánh nào cần structured output (OCR, VQA, sinh nhãn).** Test thực nghiệm 2026-08-09 (`eval/build_eval_set.py`, cùng ảnh + cùng request cho cả hai model): `gemini-2.5-flash` **lờ hoàn toàn tham số `response_format`** — trả về văn bản thường thay vì JSON đúng schema, dù request đã verify đúng shape qua chính SDK (không phải lỗi code). `gemini-3.6-flash` trả đúng JSON `{"caption": "..."}` với nguyên văn cùng request. Interactions API hỗ trợ `response_format` như một *tính năng model 3.x*, không phải mọi model được liệt kê trong bảng "supported models" đều enforce nó. ⇒ **`gemini-3.6-flash` là lựa chọn bắt buộc**, không phải tuỳ chọn, cho mọi lệnh gọi Gemini có `response_format` trong dự án này. Bảng giá bên dưới giữ lại làm tư liệu, không phải khuyến nghị dùng 2.5-flash.
+
 **Trang khác cần dùng:**
 - Batch API (giảm chi phí ingest hàng loạt): https://ai.google.dev/gemini-api/docs/batch-api.md.txt
 - Embeddings: https://ai.google.dev/gemini-api/docs/embeddings.md.txt

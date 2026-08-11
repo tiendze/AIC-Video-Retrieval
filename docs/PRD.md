@@ -350,11 +350,19 @@ Chữ ký này **giữ nguyên** so với bản 0.1, nên `DatasetAdapter` Proto
 
 | Bước | Làm gì | Ghi chú |
 |---|---|---|
-| 1 | **Lấy mẫu shot** có seed cố định, phân tầng theo `batch` và `author` để không dồn hết vào một kênh | Quy mô v1: ~600 shot từ pilot `L21`–`L24` |
-| 2 | **Gemini sinh caption tiếng Việt** cho keyframe giữa của shot, kèm ngữ cảnh từ `media-info.title` và `objects[].detection_class_entities` | Structured output qua `model_json_schema()`, **không** parse regex |
+| 1 | **Lấy mẫu shot** có seed cố định, phân tầng theo `batch` và `author` để không dồn hết vào một kênh | Quy mô v1: ~600 shot |
+| 2 | **Gemini sinh caption tiếng Việt** cho keyframe giữa của shot, kèm ngữ cảnh từ `media-info.title` | Structured output qua `model_json_schema()`, **không** parse regex |
 | 3 | **Lọc tự động** caption quá chung chung (*"một người đang nói"*) — chúng khớp hàng nghìn shot nên vô dụng làm truy vấn | Ngưỡng đặt trong `configs/`, không hard-code |
 | 4 | **Review thủ công ≥ 100 mẫu** — loại caption sai nội dung hoặc mơ hồ; ước lượng tỉ lệ lỗi của phần chưa review | Bắt buộc, xem §6.1.3 |
 | 5 | **Đóng băng** thành `configs/eval/aic_eval_v1.json` + hash | Đây là **mẫu số chính thức** của mọi báo cáo về sau |
+
+🔧 **Cập nhật triển khai 2026-08-09 (chủ dự án, `eval/build_eval_set.py`):**
+
+- **Bước 1 — phạm vi đổi từ pilot sang toàn kho.** Lúc viết bản gốc, chỉ pilot `L21`–`L24` (128 video) đã ingest xong nên mẫu chỉ lấy từ đó. Đến 2026-08-09 cả 873 video đã ingest xong (VISION + ASR; OCR hoãn — xem dưới), nên `split: all` lấy mẫu trên toàn kho. **Phân bổ tầng dùng căn bậc hai** số shot mỗi tầng (`batch × author`, 10 tầng thật trên toàn kho), không phải tỉ lệ thuần: đo thực tế cho thấy một kênh (`L26`/ViVU TV) chiếm ~50% tổng shot của kho (51.055/102.706) — tỉ lệ thuần sẽ dồn ~298/600 mẫu vào một kênh, chia đều thì bỏ phí tầng lớn.
+- **Bước 1 mở rộng — quota TRAKE sinh cùng đợt.** Ngoài ~600 shot rời cho Textual KIS, sinh thêm 40 chuỗi × 5 shot liên tiếp (bảng "Nhãn cho từng task" bên dưới) trong cùng lần chạy — không để dành "làm ở P2", vì bộ eval là artifact đóng băng và bổ sung sau sẽ tăng `eval_set_version`, kéo theo chạy lại toàn bộ baseline.
+- **Bước 2 — bỏ `objects[].detection_class_entities` khỏi ngữ cảnh prompt.** Thư mục `objects/` của BTC **cố ý không tải** (`references.md` §2), và pipeline tự chạy object detection của dự án **chưa được xây** (không có `pipelines/object*.py`) — dữ liệu này không tồn tại trên máy để đưa vào ngữ cảnh. Ngữ cảnh sinh caption v1 chỉ gồm ảnh keyframe + `media-info.title`.
+- **Bước 2 — model sinh caption là `gemini-3.6-flash`** (khớp `configs/ingest/ocr.yaml`). ⚠️ Đã thử `gemini-2.5-flash` (rẻ hơn 5×) trong cùng ngày 2026-08-09 và **đảo lại**: test trực tiếp trên ảnh thật cho thấy 2.5-flash **lờ hoàn toàn `response_format`** qua Interactions API — trả text thường thay vì JSON đúng schema, dù request đã verify đúng shape. 3.6-flash trả đúng JSON với nguyên văn cùng request. Kết luận: `response_format` là tính năng model 3.x mới hỗ trợ đầy đủ qua Interactions API.
+- **Bước 3 — proxy tính được thay cho "khớp hàng nghìn shot".** P0.8 (search service) chưa tồn tại ở thời điểm sinh bộ eval nên không thể tìm ngược thật. Đề dùng: caption dưới ngưỡng số từ nội dung (sau khi bỏ stopword) ⇒ `generic_short`; caption có Jaccard trên tập từ nội dung ≥ ngưỡng với hơn N caption khác trong cùng lô ⇒ `generic_duplicate`.
 
 **Nhãn cho từng task:**
 
@@ -376,6 +384,8 @@ Không đo cái thước thì không biết số đo đáng tin đến đâu. B�
 | **Tỉ lệ caption bị loại khi review** | Trên ≥ 100 mẫu review tay; ngoại suy cho phần còn lại |
 | **Độ đồng thuận giữa 2 người review** | Trên ≥ 30 mẫu chồng nhau — thấp nghĩa là chính định nghĩa "đúng" đang mơ hồ |
 | **Tỉ lệ caption "chung chung"** | Số caption khớp > X shot khác nhau khi tìm ngược |
+
+⚠️ **v1 (`eval/build_eval_set.py`, chủ dự án 2026-08-09): chỉ 1 người review**, nên "độ đồng thuận giữa 2 người review" **không đo được**, không phải bằng 0 hay bỏ qua — báo cáo chất lượng (`aic_eval_v1.quality_report.md`) ghi rõ `not_measured`. Tỉ lệ caption bị loại vẫn đo đủ (cổng cứng: > 30% thì dừng, không đóng băng — mục "Rủi ro" ở R6). "Tỉ lệ chung chung" dùng proxy tính được (Jaccard trên tập từ nội dung) thay vì tìm ngược qua search engine thật, vì P0.8 chưa tồn tại ở thời điểm này — xem ghi chú ở §6.1.2 bước 3.
 
 #### 6.1.4 Trường metadata thay thế `recipe_type`
 
@@ -539,17 +549,19 @@ Báo cáo `Sequence Exact-Match` và `Kendall's tau` cho từng giá trị, tác
 
 ### 6.7 Bảng mục tiêu v1
 
-🔧 **[Giả định]** Paper không công bố số nào, nên các mốc dưới đây là mục tiêu tự đặt. **Sẽ hiệu chỉnh lại sau lần đo đầu tiên ở P0.**
-
-⚠️ Bản 0.1 đặt các mốc này dựa trên kết quả thường thấy của retrieval video **trên YouCook2**. Chúng nay áp lên một bài toán khác hẳn — nhãn tự sinh, video tin tức tiếng Việt — nên độ tin cậy còn thấp hơn nữa. Cụ thể có hai lực kéo ngược chiều nhau: nhãn tự sinh khiến truy vấn *dễ* hơn thực tế (đẩy số lên), còn kho 873 video toàn bản tin cùng một kênh khiến các keyframe *giống nhau* hơn nhiều so với 89 loại món ăn (kéo số xuống). **Không suy diễn tiếp — chờ số đo P0.**
+✅ **Hiệu chỉnh lần đầu 2026-08-11, sau số đo thật ở P0.9.** Nguồn: `reports/20260811T105324Z_202d7ef6888b1f15c686e28d55e08000bd4be56c/metrics.json`, kênh `semantic_live_en` (đúng code path production — `SearchService` dịch VI→EN query-time qua `LocalNmtTranslator` thật, không phải sidecar chẩn đoán `semantic@en`), `eval_set_version=v1` (hash `008f368e…`), 873 video_id, 173 truy vấn, seed `20260810`, git SHA `202d7ef`.
+>
+> **Công thức:** *Sàn* = số đo được hôm nay (bảo vệ khỏi hồi quy — dưới mức này ở lần chạy sau nghĩa là có bug, không phải "cần tối ưu"); *Mục tiêu v1* = Sàn × 1,25 (giữa khoảng +20–30%, mức kỳ vọng hybrid RRF + OCR ở P1 đạt được); *Kỳ vọng* = Sàn × 1,5, trừ hàng nào công thức đẩy vượt trần 1,0 (Recall@20 video-level đã đo 0,67 — ×1,5 sẽ vượt 1,0, vô nghĩa cho một tỉ lệ — chốt tay ở 0,90 thay vì tính máy móc).
+>
+> Bốn hàng dưới đây đã có số đo thật; các hàng TRAKE/VQA/latency **vẫn giữ nguyên giả định YouCook2 cũ** — P0 chưa xây TRAKE/VQA/benchmark latency nên chưa có gì để hiệu chỉnh.
 
 | Metric | Sàn (phải đạt) | Mục tiêu v1 | Kỳ vọng |
 |---|---|---|---|
-| **AIC Final Score** (segment-level) ⭐ | ⚠️ [Cần đo] | ⚠️ [Cần đo] | ⚠️ [Cần đo] |
-| Recall@1 (segment-level) | ≥ 0,05 | **≥ 0,12** | ≥ 0,20 |
-| Recall@20 (segment-level) | ⚠️ [Cần đo] | ⚠️ [Cần đo] | ⚠️ [Cần đo] |
-| Recall@20 (video-level) | ⚠️ [Cần đo] | ⚠️ [Cần đo] | ⚠️ [Cần đo] |
-| MRR | ≥ 0,10 | **≥ 0,20** | ≥ 0,30 |
+| **AIC Final Score** (segment-level) ⭐ | **0,48** | **0,60** | **0,72** |
+| Recall@1 (segment-level) | **0,21** | **0,26** | **0,32** |
+| Recall@20 (segment-level) | **0,54** | **0,68** | **0,82** |
+| Recall@20 (video-level) | **0,67** | **0,84** | **0,90** ⚠️ trần gần 1,0 — không áp ×1,5 máy móc, xem công thức ở trên |
+| MRR (segment-level) | **0,28** | **0,35** | **0,42** |
 | TRAKE Sequence Exact-Match (N=3) | ≥ 0,10 | **≥ 0,25** | ≥ 0,40 |
 | TRAKE Kendall's tau | ≥ 0,50 | **≥ 0,75** | ≥ 0,90 |
 | VQA Grounded Accuracy | ≥ 0,25 | **≥ 0,45** | ≥ 0,60 |
@@ -557,6 +569,8 @@ Báo cáo `Sequence Exact-Match` và `Kendall's tau` cho từng giá trị, tác
 | Semantic search p95 | ≤ 800 ms | **≤ 300 ms** | ≤ 150 ms |
 
 **Cách đọc bảng:** cột *Sàn* là ngưỡng dưới — không đạt nghĩa là có bug, không phải "cần tối ưu". Cột *Mục tiêu v1* là mốc để coi phase hoàn thành.
+
+⚠️ **`MRR` không ghi rõ mức (video/segment) ở bản gốc — làm rõ ở đây: segment-level**, cùng quy ước với `AIC Final Score` (mức nghiêm ngặt hơn, dùng để chẩn đoán — xem `eval/run.py::aggregate_channel`). Số video-level tương ứng nằm trong report gốc nếu cần so sánh (`0,395` MRR / `0,6104` AIC Final Score / `0,671` Recall@20).
 
 ### 6.8 Giao thức đánh giá
 

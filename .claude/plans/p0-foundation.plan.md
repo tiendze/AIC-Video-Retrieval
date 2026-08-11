@@ -1,7 +1,7 @@
 # P0 — Nền móng
 
 > **Quay lại:** [`roadmap.plan.md`](./roadmap.plan.md) · **Tiếp theo:** [`p1-search.plan.md`](./p1-search.plan.md)
-> **Trạng thái:** 🟡 đang chạy — **P0.1 → P0.6 xong**; **VISION + ASR đã ingest xong toàn kho 873 video** (qua đường Kaggle-offline-embed + P0.11a); **OCR *live* (`pipelines/ocr.py`, gọi Gemini) hoãn có chủ đích** (chủ dự án 2026-08-09, quota không còn là lý do — quyết định sản phẩm); ⭐ **2026-08-10: `ocr_keyframes` đã nạp đầy toàn kho 873 video qua đường import offline riêng** (`data/ocr_results.jsonl` — OCR đã chạy từ trước, ngoài `pipelines/ocr.py` — xem `pipelines/import_ocr_results.py`), quyết định hoãn live-OCR ở trên **vẫn giữ nguyên**, nhưng kênh `ocr` giờ có dữ liệu thật để P0.8 dùng; **P0.4′ đã `freeze` `aic_eval_v1` v1 — NHƯNG là bộ nhãn RÚT GỌN, review tay bị BỎ QUA có chủ đích (xem cảnh báo dưới)**
+> **Trạng thái:** 🟡 đang chạy — **P0.1 → P0.9 xong** (P0.8/P0.9 cập nhật 2026-08-11, xem bảng dưới); **VISION + ASR đã ingest xong toàn kho 873 video** (qua đường Kaggle-offline-embed + P0.11a); **OCR *live* (`pipelines/ocr.py`, gọi Gemini) hoãn có chủ đích** (chủ dự án 2026-08-09, quota không còn là lý do — quyết định sản phẩm); ⭐ **2026-08-10: `ocr_keyframes` đã nạp đầy toàn kho 873 video qua đường import offline riêng** (`data/ocr_results.jsonl` — OCR đã chạy từ trước, ngoài `pipelines/ocr.py` — xem `pipelines/import_ocr_results.py`), quyết định hoãn live-OCR ở trên **vẫn giữ nguyên**, nhưng kênh `ocr` giờ có dữ liệu thật để P0.8 dùng; **P0.4′ đã `freeze` `aic_eval_v1` v1 — NHƯNG là bộ nhãn RÚT GỌN, review tay bị BỎ QUA có chủ đích (xem cảnh báo dưới)**; **P0.9 qua gate verify 2026-08-11** nhờ dịch VI→EN query-time (giữ BEiT-3) — đang chuẩn bị **P0.10** (báo cáo phase + hiệu chỉnh PRD §6.7)
 
 | Bước | Trạng thái |
 |---|---|
@@ -13,9 +13,9 @@
 | P0.5 `BEiT3Encoder` | ✅ xong — checkpoint thật đã tải + verify 2026-08-01: `embedding_dim=768`, 6/6 test pass, batch=8 ảnh ~1,1GB VRAM đỉnh trên RTX 3070 |
 | P0.6 ba store client | ✅ xong — đã bổ sung field `frame_idx` vào Milvus (2026-08-01, xem dưới) |
 | **P0.7 ingest** | 🟡 **VISION xong toàn kho (221.903 keyframe, 873 video `complete`) · TEXT/OCR *live* (`pipelines/ocr.py`) hoãn có chủ đích (2026-08-09) · ⭐ nhưng `ocr_keyframes` đã nạp đầy 2026-08-10 qua import offline riêng (`data/ocr_results.jsonl`, ngoài `pipelines/ocr.py`) — xem `pipelines/import_ocr_results.py`** |
-| P0.8 search + `/health` | ⬜ |
-| P0.9 `eval/run.py` | 🟡 code xong + đã chạy thật 2026-08-10 — **chưa qua gate verify của chính P0.9** (semantic thua random), chặn bởi encoder, xem ghi chú dưới |
-| P0.10 báo cáo phase | ⬜ |
+| P0.8 search + `/health` | ✅ xong — bảng này chưa cập nhật kịp lúc P0.8 xong; `app/api/search.py` + `app/api/health.py` + `SearchService` đã chạy thật xuyên suốt các lần `eval.run` ở P0.9 |
+| P0.9 `eval/run.py` | ✅ xong 2026-08-11 — kênh `semantic_live_en` (đúng code path production, `SearchService` + `LocalNmtTranslator` thật) đạt AIC Final Score 0.6104 (video) / 0.4809 (segment), vượt xa `random` (0.0809) — gate verify đã qua. Chi tiết đầy đủ ở mục P0.9 bên dưới |
+| P0.10 báo cáo phase | ✅ xong 2026-08-11 — PRD §6.7 hiệu chỉnh từ số đo thật, `roadmap.plan.md` P0 → ✅, `architecture.md` §4.1 kiểm tra không lệch (không hard-code `embedding_dim`) |
 | P0.11a ASR → ES (BM25) | ✅ xong 2026-08-09 — toàn kho 873 video, 31.719 segment, verify khớp Mongo/ES |
 | P0.11b ASR → Milvus (dense) | ⬜ **optional** — chủ dự án 2026-08-07 (và tái xác nhận 2026-08-09): không cần cho lúc này |
 
