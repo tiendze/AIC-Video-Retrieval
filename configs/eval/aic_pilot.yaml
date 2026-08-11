@@ -109,3 +109,11 @@ query_translation_path: "configs/eval/aic_eval_v1.queries_en.json"
 # the indexed OCR text is Vietnamese, so an English query there would measure
 # translation loss rather than anything about the retrieval channel.
 query_translation_modes: [semantic]
+
+# When true, ALSO scores `semantic_live_en` through a second SearchService
+# wired with the real production QueryTranslator (configs/model/
+# query_translator.yaml) -- the actual code path a live user query goes
+# through, not the precomputed sidecar `semantic@en` uses. Loads a second
+# translation model alongside BEiT-3; set back to false for routine reports
+# once P0.9's production-path evidence is captured.
+translate_semantic_live: true

@@ -16,7 +16,10 @@ Pipeline (one query = one ground-truth caption -> one shot):
      AIC Final Score, plus Recall@20 broken down by `author` and `batch`.
   4. Run the label-leakage test (caption <-> ocr_text overlap,
      eval/metrics/leakage.py) -- required by plan §P0.9, not optional.
-  5. Write `reports/<timestamp>_<git_sha>/{metrics.json,report.md,
+  5. Optionally score `semantic@en` (VI->EN sidecar, `query_translation_path`)
+     and/or `semantic_live_en` (real production QueryTranslator wired into a
+     second SearchService, `translate_semantic_live`) -- both off by default.
+  6. Write `reports/<timestamp>_<git_sha>/{metrics.json,report.md,
      per_query.csv}`.
 
 Needs live Milvus/Elasticsearch/MongoDB (docker compose) and a loaded
@@ -46,6 +49,7 @@ import yaml
 
 from app.config import Settings
 from app.encoders.beit3 import BEiT3Encoder
+from app.services.query_translator import LocalNmtTranslator
 from app.services.search_service import SearchService
 from app.stores.es_client import EsStore
 from app.stores.milvus_client import MilvusStore
@@ -77,10 +81,12 @@ logger = logging.getLogger(__name__)
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _BEIT3_CONFIG_PATH = _REPO_ROOT / "configs" / "model" / "beit3.yaml"
+_QUERY_TRANSLATOR_CONFIG_PATH = _REPO_ROOT / "configs" / "model" / "query_translator.yaml"
 _MILVUS_CONFIG_PATH = _REPO_ROOT / "configs" / "stores" / "milvus.yaml"
 _ES_OCR_INDEX_NAME = "ocr_keyframes"
 _NDCG_K = 10  # PRD §6.3: nDCG@10 specifically
 _AUTHOR_BATCH_BREAKDOWN_K = 20  # PRD §6.3: "Recall@20 tách theo author và batch"
+_LIVE_TRANSLATED_CHANNEL = "semantic_live_en"
 
 
 @dataclass(frozen=True)
@@ -108,6 +114,16 @@ class EvalRunConfig:
     # Vietnamese, so an English query there would measure translation loss
     # rather than anything about the retrieval channel.
     query_translation_modes: tuple[str, ...] = ("semantic",)
+    # When True, scores an EXTRA `semantic_live_en` channel through a SECOND
+    # SearchService wired with the real production QueryTranslator
+    # (configs/model/query_translator.yaml) -- the exact code path a live
+    # user query goes through (SearchService._search_semantic translating
+    # internally). This is stronger evidence than `semantic@en` (which
+    # translates via a precomputed sidecar OUTSIDE SearchService entirely):
+    # it exercises the actual DI wiring app/main.py uses in production.
+    # False by default -- loads a second translation model, only needed when
+    # deliberately verifying the production path (plan §P0.9).
+    translate_semantic_live: bool = False
 
 
 @dataclass(frozen=True)
@@ -597,6 +613,37 @@ def _build_stores(
     return mongo, milvus, es, search_service
 
 
+def _build_query_translator() -> LocalNmtTranslator:
+    """Reads the SAME model config app/main.py uses for the production
+    SearchService, so this diagnostic channel and a live query are
+    translated identically."""
+    config = _load_yaml(_QUERY_TRANSLATOR_CONFIG_PATH)
+    return LocalNmtTranslator(
+        model_id=config["model_id"],
+        device=config["device"],
+        source_prefix=config["source_prefix"],
+        target_prefix=config["target_prefix"],
+        max_new_tokens=config["max_new_tokens"],
+    )
+
+
+def _build_live_translated_search_service(
+    encoder: BEiT3Encoder, milvus: MilvusStore, es: EsStore, mongo: MongoStore
+) -> SearchService:
+    """A SECOND SearchService sharing the same stores/encoder as the main one,
+    but wired with the real production QueryTranslator -- exercises the exact
+    code path a live user query goes through (SearchService._search_semantic
+    translating internally), unlike `semantic@en` which translates via a
+    precomputed sidecar entirely outside SearchService."""
+    return SearchService(
+        encoder=encoder,
+        milvus_store=milvus,
+        es_store=es,
+        mongo_store=mongo,
+        query_translator=_build_query_translator(),
+    )
+
+
 class _ResultAccumulator:
     """Collects channel metrics + per-query rows across every channel/baseline
     run in one `eval.run` pass -- replaces a closure over `_main()`'s locals
@@ -719,11 +766,20 @@ async def _run_all_channels(
     es: EsStore,
     search_service: SearchService,
     ground_truth: Sequence[GroundTruthSegment],
+    live_translated_search_service: SearchService | None = None,
 ) -> None:
     for mode in config.modes:
         await accumulator.run_and_collect(mode, _SemanticSearcher(search_service, mode))
 
     await _collect_translated_channels(config, accumulator, search_service, ground_truth)
+
+    if live_translated_search_service is not None:
+        # Raw Vietnamese caption in, no query_transform -- the SECOND
+        # SearchService translates internally, same as a real user query.
+        await accumulator.run_and_collect(
+            _LIVE_TRANSLATED_CHANNEL,
+            _SemanticSearcher(live_translated_search_service, "semantic"),
+        )
 
     keyframe_pool = await build_keyframe_pool(mongo)
     await accumulator.run_and_collect(
@@ -773,12 +829,19 @@ async def _main() -> int:
     author_map = build_author_map(adapter, config.split)
 
     encoder = _build_encoder(args.device)
-    mongo, _milvus, es, search_service = _build_stores(settings, encoder)
+    mongo, milvus, es, search_service = _build_stores(settings, encoder)
+    live_translated_search_service = (
+        _build_live_translated_search_service(encoder, milvus, es, mongo)
+        if config.translate_semantic_live
+        else None
+    )
 
     accumulator = _ResultAccumulator(
         ground_truth, top_k, config.top_ks, author_map, _AUTHOR_BATCH_BREAKDOWN_K
     )
-    await _run_all_channels(accumulator, config, mongo, es, search_service, ground_truth)
+    await _run_all_channels(
+        accumulator, config, mongo, es, search_service, ground_truth, live_translated_search_service
+    )
 
     leakage_report = await _build_leakage_report_or_none(
         ground_truth,

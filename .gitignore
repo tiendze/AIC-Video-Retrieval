@@ -223,3 +223,16 @@ volumes/
 # Downloaded model checkpoints (scripts/setup_beit3.sh etc.)
 models/
 data/
+
+# eval/run.py report output -- one new timestamped directory per run,
+# regenerated freely, never the source of truth (that's configs/eval/).
+reports/
+
+# Regenerable eval/build_eval_set.py + scripts/translate_eval_queries.py
+# outputs -- NOT the frozen label set. configs/eval/aic_eval_v1.json (+ its
+# .sha256) and configs/eval/pilot_available_v1.txt stay tracked: CLAUDE.md
+# calls the former "mẫu số chính thức của mọi báo cáo về sau" and the eval
+# gate requires the latter to be reproducible across machines.
+configs/eval/aic_eval_v1.queries_en.json
+configs/eval/aic_eval_v1.candidates.json
+configs/eval/aic_eval_v1.quality_report.md
