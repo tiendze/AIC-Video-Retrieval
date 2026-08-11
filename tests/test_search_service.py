@@ -15,6 +15,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+from PIL import Image
 
 from app.services.search_service import SearchHit, SearchService, SearchServiceError
 
@@ -23,6 +24,7 @@ class _FakeEncoder:
     def __init__(self, vector: np.ndarray) -> None:
         self._vector = vector
         self.encode_text_calls: list[list[str]] = []
+        self.encode_image_calls: list[list[Any]] = []
 
     @property
     def embedding_dim(self) -> int:
@@ -32,8 +34,9 @@ class _FakeEncoder:
     def model_id(self) -> str:
         return "fake-encoder"
 
-    def encode_image(self, images):  # pragma: no cover - unused by SearchService
-        raise NotImplementedError
+    def encode_image(self, images):
+        self.encode_image_calls.append(list(images))
+        return self._vector
 
     def encode_text(self, texts):
         self.encode_text_calls.append(list(texts))
@@ -244,3 +247,69 @@ async def test_ocr_mode_never_translates_the_query():
 
     assert translator.translate_calls == []
     assert es_store.search_calls == [("tin tuc", 5)]
+
+
+async def test_search_by_image_encodes_with_vision_branch_and_searches_milvus():
+    # plan §P1.1 / US-3: image-to-image search must encode with the vision
+    # branch of the SAME encoder used at ingest, then search the SAME
+    # Milvus collection semantic text queries hit -- one shared vector space.
+    vector = np.array([[0.5, 0.6, 0.7, 0.8]], dtype=np.float32)
+    milvus_hits = [
+        {
+            "keyframe_id": "L21_V001_f10",
+            "distance": 0.99,
+            "entity": {"video_id": "L21_V001", "frame_idx": 10, "timestamp": 0.4},
+        }
+    ]
+    mongo_docs = {"L21_V001_f10": {"thumbnail_path": "thumbs/L21_V001_f10.jpg"}}
+    service, encoder, milvus_store, _, mongo_store = _service(
+        milvus_hits=milvus_hits, mongo_docs=mongo_docs, query_vector=vector
+    )
+    image = Image.new("RGB", (8, 8), color=(10, 20, 30))
+
+    results = await service.search_by_image(image, top_k=5)
+
+    assert encoder.encode_image_calls == [[image]]
+    assert milvus_store.search_calls[0][1] == 5
+    assert np.array_equal(milvus_store.search_calls[0][0], vector[0])
+    assert mongo_store.get_keyframes_by_ids_calls == [["L21_V001_f10"]]
+    assert results == [
+        SearchHit(
+            keyframe_id="L21_V001_f10",
+            video_id="L21_V001",
+            score=0.99,
+            frame_idx=10,
+            timestamp=0.4,
+            thumbnail_path="thumbs/L21_V001_f10.jpg",
+        )
+    ]
+
+
+async def test_search_by_image_never_calls_the_query_translator():
+    # Translation only applies to the `semantic` text path -- an uploaded
+    # image has no text query to translate.
+    translator = _FakeQueryTranslator("should never be used")
+    service, encoder, *_ = _service(query_translator=translator)
+    image = Image.new("RGB", (4, 4))
+
+    await service.search_by_image(image, top_k=5)
+
+    assert translator.translate_calls == []
+    assert encoder.encode_text_calls == []
+
+
+async def test_search_by_image_never_drops_a_hit_missing_from_mongo():
+    milvus_hits = [
+        {
+            "keyframe_id": "orphan_f1",
+            "distance": 0.5,
+            "entity": {"video_id": "L21_V001", "frame_idx": 1, "timestamp": 0.04},
+        }
+    ]
+    service, *_ = _service(milvus_hits=milvus_hits, mongo_docs={})
+
+    results = await service.search_by_image(Image.new("RGB", (4, 4)), top_k=5)
+
+    assert len(results) == 1
+    assert results[0].keyframe_id == "orphan_f1"
+    assert results[0].thumbnail_path == ""

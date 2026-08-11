@@ -13,7 +13,7 @@
 | Phase | Tên | File chi tiết | Exit criteria (PRD §4) | Trạng thái |
 |---|---|---|---|---|
 | **P0** | Nền móng | [`p0-foundation.plan.md`](./p0-foundation.plan.md) | Search một truy vấn ra kết quả end-to-end; `eval/run.py` chạy được và in Recall@k dù số còn thấp | ✅ xong 2026-08-11 (P0.11b optional còn treo, không chặn P1) |
-| **P1** | Tìm kiếm cơ bản | [`p1-search.plan.md`](./p1-search.plan.md) | Recall@20 (segment-level) đạt mục tiêu PRD §6.7 (bộ K đổi theo đề AIC 2026, không còn Recall@10) | ⬜ chưa bắt đầu |
+| **P1** | Tìm kiếm cơ bản | [`p1-search.plan.md`](./p1-search.plan.md) | Recall@20 (segment-level) đạt mục tiêu PRD §6.7 (bộ K đổi theo đề AIC 2026, không còn Recall@10) | 🟡 đang làm (P1.1 xong 2026-08-11) |
 | **P2** | Hai đóng góp của paper | [`p2-quest-dante.plan.md`](./p2-quest-dante.plan.md) | TRAKE `Sequence Exact-Match` đạt §6.7; **có bảng ablation λ** | ⬜ chưa bắt đầu |
 | **P3** | VQA & nộp bài | [`p3-vqa-submission.plan.md`](./p3-vqa-submission.plan.md) | `Grounded Accuracy` đạt §6.7; file nộp qua validate | ⬜ chưa bắt đầu |
 | **P4** | Mở rộng toàn kho & tối ưu | [`p4-aic-optimize.plan.md`](./p4-aic-optimize.plan.md) | Toàn bộ metrics chạy lại trên đủ 873 video; có báo cáo so sánh pilot ↔ full | ⬜ chưa bắt đầu |

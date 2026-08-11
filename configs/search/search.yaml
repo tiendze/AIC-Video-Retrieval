@@ -4,3 +4,11 @@
 # for more hits than the contest will accept.
 default_top_k: 20
 max_top_k: 100
+
+# POST /api/search/image upload guard (plan §P1.1, CLAUDE.md §7: validate
+# size + MIME on any uploaded image, never store it permanently).
+max_upload_size_bytes: 10485760  # 10 MiB
+allowed_upload_mime_types:
+  - image/jpeg
+  - image/png
+  - image/webp

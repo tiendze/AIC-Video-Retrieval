@@ -9,16 +9,34 @@ Phase này bổ sung hai kênh còn lại (image-to-image, OCR) và hợp nhất
 
 ---
 
-## P1.1 — Image-to-image search
+## P1.1 — Image-to-image search — ✅ xong 2026-08-11 (code + integration test đều PASS)
 
 **Làm gì:** `POST /api/search/image` — người vận hành thấy một ảnh giống thứ cần tìm thì upload lên (US-3).
 
 - `multipart/form-data`. Encode bằng **nhánh vision của CÙNG encoder**, **CÙNG preprocessing** với lúc ingest — vi phạm chỗ này là hỏng âm thầm, không crash.
-- Bảo mật: giới hạn kích thước file, check MIME type, **không lưu vĩnh viễn**.
+- Bảo mật: giới hạn kích thước file (10 MiB, `configs/search/search.yaml`), check MIME type (jpeg/png/webp), **không lưu vĩnh viễn** (giải mã trong RAM, không ghi đĩa).
+
+**Đã làm:**
+- `app/services/search_service.py`: `search_by_image()` — dùng chung `_search_milvus_vector()` với `semantic` (refactor DRY), không đi qua `QueryTranslator`.
+- `app/api/search.py`: route mới, validate MIME → validate size → decode ảnh (bắt `UnidentifiedImageError`) → gọi service.
+- `configs/search/search.yaml` + `app/schemas/request/search.py`: thêm `MAX_UPLOAD_SIZE_BYTES`, `ALLOWED_UPLOAD_MIME_TYPES`.
+- `pyproject.toml`: thêm `python-multipart==0.0.20` (bắt buộc cho `File()`/`Form()` của FastAPI, thiếu thì lỗi ngay lúc import).
+
+**Code review 2026-08-11 (`ecc:code-reviewer` agent) — 2 HIGH, 2 MEDIUM đã fix:**
+- Nhánh `except UnidentifiedImageError` gốc bỏ sót `OSError` thường (file JPEG bị cắt cụt) và `Image.DecompressionBombError` (ảnh khai kích thước khổng lồ trong file bé) — cả hai lọt xuống 500 thay vì 400. Sửa: `except (OSError, Image.DecompressionBombError)`.
+- Body upload bị Starlette đọc/spool hết vào bộ nhớ **trước khi** route kịp check `MAX_UPLOAD_SIZE_BYTES` (python-multipart không có trần tổng kích thước). Thêm `register_upload_guard()` — middleware chặn theo header `Content-Length` khai láo trước khi multipart parser chạm vào body; route vẫn giữ check cũ làm lớp phòng thủ thứ hai (trường hợp thiếu/giả `Content-Length`).
+- `Content-Type` chỉ là nhãn caller tự khai, `Image.open()` nhận diện theo magic bytes — thêm bước so `image.format` với `Content-Type` đã khai, không khớp thì 415.
+- Test hardcode `10*1024*1024+1` thay bằng import `MAX_UPLOAD_SIZE_BYTES` từ config (tránh lệch âm thầm khi đổi config).
 
 **Verify:**
-- `test_uploaded_keyframe_retrieves_itself_as_top1` — lấy một keyframe đã ingest, upload lại, nó phải đứng **top-1**. Không đạt ⇒ preprocessing lúc query lệch với lúc ingest.
-- `test_oversized_upload_is_rejected` · `test_non_image_mime_is_rejected`
+- `tests/test_search_api.py` — 21 test (bao gồm 7 case mới từ review: truncated JPEG, decompression bomb, MIME giả mạo, file field thiếu, upload 0 byte, top_k biên trên, content-length guard chặn trước khi đọc body). Toàn bộ PASS. Coverage `app/api/search.py` + `app/services/search_service.py` = 100%.
+- `test_uploaded_keyframe_retrieves_itself_as_top1` — `tests/integration/test_search_service_image.py`, chạy thật 2026-08-11 trên docker-compose stack sống (Milvus/Mongo/ES healthy) + checkpoint BEiT-3 thật (`models/beit3/`, CUDA available) theo lệnh chủ dự án cho phép chạy:
+  ```
+  BEIT3_CHECKPOINT_PATH=models/beit3/beit3_base_itc_patch16_224.pth \
+  BEIT3_SPM_PATH=models/beit3/beit3.spm \
+  pytest -m "integration and model" tests/integration/test_search_service_image.py -v
+  ```
+  Kết quả: **1 passed in 17.33s**. Ảnh đáp án đứng top-1 giữa 2 keyframe (1 decoy), cosine self-similarity ≈ 1.0 — preprocessing lúc query khớp chính xác lúc "ingest".
 
 ---
 

@@ -15,6 +15,10 @@ eval channel (AIC Final Score 0.0451 -> 0.6208 on the same collection). `ocr`
 never translates -- the ES index holds Vietnamese OCR text, so an English
 query there would measure translation loss, not the retrieval channel.
 
+`search_by_image` (plan §P1.1) is image-to-image search: it shares the same
+Milvus-vector-to-SearchHit mapping as `semantic` (`_search_milvus_vector`),
+differing only in which encoder branch produces the query vector.
+
 Milvus search, encoder inference, and translation are synchronous, CPU/GPU-
 bound calls; they run off the event loop via `asyncio.to_thread` so this
 async method never blocks other requests (.claude/rules/ecc/python/fastapi.md).
@@ -26,6 +30,9 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Literal
+
+import numpy as np
+from PIL import Image
 
 from app.encoders.base import MultimodalEncoder
 from app.services.query_translator import QueryTranslator
@@ -74,11 +81,23 @@ class SearchService:
             return await self._search_ocr(query, top_k)
         raise SearchServiceError(f"Unknown search mode: {mode!r}")
 
+    async def search_by_image(self, image: Image.Image, top_k: int) -> list[SearchHit]:
+        """Image-to-image search (plan §P1.1, US-3): encodes `image` with the
+        vision branch of the SAME encoder/preprocessing used at ingest time
+        (CLAUDE.md §3 -- vectors from two different pipelines is a silent
+        failure, not a crash) and searches the same Milvus collection text
+        queries do, so both modes share one vector space."""
+        vector = await asyncio.to_thread(self._encoder.encode_image, [image])
+        return await self._search_milvus_vector(vector[0], top_k)
+
     async def _search_semantic(self, query: str, top_k: int) -> list[SearchHit]:
         if self._query_translator is not None:
             query = await asyncio.to_thread(self._query_translator.translate, query)
         vector = await asyncio.to_thread(self._encoder.encode_text, [query])
-        hits = await asyncio.to_thread(self._milvus_store.search, vector[0], top_k)
+        return await self._search_milvus_vector(vector[0], top_k)
+
+    async def _search_milvus_vector(self, vector: np.ndarray, top_k: int) -> list[SearchHit]:
+        hits = await asyncio.to_thread(self._milvus_store.search, vector, top_k)
         mongo_docs = await self._mongo_store.get_keyframes_by_ids(
             [hit["keyframe_id"] for hit in hits]
         )
@@ -92,7 +111,7 @@ class SearchService:
                 # frame_idx/timestamp already came from Milvus, so the hit
                 # is still submittable -- only thumbnail_path is missing.
                 logger.warning(
-                    "search_semantic: keyframe_id=%s has no MongoDB record, "
+                    "search_milvus_vector: keyframe_id=%s has no MongoDB record, "
                     "thumbnail_path unavailable",
                     keyframe_id,
                 )

@@ -7,6 +7,7 @@ from fastapi import FastAPI
 
 from app.api.errors import register_error_handling
 from app.api.health import router as health_router
+from app.api.search import register_upload_guard
 from app.api.search import router as search_router
 from app.config import Settings
 from app.encoders.base import MultimodalEncoder
@@ -96,6 +97,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 def create_app() -> FastAPI:
     app = FastAPI(title="AIC Video Retrieval", lifespan=lifespan)
     register_error_handling(app)
+    register_upload_guard(app)
     app.include_router(health_router)
     app.include_router(search_router)
     return app
