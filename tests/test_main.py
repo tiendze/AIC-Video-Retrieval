@@ -209,3 +209,64 @@ def test_search_endpoint_is_reachable_end_to_end(
 
     assert response.status_code == 200
     assert response.json()["results"][0]["keyframe_id"] == "L21_V001_f10"
+
+
+def test_cors_preflight_allows_configured_frontend_origin(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The Vite dev server (`:5173`, `app/config.py`'s `cors_origins` default)
+    must be able to call the API from the browser -- without `CORSMiddleware`
+    wired up, every `frontend/` request is blocked before it reaches a route
+    (plan §P1.6 backend gap 1.1)."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-gemini-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "fake-openai-key")
+    _stub_real_infra(monkeypatch)
+
+    app = create_app()
+
+    with TestClient(app) as client:
+        response = client.options(
+            "/api/search",
+            headers={
+                "Origin": "http://localhost:5173",
+                "Access-Control-Request-Method": "POST",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
+
+
+def test_cors_rejects_unconfigured_origin(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-gemini-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "fake-openai-key")
+    _stub_real_infra(monkeypatch)
+
+    app = create_app()
+
+    with TestClient(app) as client:
+        response = client.options(
+            "/api/search",
+            headers={
+                "Origin": "http://evil.example.com",
+                "Access-Control-Request-Method": "POST",
+            },
+        )
+
+    assert "access-control-allow-origin" not in response.headers
+
+
+def test_create_app_does_not_require_secrets_for_cors_settings(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`create_app()` itself must not raise before the lifespan even starts --
+    CORS middleware setup only needs `cors_origins`/`app_env`, never the
+    Gemini/OpenAI secrets that `Settings()` requires (those are validated
+    later, inside `lifespan`, per `test_lifespan_raises_clear_error_when_api_key_missing`)."""
+    monkeypatch.chdir(tmp_path)  # isolate from the repo's real .env
+
+    app = create_app()  # must not raise, even with no GEMINI_API_KEY/OPENAI_API_KEY set
+
+    assert app.title == "AIC Video Retrieval"

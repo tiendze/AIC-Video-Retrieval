@@ -10,10 +10,10 @@ from __future__ import annotations
 from fastapi import Depends, Request
 
 from app.encoders.base import MultimodalEncoder
-from app.schemas.request.search import HYBRID_OCR_WEIGHT, HYBRID_RRF_K, HYBRID_SEMANTIC_WEIGHT
 from app.services.health_service import HealthService
 from app.services.query_translator import QueryTranslator
 from app.services.search_service import SearchService
+from app.services.thumbnail_service import ThumbnailService
 from app.stores.es_client import EsStore
 from app.stores.milvus_client import MilvusStore
 from app.stores.mongo_client import MongoStore
@@ -39,6 +39,10 @@ def get_mongo_store(request: Request) -> MongoStore:
     return request.app.state.mongo_store
 
 
+def get_thumbnail_service(request: Request) -> ThumbnailService:
+    return request.app.state.thumbnail_service
+
+
 def get_health_service(
     milvus_store: MilvusStore = Depends(get_milvus_store),
     es_store: EsStore = Depends(get_es_store),
@@ -60,7 +64,4 @@ def get_search_service(
         es_store=es_store,
         mongo_store=mongo_store,
         query_translator=query_translator,
-        rrf_k=HYBRID_RRF_K,
-        semantic_weight=HYBRID_SEMANTIC_WEIGHT,
-        ocr_weight=HYBRID_OCR_WEIGHT,
     )

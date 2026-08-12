@@ -65,6 +65,10 @@ def _to_response(hits: list[SearchHit]) -> SearchResponse:
                 frame_idx=hit.frame_idx,
                 timestamp=hit.timestamp,
                 thumbnail_path=hit.thumbnail_path,
+                # Derived from keyframe_id alone (plan §P1.6) -- the frontend
+                # never needs to know the on-disk path convention.
+                thumbnail_url=f"/api/keyframes/{hit.keyframe_id}/thumbnail",
+                image_url=f"/api/keyframes/{hit.keyframe_id}/image",
             )
             for hit in hits
         ]

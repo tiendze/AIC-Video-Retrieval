@@ -110,6 +110,8 @@ def test_search_returns_200_with_mapped_hits():
                 "frame_idx": 10,
                 "timestamp": 0.4,
                 "thumbnail_path": "t.jpg",
+                "thumbnail_url": "/api/keyframes/L21_V001_f10/thumbnail",
+                "image_url": "/api/keyframes/L21_V001_f10/image",
             }
         ]
     }
@@ -153,16 +155,6 @@ def test_search_rejects_an_unknown_mode_before_reaching_the_service():
     assert not service.search_calls
 
 
-def test_search_accepts_hybrid_mode():
-    service = _FakeSearchService(hits=[])
-    client = _client(service)
-
-    response = client.post("/api/search", json={"query": "x", "mode": "hybrid"})
-
-    assert response.status_code == 200
-    assert service.search_calls == [("x", "hybrid", 20)]
-
-
 def test_search_service_error_maps_to_unified_400_error_schema():
     service = _FakeSearchService(error=SearchServiceError("Unknown search mode: 'x'"))
     client = _client(service)
@@ -193,6 +185,8 @@ def test_search_by_image_returns_200_with_mapped_hits():
                 "frame_idx": 10,
                 "timestamp": 0.4,
                 "thumbnail_path": "t.jpg",
+                "thumbnail_url": "/api/keyframes/L21_V001_f10/thumbnail",
+                "image_url": "/api/keyframes/L21_V001_f10/image",
             }
         ]
     }

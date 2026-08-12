@@ -13,11 +13,17 @@ allowed_upload_mime_types:
   - image/png
   - image/webp
 
-# hybrid mode -- Reciprocal Rank Fusion of semantic + ocr (plan §P1.3).
-# RRF(d) = Σ_c weight_c / (hybrid_rrf_k + rank_c(d)). 60 is RRF's own
-# well-known literature default, not tuned yet -- adjust here (never in
-# code, CLAUDE.md §6) if `test_hybrid_not_worse_than_best_single_channel`
-# on the eval set shows hybrid losing to the best single channel.
-hybrid_rrf_k: 60
-hybrid_semantic_weight: 1.0
-hybrid_ocr_weight: 1.0
+# GET /api/keyframes/{id}/thumbnail (plan §P1.6): on-demand resize + disk
+# cache -- the imported Kaggle keyframe set has no pre-made thumbnail
+# (pipelines/import_embed_out.py sets thumbnail_path == image_path), so the
+# live corpus is 221,903 full-res JPEGs (~40 GB) with nothing pre-resized.
+thumbnail_cache_dir: data/thumbnail_cache
+thumbnail_max_px: 320
+thumbnail_jpeg_quality: 80
+thumbnail_cache_max_age_seconds: 31536000  # 1 year -- images are immutable per keyframe_id
+
+# scripts/build_thumbnails.py (batch cache warm): PIL decode/resize/encode
+# is CPU-bound and releases the GIL, same reasoning as ClipEncoder's
+# preprocess_workers (app/encoders/clip_baseline.py) -- threading, not
+# multiprocessing, since no image data needs to cross a process boundary.
+thumbnail_build_workers: 8
