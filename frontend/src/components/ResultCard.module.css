@@ -1,0 +1,54 @@
+.card {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 1px solid #333;
+  background: #111;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.thumbnail {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* Always visible -- not a hover overlay (PRD §F9: video_id + timestamp
+   must show without hover, contest operators are under time pressure). */
+.label {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  justify-content: space-between;
+  gap: 4px;
+  padding: 2px 4px;
+  background: rgba(0, 0, 0, 0.72);
+  color: #fff;
+  font-size: 11px;
+  font-family: monospace;
+  pointer-events: none;
+}
+
+.videoId {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.findSimilar {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  padding: 2px 6px;
+  font-size: 10px;
+  background: rgba(0, 0, 0, 0.72);
+  color: #fff;
+  border: 1px solid #555;
+  cursor: pointer;
+}

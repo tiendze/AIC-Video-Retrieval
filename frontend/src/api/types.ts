@@ -1,0 +1,60 @@
+// Mirrors the Pydantic response/request schemas backing these endpoints --
+// keep in sync by hand (plan §P1.6). Source of truth for each type is noted
+// inline; if a backend field renames, this file must change in the same PR.
+
+// app/schemas/request/search.py: SearchRequest
+export type SearchMode = 'semantic' | 'ocr'
+
+// app/schemas/response/search.py: SearchHitResponse
+export interface SearchHit {
+  keyframe_id: string
+  video_id: string
+  score: number
+  frame_idx: number
+  timestamp: number
+  thumbnail_path: string
+  thumbnail_url: string
+  image_url: string
+}
+
+// app/schemas/response/search.py: SearchResponse
+export interface SearchResponse {
+  results: SearchHit[]
+}
+
+// app/schemas/response/error.py: ErrorResponse -- every API error takes
+// this shape (CLAUDE.md §7).
+export interface ApiErrorBody {
+  detail: string
+  error_code: string
+  request_id: string
+}
+
+// app/schemas/response/video.py: VideoResponse
+export interface VideoInfo {
+  video_id: string
+  watch_url: string
+  title: string
+  author: string
+  publish_date: string
+  duration: number
+  fps: number
+  num_keyframes: number
+  s_v: number
+  e_v: number
+}
+
+// app/schemas/response/video.py: VideoKeyframeResponse
+export interface VideoKeyframe {
+  keyframe_id: string
+  frame_idx: number
+  timestamp: number
+  global_index: number
+  thumbnail_url: string
+  image_url: string
+}
+
+// app/schemas/response/video.py: VideoKeyframesResponse
+export interface VideoKeyframesResponse {
+  keyframes: VideoKeyframe[]
+}

@@ -1,0 +1,9 @@
+.bar {
+  padding: 4px 0;
+  font-size: 12px;
+  color: #888;
+}
+
+.error {
+  color: #e05555;
+}

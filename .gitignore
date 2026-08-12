@@ -236,3 +236,7 @@ reports/
 configs/eval/aic_eval_v1.queries_en.json
 configs/eval/aic_eval_v1.candidates.json
 configs/eval/aic_eval_v1.quality_report.md
+
+# Frontend (P1.6) -- regenerable, not source of truth.
+frontend/node_modules/
+frontend/dist/
