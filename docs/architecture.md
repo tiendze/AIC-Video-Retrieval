@@ -549,7 +549,7 @@ AIC-Video-Retrieval/
 │   ├── api/                    routers MỎNG — chỉ validate và uỷ quyền
 │   │   ├── search.py  trake.py  qa.py  keyframes.py  submissions.py  health.py
 │   ├── services/               nơi chứa toàn bộ logic nghiệp vụ
-│   │   ├── search_service.py       semantic · ocr · hybrid RRF
+│   │   ├── search_service.py       semantic · ocr (hybrid RRF bỏ 2026-08-12 — bộ nhãn không đo được kênh OCR công bằng)
 │   │   ├── quest_service.py        QUEST 2 nhánh
 │   │   ├── dante_service.py        quy hoạch động TRAKE
 │   │   ├── vqa_service.py          Gemini + kiểm tra grounding
@@ -574,7 +574,7 @@ AIC-Video-Retrieval/
 │   ├── metrics/                retrieval.py · trake.py · vqa.py
 │   └── baselines/              random.py · bm25.py · clip.py
 ├── configs/                    ingest/ · eval/ · model/
-├── frontend/                   React + Vite + TS (thiết kế chốt sau — xem §8)
+├── frontend/                   React + Vite + TS (P1.6 — xem §8)
 ├── docker-compose.yml          Milvus · Elasticsearch · MongoDB
 └── tests/
 ```
@@ -585,13 +585,16 @@ AIC-Video-Retrieval/
 
 | Method | Endpoint | Mục đích | Ghi chú |
 |---|---|---|---|
-| `POST` | `/api/search` | Tìm bằng văn bản | Body: `query`, `mode` (`semantic` \| `ocr` \| `hybrid`), `top_k`, `filters` |
+| `POST` | `/api/search` | Tìm bằng văn bản | Body: `query`, `mode` (`semantic` \| `ocr`), `top_k`, `filters` |
 | `POST` | `/api/search/image` | Tìm bằng ảnh upload | `multipart/form-data`; dùng **chung** không gian vector |
 | `POST` | `/api/quest` | Viết lại truy vấn / tìm ảnh mẫu | Trả về **cả** truy vấn gốc và bản viết lại |
 | `POST` | `/api/trake` | Chuỗi N sự kiện | Body: `events[]`, `lambda_penalty`, `top_k` |
 | `POST` | `/api/qa` | Hỏi đáp VQA | Trả `answer`, `confidence`, `evidence_keyframe_ids[]` |
-| `GET` | `/api/keyframes/{id}` | Chi tiết một keyframe | |
-| `GET` | `/api/videos/{id}` | Thông tin video kèm `s_v`, `e_v` | |
+| `GET` | `/api/keyframes/{id}` | Chi tiết một keyframe | ⬜ chưa xây (P2/P3) |
+| ✅ `GET` | `/api/keyframes/{id}/thumbnail` | Ảnh thumbnail đã resize | P1.6. Resize on-demand + cache đĩa (`app/services/thumbnail_service.py`) — corpus nhập từ Kaggle không có thumbnail sẵn (`thumbnail_path == image_path`). `keyframe_id` validate bằng regex trước khi chạm filesystem |
+| ✅ `GET` | `/api/keyframes/{id}/image` | Ảnh gốc full-res | P1.6. Tải theo yêu cầu, không resize |
+| ✅ `GET` | `/api/videos/{id}` | Thông tin video kèm `s_v`, `e_v` | P1.6. Wrapper mỏng trên `MongoStore.get_video()`. `watch_url` phục vụ nút "Play YouTube" |
+| ✅ `GET` | `/api/videos/{id}/keyframes` | Toàn bộ keyframe của một video | P1.6. Wrapper mỏng trên `MongoStore.get_keyframes_for_video()` — không có trong paper, phục vụ panel keyframe lân cận trong `KeyframeDetail` |
 | `POST` | `/api/submissions/export` | Xuất file nộp | Validate trước khi ghi |
 | `GET` | `/health` | Kiểm tra kết nối 3 store | |
 
@@ -605,9 +608,11 @@ AIC-Video-Retrieval/
 
 ## 8. Ghi chú về Frontend
 
-> ⚠️ **Trước khi triển khai frontend, phải hỏi người chủ dự án về thiết kế giao diện** — họ sẽ gửi mẫu mong muốn.
+**Cập nhật 2026-08-12:** chủ dự án mở gate P1.5, cho phép build UI theo danh sách năng lực chức năng của paper thay vì chờ mẫu thiết kế riêng — *"cứ build UI theo như paper baseline cho mình đi, mình cho phép điều đó. Có gì sau này mình sẽ kêu chỉnh sửa lại UI sau"*. Chi tiết quyết định: `.claude/plans/p1-search.plan.md` §P1.5.
 
-Mô tả UI trong paper baseline — ô nhập kèm nút AI enhancer, mode selector Semantic/OCR/DANTE, lưới kết quả, nút "Play YouTube" / "Find Similar Images", bộ lọc metadata, upload ảnh — chỉ là **danh sách năng lực chức năng cần hỗ trợ**, không phải bản thiết kế phải sao chép.
+Mô tả UI trong paper baseline — ô nhập kèm nút AI enhancer, mode selector Semantic/OCR/DANTE, lưới kết quả, nút "Play YouTube" / "Find Similar Images", bộ lọc metadata, upload ảnh — chỉ là **danh sách năng lực chức năng cần hỗ trợ**, không phải bản thiết kế phải sao chép. Vì không có mẫu thiết kế, P1.6 chọn CSS viết tay (không UI kit) để lần restyle sau không phải gỡ abstraction của thư viện nào.
+
+QUEST (AI enhancer)/DANTE/VQA chưa có backend (P2/P3) — hiển thị trong UI ở trạng thái **disabled kèm badge "P2"/"P3"** thay vì ẩn hẳn, để bố cục chốt một lần và P2/P3 chỉ việc nối handler thật vào.
 
 Các ràng buộc **kỹ thuật** (độc lập với hình thức giao diện) vẫn giữ nguyên:
 - Virtualized rendering cho lưới hàng nghìn thumbnail
@@ -639,7 +644,7 @@ Các ràng buộc **kỹ thuật** (độc lập với hình thức giao diện)
 | FastAPI + encoder | ~2 GB RAM và ≤ 8 GB VRAM | |
 | **Tổng** | **≥ 16 GB, khuyến nghị 32 GB** | Sức ép nằm ở RAM hệ thống, không phải VRAM |
 
-**Chế độ suy giảm:** tắt Elasticsearch để giải phóng ~2 GB; hệ thống chuyển sang semantic-only, mất chức năng OCR search và hybrid fusion.
+**Chế độ suy giảm:** tắt Elasticsearch để giải phóng ~2 GB; hệ thống chuyển sang semantic-only, mất chức năng OCR search.
 
 ### 9.3 Vòng đời index
 
@@ -670,7 +675,8 @@ Nhánh cuối là ràng buộc quan trọng nhất trong sơ đồ: **đổi mod
 | Milvus + ES + MongoDB | 📄 Paper | Quyết định đã chốt: bám đúng baseline |
 | DANTE cho TRAKE | 📄 Paper | Công thức và độ phức tạp giữ nguyên |
 | QUEST 2 nhánh | 📄 Paper | Giữ nguyên, thêm điểm can thiệp của người dùng |
-| Hybrid fusion RRF | 🔧 Dự án | Paper để Semantic/OCR tách rời, không nêu cách hợp nhất |
+| Hybrid fusion RRF (semantic+OCR) | 🔧 Dự án, **bỏ 2026-08-12** | Đo được: RRF fuse theo rank kéo kênh mạnh xuống khi trộn kênh yếu; và bộ nhãn `aic_eval_v1` cấm caption chép chữ màn hình nên không đo công bằng được kênh OCR (eval/build_eval_set.py prompt). `_reciprocal_rank_fusion` giữ lại làm hàm thuần, chưa wire — để dành fuse hai encoder semantic cùng loại sau này (docs/research-encoder-vietnamese.md §8.3) |
+| OCR = mode TEXT/BM25 riêng, không fuse | 🔧 Chủ dự án 2026-08-12 | Đúng cách các đội AIC mạnh nhất (Vortex, MERVIN) dùng OCR: filter/mode do người vận hành chọn, không phải kênh ranking tự động |
 | Lọc + dedupe trước OCR | 🔧 Dự án | Chi phí Gemini trên ~400k keyframe không khả thi (R2) |
 | `MultimodalEncoder` Protocol | 🔧 Dự án | Chống rủi ro cài đặt BEiT-3 (R1) |
 | `DatasetAdapter` Protocol | 🔧 Dự án | Đổi/mở rộng dataset không sửa pipeline (T3) |
