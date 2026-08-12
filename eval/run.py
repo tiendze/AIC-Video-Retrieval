@@ -16,9 +16,12 @@ Pipeline (one query = one ground-truth caption -> one shot):
      AIC Final Score, plus Recall@20 broken down by `author` and `batch`.
   4. Run the label-leakage test (caption <-> ocr_text overlap,
      eval/metrics/leakage.py) -- required by plan §P0.9, not optional.
-  5. Optionally score `semantic@en` (VI->EN sidecar, `query_translation_path`)
-     and/or `semantic_live_en` (real production QueryTranslator wired into a
-     second SearchService, `translate_semantic_live`) -- both off by default.
+  5. Optionally score `semantic@en` (VI->EN sidecar, `query_translation_path`),
+     `semantic_live_en` (real production QueryTranslator wired into a second
+     SearchService, `translate_semantic_live`), and/or `clip` (P1.4 mandatory
+     baseline -- CLIP ViT-B/32 in its OWN Milvus collection, requires running
+     `scripts/embed_clip_baseline.py` first, `score_clip_baseline`) -- all off
+     by default.
   6. Write `reports/<timestamp>_<git_sha>/{metrics.json,report.md,
      per_query.csv}`.
 
@@ -49,7 +52,6 @@ import yaml
 
 from app.config import Settings
 from app.encoders.beit3 import BEiT3Encoder
-from app.schemas.request.search import HYBRID_OCR_WEIGHT, HYBRID_RRF_K, HYBRID_SEMANTIC_WEIGHT
 from app.services.query_translator import LocalNmtTranslator
 from app.services.search_service import SearchService
 from app.stores.es_client import EsStore
@@ -82,6 +84,7 @@ logger = logging.getLogger(__name__)
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _BEIT3_CONFIG_PATH = _REPO_ROOT / "configs" / "model" / "beit3.yaml"
+_CLIP_CONFIG_PATH = _REPO_ROOT / "configs" / "model" / "clip.yaml"
 _QUERY_TRANSLATOR_CONFIG_PATH = _REPO_ROOT / "configs" / "model" / "query_translator.yaml"
 _MILVUS_CONFIG_PATH = _REPO_ROOT / "configs" / "stores" / "milvus.yaml"
 _ES_OCR_INDEX_NAME = "ocr_keyframes"
@@ -125,6 +128,15 @@ class EvalRunConfig:
     # False by default -- loads a second translation model, only needed when
     # deliberately verifying the production path (plan §P0.9).
     translate_semantic_live: bool = False
+    # P1.4 mandatory baseline (PRD §6.3): scores an EXTRA `clip` channel
+    # through a SECOND SearchService wired with ClipEncoder (CLIP ViT-B/32,
+    # OpenAI weights) against its OWN Milvus collection
+    # (keyframes_clip_vit_b32_openai). False by default: that collection only
+    # exists after `python scripts/embed_clip_baseline.py` has been run
+    # (CLAUDE.md §10 -- resource-heavy, prepared for the project owner to run
+    # themselves) -- flip to True once it has, otherwise this channel is
+    # silently skipped rather than erroring on a missing collection.
+    score_clip_baseline: bool = False
 
 
 @dataclass(frozen=True)
@@ -613,9 +625,6 @@ def _build_stores(
         milvus_store=milvus,
         es_store=es,
         mongo_store=mongo,
-        rrf_k=HYBRID_RRF_K,
-        semantic_weight=HYBRID_SEMANTIC_WEIGHT,
-        ocr_weight=HYBRID_OCR_WEIGHT,
     )
     return mongo, milvus, es, search_service
 
@@ -641,20 +650,63 @@ def _build_live_translated_search_service(
     but wired with the real production QueryTranslator -- exercises the exact
     code path a live user query goes through (SearchService._search_semantic
     translating internally), unlike `semantic@en` which translates via a
-    precomputed sidecar entirely outside SearchService. Also the service a
-    fair `hybrid` measurement must use (plan §P1.3): production's SearchService
-    (app/dependencies.py) always translates the semantic leg, so a hybrid
-    channel measured without a translator understates what a live query
-    actually gets -- see tests/integration/test_hybrid_fusion.py."""
+    precomputed sidecar entirely outside SearchService."""
     return SearchService(
         encoder=encoder,
         milvus_store=milvus,
         es_store=es,
         mongo_store=mongo,
         query_translator=_build_query_translator(),
-        rrf_k=HYBRID_RRF_K,
-        semantic_weight=HYBRID_SEMANTIC_WEIGHT,
-        ocr_weight=HYBRID_OCR_WEIGHT,
+    )
+
+
+def _build_clip_search_service(settings: Settings, es: EsStore, mongo: MongoStore) -> SearchService:
+    """P1.4 baseline (PRD §6.3): a THIRD SearchService, own encoder (CLIP
+    ViT-B/32) + own Milvus collection (`scripts/embed_clip_baseline.py`
+    writes `keyframes_clip_vit_b32_openai`, never mixed with BEiT-3's
+    collection -- CLAUDE.md §3). Shares `es`/`mongo` with the main
+    SearchService since OCR text and keyframe metadata don't depend on which
+    vision encoder produced the image vectors.
+
+    `open_clip` is only imported here, not at module level -- routine
+    semantic/ocr reports must not require the `baseline-clip` extra to be
+    installed (`score_clip_baseline: false` is the default precisely so this
+    function is never called unless the project owner opted in).
+
+    Wired WITH the production QueryTranslator, same as
+    `_build_live_translated_search_service`: CLIP's text tower is
+    English-trained same as BEiT-3's, so scoring it on raw Vietnamese
+    captions would measure the VI->EN gap again, not CLIP's visual quality --
+    the whole point of this baseline is a fair image-encoder comparison
+    against the ALREADY-translated `semantic_live_en` number.
+    """
+    from app.encoders.clip_baseline import ClipEncoder
+
+    config = _load_yaml(_CLIP_CONFIG_PATH)
+    encoder = ClipEncoder(
+        model_name=config["model_name"],
+        pretrained_tag=config["pretrained_tag"],
+        device=config["device"],
+        batch_size=config["batch_size"],
+        model_id=config["model_id"],
+        preprocess_workers=config["preprocess_workers"],
+    )
+    milvus_config = _load_yaml(_MILVUS_CONFIG_PATH)
+    milvus = MilvusStore(
+        uri=settings.milvus_uri,
+        token=settings.milvus_token.get_secret_value(),
+        model_id=encoder.model_id,
+        embedding_dim=encoder.embedding_dim,
+        hnsw_m=milvus_config["hnsw_m"],
+        hnsw_ef_construction=milvus_config["hnsw_ef_construction"],
+        search_ef=milvus_config["search_ef"],
+    )
+    return SearchService(
+        encoder=encoder,
+        milvus_store=milvus,
+        es_store=es,
+        mongo_store=mongo,
+        query_translator=_build_query_translator(),
     )
 
 
@@ -781,6 +833,7 @@ async def _run_all_channels(
     search_service: SearchService,
     ground_truth: Sequence[GroundTruthSegment],
     live_translated_search_service: SearchService | None = None,
+    clip_search_service: SearchService | None = None,
 ) -> None:
     for mode in config.modes:
         await accumulator.run_and_collect(mode, _SemanticSearcher(search_service, mode))
@@ -793,6 +846,13 @@ async def _run_all_channels(
         await accumulator.run_and_collect(
             _LIVE_TRANSLATED_CHANNEL,
             _SemanticSearcher(live_translated_search_service, "semantic"),
+        )
+
+    if clip_search_service is not None:
+        # Same raw-Vietnamese-in pattern as live_translated_search_service --
+        # ClipEncoder's SearchService translates internally too (P1.4 baseline).
+        await accumulator.run_and_collect(
+            "clip", _SemanticSearcher(clip_search_service, "semantic")
         )
 
     keyframe_pool = await build_keyframe_pool(mongo)
@@ -849,12 +909,22 @@ async def _main() -> int:
         if config.translate_semantic_live
         else None
     )
+    clip_search_service = (
+        _build_clip_search_service(settings, es, mongo) if config.score_clip_baseline else None
+    )
 
     accumulator = _ResultAccumulator(
         ground_truth, top_k, config.top_ks, author_map, _AUTHOR_BATCH_BREAKDOWN_K
     )
     await _run_all_channels(
-        accumulator, config, mongo, es, search_service, ground_truth, live_translated_search_service
+        accumulator,
+        config,
+        mongo,
+        es,
+        search_service,
+        ground_truth,
+        live_translated_search_service,
+        clip_search_service,
     )
 
     leakage_report = await _build_leakage_report_or_none(

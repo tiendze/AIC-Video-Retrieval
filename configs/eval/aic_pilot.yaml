@@ -26,21 +26,33 @@ pilot_available_path: configs/eval/pilot_available_v1.txt
 # every K without re-querying.
 top_ks: [1, 5, 20, 50, 100]
 
-# Channels reported independently (plan §P0.8/§P0.9). "hybrid" (RRF, plan
-# §P1.3) is deliberately OFF the routine list: F4 was measured and dropped
-# 2026-08-12 via tests/integration/test_hybrid_fusion.py
-# (test_hybrid_not_worse_than_best_single_channel) -- RRF's default equal
-# weighting loses to the best single channel in BOTH directions measured on
-# this pilot corpus (untranslated: ocr 0.0254 > hybrid 0.0162 > semantic
-# 0.0012; translated, the fair comparison since production always
-# translates: semantic_live_en 0.4809 > hybrid_live_en 0.4428 > ocr 0.0254).
-# RRF fuses by RANK, not score magnitude, so mixing a much weaker channel
-# into a much stronger one drags the strong one down either way. The
-# SearchService "hybrid" mode itself is kept (tested, not deleted) in case a
-# future OCR-quality improvement or a genuine per-query weighting scheme
-# changes this -- see .claude/plans/p1-search.plan.md §P1.3 for the full
-# writeup. Re-add "hybrid" here only after a NEW decisive run.
-modes: [semantic, ocr]
+# Channels reported independently (plan §P0.8/§P0.9).
+#
+# "hybrid" (RRF of semantic+ocr, plan §P1.3) was REMOVED from SearchService
+# entirely 2026-08-12, not just excluded here -- see app/services/
+# search_service.py module docstring. It measured worse than the best
+# single channel, and RRF-by-rank was mixing a much weaker channel into a
+# much stronger one regardless of the weaker channel's TRUE quality, which
+# turned out to be unmeasurable in the first place (next paragraph).
+#
+# "ocr" is OFF the routine list because THIS LABEL SET STRUCTURALLY CANNOT
+# SCORE IT, not because the channel measured poorly. eval/build_eval_set.py's
+# Gemini caption prompt explicitly instructs: "KHÔNG chép lại chữ hiển thị
+# trên màn hình (phụ đề, banner, số liệu chạy chữ)" -- captions are built to
+# contain ZERO on-screen-text signal by design (anti-leakage, CLAUDE.md §8:
+# "BM25 cao bất thường => nghi bộ nhãn rò rỉ"). So ocr's measured 0.0254 is
+# coincidental word overlap, not a real reading of BM25/OCR retrieval
+# quality -- chủ dự án 2026-08-12. Scoring it here would print a number that
+# looks like "the OCR channel is bad" when the true statement is "this label
+# set cannot see the OCR channel at all" (CLAUDE.md §7: "thiếu dữ liệu phải
+# fail rõ ràng, không trả rỗng" -- same principle: a number that means
+# nothing must not be reported as if it measures something).
+# OCR is being repositioned as a first-class TEXT/BM25 search mode
+# (docs/research-encoder-vietnamese.md §8) evaluated separately, once there
+# is a label source that isn't structurally blind to on-screen text (e.g.
+# queries built from BTC video title/description instead of Gemini
+# captions) -- not re-added to this file until that exists.
+modes: [semantic]
 
 # RandomBaseline determinism -- same "seed cố định" convention as
 # build_eval_set.yaml (PRD §6.1.2 step 1), independent seed/value since it
@@ -128,3 +140,11 @@ query_translation_modes: [semantic]
 # translation model alongside BEiT-3; set back to false for routine reports
 # once P0.9's production-path evidence is captured.
 translate_semantic_live: true
+
+# P1.4 mandatory baseline (PRD §6.3): "CLIP ViT-B/32 ... phải chạy bằng
+# encoder của mình trên keyframe của mình". Flipped to true 2026-08-12 --
+# `python scripts/embed_clip_baseline.py` finished a full-corpus pass
+# (873/873 video, 221,903/221,903 keyframe, verified against Milvus
+# row_count), so the "clip" row in report.md is now comparable to
+# `semantic_live_en` (same corpus, same query_translator).
+score_clip_baseline: true
