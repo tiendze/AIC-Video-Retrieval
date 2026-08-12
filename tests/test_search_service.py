@@ -93,29 +93,18 @@ def _service(
     mongo_docs: dict[str, dict] | None = None,
     query_vector: np.ndarray | None = None,
     query_translator: _FakeQueryTranslator | None = None,
-    rrf_k: int | None = None,
-    semantic_weight: float | None = None,
-    ocr_weight: float | None = None,
 ) -> tuple[SearchService, _FakeEncoder, _FakeMilvusStore, _FakeEsStore, _FakeMongoStore]:
     default_vector = np.zeros((1, 4), dtype=np.float32)
     encoder = _FakeEncoder(query_vector if query_vector is not None else default_vector)
     milvus_store = _FakeMilvusStore(milvus_hits or [])
     es_store = _FakeEsStore(es_hits or [])
     mongo_store = _FakeMongoStore(mongo_docs or {})
-    kwargs: dict[str, Any] = {}
-    if rrf_k is not None:
-        kwargs["rrf_k"] = rrf_k
-    if semantic_weight is not None:
-        kwargs["semantic_weight"] = semantic_weight
-    if ocr_weight is not None:
-        kwargs["ocr_weight"] = ocr_weight
     service = SearchService(
         encoder=encoder,
         milvus_store=milvus_store,
         es_store=es_store,
         mongo_store=mongo_store,
         query_translator=query_translator,
-        **kwargs,
     )
     return service, encoder, milvus_store, es_store, mongo_store
 
@@ -326,135 +315,9 @@ async def test_search_by_image_never_drops_a_hit_missing_from_mongo():
     assert results[0].thumbnail_path == ""
 
 
-# --------------------------------------------------------------------------
-# hybrid mode -- RRF fusion (plan §P1.3): RRF(d) = Σ_c weight_c / (k + rank_c(d)),
-# rank_c is the 1-based rank of d within channel c's OWN top_k hit list; a
-# document absent from a channel contributes 0 for that channel. k defaults
-# to 60 (plan §P1.3), both channel weights default to 1.0 -- all three are
-# SearchService constructor params, never hardcoded past this point
-# (CLAUDE.md §6), sourced from configs/search/search.yaml in production.
-# --------------------------------------------------------------------------
-
-
-def _hit(keyframe_id: str, video_id: str = "v", frame_idx: int = 0, timestamp: float = 0.0):
-    return {
-        "keyframe_id": keyframe_id,
-        "distance": 0.0,
-        "entity": {"video_id": video_id, "frame_idx": frame_idx, "timestamp": timestamp},
-    }
-
-
-def _ocr_hit(keyframe_id: str, video_id: str = "v", timestamp: float = 0.0, score: float = 0.0):
-    return {
-        "keyframe_id": keyframe_id,
-        "ocr_text": "x",
-        "video_id": video_id,
-        "timestamp": timestamp,
-        "score": score,
-    }
-
-
-async def test_hybrid_mode_fuses_semantic_and_ocr_results_via_rrf():
-    # semantic ranks: A(1), B(2). ocr ranks: B(1), C(2). k=60 (default).
-    # RRF(A) = 1/61
-    # RRF(B) = 1/62 (semantic rank 2) + 1/61 (ocr rank 1)
-    # RRF(C) = 1/62
-    # expected order by descending score: B, A, C
-    milvus_hits = [_hit("A", frame_idx=1), _hit("B", frame_idx=2)]
-    es_hits = [_ocr_hit("B"), _ocr_hit("C")]
-    mongo_docs = {
-        "A": {"thumbnail_path": "a.jpg", "frame_idx": 1},
-        "B": {"thumbnail_path": "b.jpg", "frame_idx": 2},
-        "C": {"thumbnail_path": "c.jpg", "frame_idx": 3},
-    }
-    service, *_ = _service(milvus_hits=milvus_hits, es_hits=es_hits, mongo_docs=mongo_docs)
-
-    results = await service.search("query", mode="hybrid", top_k=5)
-
-    assert [hit.keyframe_id for hit in results] == ["B", "A", "C"]
-    assert results[0].score == pytest.approx(1 / 62 + 1 / 61)
-    assert results[1].score == pytest.approx(1 / 61)
-    assert results[2].score == pytest.approx(1 / 62)
-
-
-async def test_hybrid_mode_applies_configured_channel_weights():
-    # X only in semantic (rank 1), Y only in ocr (rank 1). Equal weights would
-    # tie; a heavier ocr_weight must flip the order to prove weights are
-    # actually applied, not just accepted and ignored.
-    milvus_hits = [_hit("X", frame_idx=1)]
-    es_hits = [_ocr_hit("Y")]
-    mongo_docs = {
-        "X": {"thumbnail_path": "x.jpg"},
-        "Y": {"frame_idx": 9, "thumbnail_path": "y.jpg"},
-    }
-    service, *_ = _service(
-        milvus_hits=milvus_hits,
-        es_hits=es_hits,
-        mongo_docs=mongo_docs,
-        semantic_weight=1.0,
-        ocr_weight=10.0,
-    )
-
-    results = await service.search("query", mode="hybrid", top_k=5)
-
-    assert [hit.keyframe_id for hit in results] == ["Y", "X"]
-
-
-async def test_hybrid_mode_respects_a_configured_rrf_k():
-    # Same single-channel hit (rank 1) scored with two different k values --
-    # RRF score must change with k (1/(k+1)), proving k is read from the
-    # constructor, not hardcoded to the plan's default of 60.
-    milvus_hits = [_hit("A", frame_idx=1)]
-    mongo_docs = {"A": {"thumbnail_path": "a.jpg"}}
-    service, *_ = _service(milvus_hits=milvus_hits, mongo_docs=mongo_docs, rrf_k=0)
-
-    results = await service.search("query", mode="hybrid", top_k=5)
-
-    assert results[0].score == pytest.approx(1.0)  # 1 / (0 + 1)
-
-
-async def test_hybrid_mode_truncates_to_top_k_after_fusion():
-    milvus_hits = [_hit("A", frame_idx=1), _hit("B", frame_idx=2), _hit("C", frame_idx=3)]
-    mongo_docs = {kid: {"thumbnail_path": f"{kid}.jpg"} for kid in ("A", "B", "C")}
-    service, *_ = _service(milvus_hits=milvus_hits, mongo_docs=mongo_docs)
-
-    results = await service.search("query", mode="hybrid", top_k=2)
-
-    assert [hit.keyframe_id for hit in results] == ["A", "B"]
-
-
-async def test_hybrid_mode_queries_both_channels_with_the_same_top_k():
-    service, _, milvus_store, es_store, _ = _service()
-
-    await service.search("query", mode="hybrid", top_k=7)
-
-    assert milvus_store.search_calls[0][1] == 7
-    assert es_store.search_calls[0][1] == 7
-
-
-async def test_hybrid_mode_translates_the_query_for_the_semantic_channel_only():
-    # Same asymmetry as `semantic` vs `ocr` alone (CLAUDE.md §4): the ES OCR
-    # index holds Vietnamese text, translating that leg would measure
-    # translation loss instead of the retrieval channel.
-    translator = _FakeQueryTranslator("a burnt forest")
-    service, encoder, _, es_store, _ = _service(query_translator=translator)
-
-    await service.search("một khu rừng bị cháy", mode="hybrid", top_k=5)
-
-    assert translator.translate_calls == ["một khu rừng bị cháy"]
-    assert encoder.encode_text_calls == [["a burnt forest"]]
-    assert es_store.search_calls == [("một khu rừng bị cháy", 5)]
-
-
-async def test_hybrid_mode_never_drops_an_ocr_hit_missing_from_mongo():
-    # Reuses the same drop rule as plain `ocr` mode (frame_idx mandatory,
-    # CLAUDE.md §3) -- the missing hit must not appear in the fused result
-    # even though it would otherwise rank first in the ocr channel.
-    milvus_hits = [_hit("A", frame_idx=1)]
-    es_hits = [_ocr_hit("missing_from_mongo")]
-    mongo_docs = {"A": {"thumbnail_path": "a.jpg"}}
-    service, *_ = _service(milvus_hits=milvus_hits, es_hits=es_hits, mongo_docs=mongo_docs)
-
-    results = await service.search("query", mode="hybrid", top_k=5)
-
-    assert [hit.keyframe_id for hit in results] == ["A"]
+# NOTE: hybrid-mode RRF fusion tests were removed here 2026-08-12 along with
+# the `hybrid` SearchService mode itself (see app/services/search_service.py
+# module docstring for why). `_reciprocal_rank_fusion` itself is untested by
+# this file now -- it's an unused-for-now pure utility kept for a future
+# same-kind-channel fusion (docs/research-encoder-vietnamese.md §8.3); add
+# coverage back when a caller wires it.

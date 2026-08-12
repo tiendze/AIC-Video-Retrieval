@@ -4,8 +4,7 @@
 §4): `semantic` embeds the query with the injected encoder and searches
 Milvus; `ocr` full-text-searches Elasticsearch and must join to MongoDB
 afterward because ES OCR hits carry no `frame_idx` at all (CLAUDE.md §3 only
-requires `frame_idx` in Milvus/MongoDB). `hybrid` (RRF) is P1.3 — it needs
-both channels measured independently first.
+requires `frame_idx` in Milvus/MongoDB).
 
 `semantic` translates the query VI->EN before encoding when a
 `QueryTranslator` is injected (plan §P0.9): BEiT-3's text tower is trained on
@@ -19,24 +18,27 @@ query there would measure translation loss, not the retrieval channel.
 Milvus-vector-to-SearchHit mapping as `semantic` (`_search_milvus_vector`),
 differing only in which encoder branch produces the query vector.
 
-`hybrid` (plan §P1.3) fuses `semantic` + `ocr` with Reciprocal Rank Fusion:
-`RRF(d) = Σ_c weight_c / (k + rank_c(d))`, where `rank_c` is the 1-based rank
-of document `d` within channel `c`'s own top_k hit list (a document absent
-from a channel contributes 0 for it). Both sub-channels are queried with the
-SAME top_k so each has an equally-sized candidate pool to rank over, then the
-fused list is truncated to top_k. `k` and the per-channel weights are
-constructor params (default 60 / 1.0 / 1.0 per the plan), sourced from
-`configs/search/search.yaml` in production -- never hardcoded past this
-module (CLAUDE.md §6). Translation still applies ONLY to the semantic leg,
-same asymmetry as plain `semantic` vs `ocr`.
+`hybrid` mode (RRF-fused `semantic` + `ocr`, plan §P1.3) was REMOVED
+2026-08-12: measured (tests/integration/test_hybrid_fusion.py, now deleted)
+as worse than the best single channel in both directions, and the eval
+label set structurally cannot measure the ocr channel fairly -- the caption
+prompt in eval/build_eval_set.py explicitly forbids transcribing on-screen
+text, so `ocr`'s 0.0254 reflects incidental word overlap, not retrieval
+quality (CLAUDE.md §8: "BM25 cao bất thường => nghi bộ nhãn rò rỉ" cuts both
+ways -- an artificially LOW score from a label set that structurally can't
+credit the channel is just as invalid to act on). RRF fusing by RANK, not
+score magnitude, made this worse: mixing a much weaker channel into a much
+stronger one drags the strong one down regardless of true channel quality.
+OCR is being repositioned as its own first-class TEXT/BM25 mode instead
+(docs/research-encoder-vietnamese.md §8, chủ dự án 2026-08-12) -- not fused
+into ranking, matching how the strongest AIC teams (Vortex, MERVIN) use OCR
+as an operator-driven filter/mode rather than an automatic-ranking channel.
 
-NOT the default/recommended mode: measured 2026-08-12
-(tests/integration/test_hybrid_fusion.py) as worse than the best single
-channel in BOTH directions on the pilot corpus (RRF fuses by rank, not score
-magnitude, so mixing a much weaker channel into a much stronger one drags
-the strong one down either way) -- kept for future revisiting, not wired
-into the default eval channel list (configs/eval/aic_pilot.yaml) or any UI
-mode picker. Full writeup: .claude/plans/p1-search.plan.md §P1.3.
+`_reciprocal_rank_fusion` below is KEPT (not deleted) for a future genuine
+use: fusing two semantic encoders of comparable quality (e.g. BEiT-3+envit5
+⊕ SigLIP2, per docs/research-encoder-vietnamese.md §8.3) once a second
+encoder exists -- unlike semantic-vs-ocr, two same-kind channels are the
+case RRF-by-rank is designed for. It is currently unused/unwired.
 
 Milvus search, encoder inference, and translation are synchronous, CPU/GPU-
 bound calls; they run off the event loop via `asyncio.to_thread` so this
@@ -62,9 +64,10 @@ from app.stores.mongo_client import MongoStore
 
 logger = logging.getLogger(__name__)
 
-SearchMode = Literal["semantic", "ocr", "hybrid"]
-_DEFAULT_RRF_K = 60  # plan §P1.3: RRF's own well-known literature default.
-_DEFAULT_CHANNEL_WEIGHT = 1.0
+SearchMode = Literal["semantic", "ocr"]
+_DEFAULT_RRF_K = 60  # plan §P1.3: RRF's own well-known literature default,
+# kept only as _reciprocal_rank_fusion's own default -- no caller wires it
+# today (module docstring: hybrid mode removed 2026-08-12).
 
 
 class SearchServiceError(Exception):
@@ -89,26 +92,18 @@ class SearchService:
         es_store: EsStore,
         mongo_store: MongoStore,
         query_translator: QueryTranslator | None = None,
-        rrf_k: int = _DEFAULT_RRF_K,
-        semantic_weight: float = _DEFAULT_CHANNEL_WEIGHT,
-        ocr_weight: float = _DEFAULT_CHANNEL_WEIGHT,
     ) -> None:
         self._encoder = encoder
         self._milvus_store = milvus_store
         self._es_store = es_store
         self._mongo_store = mongo_store
         self._query_translator = query_translator
-        self._rrf_k = rrf_k
-        self._semantic_weight = semantic_weight
-        self._ocr_weight = ocr_weight
 
     async def search(self, query: str, mode: SearchMode, top_k: int) -> list[SearchHit]:
         if mode == "semantic":
             return await self._search_semantic(query, top_k)
         if mode == "ocr":
             return await self._search_ocr(query, top_k)
-        if mode == "hybrid":
-            return await self._search_hybrid(query, top_k)
         raise SearchServiceError(f"Unknown search mode: {mode!r}")
 
     async def search_by_image(self, image: Image.Image, top_k: int) -> list[SearchHit]:
@@ -189,22 +184,11 @@ class SearchService:
             )
         return results
 
-    async def _search_hybrid(self, query: str, top_k: int) -> list[SearchHit]:
-        semantic_hits, ocr_hits = await asyncio.gather(
-            self._search_semantic(query, top_k), self._search_ocr(query, top_k)
-        )
-        return _reciprocal_rank_fusion(
-            (
-                (semantic_hits, self._semantic_weight),
-                (ocr_hits, self._ocr_weight),
-            ),
-            k=self._rrf_k,
-            top_k=top_k,
-        )
-
 
 def _reciprocal_rank_fusion(
-    weighted_channels: Sequence[tuple[Sequence[SearchHit], float]], k: int, top_k: int
+    weighted_channels: Sequence[tuple[Sequence[SearchHit], float]],
+    top_k: int,
+    k: int = _DEFAULT_RRF_K,
 ) -> list[SearchHit]:
     """`RRF(d) = Σ_c weight_c / (k + rank_c(d))` (plan §P1.3). `rank_c` is the
     1-based rank of `d` within channel `c`'s own hit list; a document absent
