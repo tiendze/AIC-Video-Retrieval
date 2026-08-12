@@ -11,6 +11,9 @@ dependencies = [
     "pymilvus==2.6.12",
     "pymongo==4.17.0",
     "elasticsearch[async]==9.3.0",
+    # POST /api/search/image (plan §P1.1) accepts multipart/form-data --
+    # FastAPI's File()/Form() raise at import time without this installed.
+    "python-multipart==0.0.20",
 ]
 
 [project.optional-dependencies]
@@ -61,6 +64,31 @@ asr = [
 asr-embed = [
     "aic-video-retrieval[ingest]",
     "sentence-transformers==5.6.1",
+]
+baseline-clip = [
+    # P1.4 mandatory baseline (PRD §6.3): CLIP ViT-B/32 run on OUR keyframes
+    # with OUR encoder, never BTC's clip-features-32/ (references.md §2.5 --
+    # those are keyed to BTC's own keyframes, not comparable at segment level).
+    #
+    # open-clip-torch itself is DELIBERATELY NOT listed as a normal dep here.
+    # open-clip-torch==3.3.0 hard-requires timm>=1.0.17 in its own metadata,
+    # which conflicts with beit3's timm==0.4.12 pin above (BEiT-3's vendored
+    # code needs the old timm API) -- pip cannot satisfy both in one
+    # resolution (surfaces as "resolution-too-deep", not a clean conflict
+    # message, because of torch's own large sympy/mpmath dependency tree).
+    # In practice this constraint is stricter than reality: open_clip wraps
+    # `import timm` in try/except ImportError and only touches it for
+    # timm-backed vision towers -- ViT-B/32 (OpenCLIP's own architecture)
+    # never imports timm at runtime. So install it separately with --no-deps,
+    # after this extra provides its OTHER real runtime deps below:
+    #   pip install -e ".[baseline-clip]"
+    #   pip install --no-deps open-clip-torch==3.3.0
+    "aic-video-retrieval[ingest]",
+    "regex",
+    "ftfy",
+    "tqdm",
+    "huggingface-hub",
+    "safetensors",
 ]
 [build-system]
 requires = ["setuptools>=68.0"]

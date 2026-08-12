@@ -63,8 +63,8 @@ Baseline [arXiv:2512.13169](https://arxiv.org/abs/2512.13169) đóng góp **QUES
 
 **Retrieval:**
 
-- Ba mode `semantic` · `ocr` · `hybrid` là **tham số**, không phải ba code path sao chép nhau.
-- **Hybrid (RRF, `k = 60`) không được kém hơn kênh đơn tốt nhất** trên bộ eval. Kém thì chỉnh trọng số hoặc bỏ hẳn.
+- Hai mode `semantic` · `ocr` là **tham số**, không phải hai code path sao chép nhau. `ocr` là BM25 thuần qua Elasticsearch, không dịch, không fuse tự động vào ranking.
+- **Không fuse RRF hai kênh lệch chất lượng** (bài học 2026-08-12: `hybrid` semantic⊕ocr đã bị bỏ hẳn — RRF fuse theo rank kéo kênh mạnh xuống bất kể trọng số khi kênh kia yếu, và bộ nhãn tự sinh còn cấu trúc không đo công bằng được OCR vì prompt sinh caption cấm chép chữ màn hình). RRF (`k = 60`) chỉ dùng khi fuse **hai kênh cùng loại, chất lượng ngang nhau** (vd. hai encoder semantic) — nếu kém hơn kênh đơn tốt nhất trên bộ eval thì chỉnh trọng số hoặc bỏ hẳn.
 - **QUEST giữ người trong vòng lặp**: hiển thị cả `q₀` lẫn `q_r`; người dùng **tự chọn** ảnh mẫu `I*` ở nhánh 2, không auto-pick. Cả hai nhánh có timeout → fallback về search thường, không treo UI.
 - **DANTE** dùng bản `running max` + có **backtracking** để trả đúng N keyframe. `λ` là config, không hard-code.
 - **Degraded mode phải chạy được**: tắt Elasticsearch ⇒ `semantic-only`; mất mạng ⇒ semantic search và DANTE vẫn đủ, chỉ QUEST / OCR / VQA ngừng.

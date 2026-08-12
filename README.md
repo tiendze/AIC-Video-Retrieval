@@ -49,6 +49,25 @@ Verify `vi_analyzer` tách theo từ ghép (không chạy trong `pytest` mặc �
 ./.venv/Scripts/python.exe -m pytest tests/integration -m integration -v
 ```
 
+## Frontend (P1.6)
+
+React + Vite + TypeScript, `frontend/`. UI theo danh sách năng lực chức năng của paper baseline (không có mẫu thiết kế riêng — chủ dự án mở gate P1.5, xem `docs/architecture.md` §8).
+
+```powershell
+cd frontend
+npm install
+npm run dev      # http://localhost:5173 -- proxy /api -> http://localhost:8000
+npm run test     # Vitest + React Testing Library
+npm run build    # tsc -b && vite build
+```
+
+Cần backend sống ở `:8000` để dùng thật (`./.venv/Scripts/python.exe -m uvicorn app.main:app --port 8000`) + docker-compose stack (Milvus/Elasticsearch/MongoDB). Ảnh keyframe được resize + cache theo yêu cầu qua `GET /api/keyframes/{id}/thumbnail` -- lần xem đầu mỗi ảnh chậm hơn (đang sinh cache), lần sau tức thì. Warm cache trước cho toàn corpus (tốn thời gian, không tự chạy):
+
+```powershell
+python scripts/build_thumbnails.py --limit-videos 5   # đo thử trước
+python scripts/build_thumbnails.py                    # full corpus
+```
+
 ## Chẩn đoán không gian embedding (điều tra `semantic` < `random`)
 
 Báo cáo `reports/20260810T161049Z_a40aac8` cho thấy kênh `semantic` (AIC 0.0451)

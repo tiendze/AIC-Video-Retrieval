@@ -13,6 +13,7 @@ from app.encoders.base import MultimodalEncoder
 from app.services.health_service import HealthService
 from app.services.query_translator import QueryTranslator
 from app.services.search_service import SearchService
+from app.services.thumbnail_service import ThumbnailService
 from app.stores.es_client import EsStore
 from app.stores.milvus_client import MilvusStore
 from app.stores.mongo_client import MongoStore
@@ -36,6 +37,10 @@ def get_es_store(request: Request) -> EsStore:
 
 def get_mongo_store(request: Request) -> MongoStore:
     return request.app.state.mongo_store
+
+
+def get_thumbnail_service(request: Request) -> ThumbnailService:
+    return request.app.state.thumbnail_service
 
 
 def get_health_service(

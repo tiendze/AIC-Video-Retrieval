@@ -229,10 +229,20 @@ data/
 reports/
 
 # Regenerable eval/build_eval_set.py + scripts/translate_eval_queries.py
-# outputs -- NOT the frozen label set. configs/eval/aic_eval_v1.json (+ its
-# .sha256) and configs/eval/pilot_available_v1.txt stay tracked: CLAUDE.md
-# calls the former "mẫu số chính thức của mọi báo cáo về sau" and the eval
-# gate requires the latter to be reproducible across machines.
+# outputs.
 configs/eval/aic_eval_v1.queries_en.json
 configs/eval/aic_eval_v1.candidates.json
 configs/eval/aic_eval_v1.quality_report.md
+
+# Frozen eval label set (CLAUDE.md calls it "mẫu số chính thức của mọi báo
+# cáo về sau") -- kept on disk so eval/run.py keeps working, but untracked
+# from git 2026-08-12 at the project owner's request. Regenerate via
+# eval/build_eval_set.py if this file is ever lost locally (bumps
+# eval_set_version per CLAUDE.md §8 -- never silently reuse the old
+# version's name for new content).
+configs/eval/aic_eval_v1.json
+configs/eval/aic_eval_v1.json.sha256
+
+# Frontend (P1.6) -- regenerable, not source of truth.
+frontend/node_modules/
+frontend/dist/

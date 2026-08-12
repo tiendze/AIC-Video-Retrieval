@@ -166,7 +166,7 @@ Ghi rõ để tránh trôi phạm vi:
 | Phase | Nội dung | Điều kiện hoàn thành (exit criteria) |
 |---|---|---|
 | **P0 — Nền móng** | Dựng `docker-compose` (Milvus + ES + MongoDB); `MultimodalEncoder` + `DatasetAdapter`; ingest **đủ ba nhánh** (VISION + **TEXT/OCR** + METADATA) trên **pilot `L21`–`L24` (128 video, 27,9 giờ)**; sinh bộ eval v1; search `semantic` + `ocr` | Search một truy vấn bất kỳ ra kết quả từ đầu đến cuối; `eval/` chạy được và in ra Recall@k dù số còn thấp; **hai kênh báo cáo tách riêng** |
-| **P1 — Tìm kiếm cơ bản** | image→image search; **hybrid fusion (RRF)**; đo chi phí/lợi ích kênh OCR; UI tối thiểu | Đạt mục tiêu Recall@10 trong §6.7; UI dùng được để thao tác thật |
+| **P1 — Tìm kiếm cơ bản** | image→image search; ~~hybrid fusion (RRF)~~ (bỏ 2026-08-12, xem §F4); OCR làm mode `TEXT`/BM25 riêng; UI tối thiểu | Đạt mục tiêu Recall@10 trong §6.7; UI dùng được để thao tác thật |
 | **P2 — Hai đóng góp của paper** | QUEST (2 nhánh); DANTE (TRAKE) + ablation `λ` | TRAKE `Sequence Exact-Match` đạt mục tiêu §6.7; có bảng ablation `λ` |
 | **P3 — VQA & nộp bài** | VQA answering qua Gemini có grounding; submission exporter | `Grounded Accuracy` đạt mục tiêu §6.7; file nộp qua validate |
 | **P4 — Mở rộng toàn kho & tối ưu** | Ingest nốt **745 video còn lại** (đủ 873); đo lại toàn bộ ở quy mô đầy đủ; tối ưu theo số đo; hiệu chỉnh với hệ thống nộp bài của BTC | Toàn bộ metrics chạy lại trên đủ 873 video; báo cáo so sánh pilot ↔ full |
@@ -223,15 +223,16 @@ Tìm theo chữ xuất hiện trên màn hình, qua Elasticsearch.
 - [ ] Đặt **trần chi phí OCR trong `configs/`** — vượt trần thì dừng và báo, không đốt tiếp (R2)
 - [ ] Báo cáo tỉ lệ frame bị cắt ở **từng** bước lọc riêng biệt, không gộp — đây là bằng chứng R2 đã được giảm thiểu
 
-### F4 — Hybrid fusion *(P1)*
+### F4 — Hybrid fusion *(P1)* — ĐÃ BỎ, 2026-08-12
 
-🔧 **[Giả định]** Paper mô tả Semantic và OCR là hai **mode riêng biệt**, không nêu cơ chế hợp nhất. Dự án bổ sung fusion vì hai kênh này bổ trợ nhau.
+🔧 **[Giả định]** Paper mô tả Semantic và OCR là hai **mode riêng biệt**, không nêu cơ chế hợp nhất. Dự án từng thử bổ sung fusion vì hai kênh này *tưởng* bổ trợ nhau.
 
-- Hợp nhất bằng **Reciprocal Rank Fusion**: `RRF(d) = Σ_c 1 / (k + rank_c(d))`, mặc định `k = 60`
-- Trọng số mỗi kênh cấu hình được
+- ~~Hợp nhất bằng **Reciprocal Rank Fusion**: `RRF(d) = Σ_c 1 / (k + rank_c(d))`, mặc định `k = 60`~~
+- ~~Trọng số mỗi kênh cấu hình được~~
 
-**Acceptance criteria:**
-- [ ] Hybrid **không được kém hơn** kênh tốt nhất trong hai kênh đơn lẻ trên bộ eval — nếu kém, phải chỉnh trọng số hoặc bỏ
+**Kết quả đo (2026-08-12):** đúng acceptance criteria gốc — hybrid kém hơn kênh đơn tốt nhất ở cả hai chiều. Nhưng lý do sâu hơn "chỉnh trọng số": RRF fuse theo **rank**, không theo **score magnitude**, nên trộn một kênh yếu vào kênh mạnh luôn kéo kênh mạnh xuống, bất kể trọng số. Và kênh OCR bị đo yếu (`ocr = 0.0254`) không phản ánh chất lượng OCR thật — bộ nhãn `aic_eval_v1` cấm Gemini chép chữ hiển thị trên màn hình vào caption (chống rò rỉ, §6.1), nên OCR **không có cách nào thắng** trên bộ nhãn này bất kể tune gì. Đây là kết luận cấu trúc, không phải một lần đo tệ.
+
+**Quyết định (chủ dự án, 2026-08-12):** bỏ hẳn mode `hybrid` khỏi `SearchService` — không giữ lại "đã test nhưng tắt". OCR trở thành mode `TEXT`/BM25 độc lập trong UI thay vì kênh fusion tự động (đúng cách Vortex/MERVIN — hai hệ mạnh nhất AIC 2025 — dùng OCR: filter/mode do người vận hành chọn tay, không phải kênh ranking tự động). Hàm `_reciprocal_rank_fusion` được giữ lại (không xoá) làm tiện ích thuần, dành cho việc fuse hai encoder semantic **cùng loại** (vd. BEiT-3+envit5 ⊕ SigLIP2) khi có encoder thứ hai — xem `docs/research-encoder-vietnamese.md` §8.3.
 
 ### F5 — QUEST *(P2)*
 
@@ -306,11 +307,13 @@ Xuất file kết quả theo định dạng BTC.
 
 > ⚠️ **Xem §9 — Ràng buộc quy trình.** Đây **chỉ là tham chiếu chức năng**, không phải bản thiết kế phải làm theo.
 
+**Cập nhật 2026-08-12 (P1.6):** không có mẫu thiết kế riêng — chủ dự án mở gate P1.5, cho phép build đúng theo (A)–(D) ở trên làm bố cục, hình thức chỉnh sau khi có yêu cầu. Mục (A) AI enhancer và mục (B) DANTE hiển thị **disabled kèm badge "P2"** (backend QUEST/DANTE chưa xây); mục (D) bộ lọc metadata hiển thị **disabled** (chưa có field `filters` trong `SearchRequest`). Mục (C) và phần Semantic/OCR của (B), cùng upload ảnh của (D), đã chạy đầy đủ.
+
 **Acceptance criteria (chức năng, không phải hình thức):**
-- [ ] Đổi mode không mất truy vấn đang gõ
-- [ ] Lưới kết quả dùng virtualized rendering — mượt với hàng nghìn thumbnail
-- [ ] Có shortcut bàn phím cho các thao tác nóng (submit, next/prev, đổi mode)
-- [ ] Hiển thị `video_id` + timestamp ngay trên mỗi thumbnail, không cần hover
+- [x] Đổi mode không mất truy vấn đang gõ
+- [x] Lưới kết quả dùng virtualized rendering — mượt với hàng nghìn thumbnail (`@tanstack/react-virtual`; lưới **sống** bị chặn ở 100 kết quả bởi `max_top_k`, khớp trần nộp bài AIC — virtualization được xác minh bằng fixture tổng hợp 1.000 item)
+- [x] Có shortcut bàn phím cho các thao tác nóng (submit, next/prev, đổi mode)
+- [x] Hiển thị `video_id` + timestamp ngay trên mỗi thumbnail, không cần hover
 
 ---
 
@@ -456,7 +459,7 @@ Chênh lệch giữa hai mức chỉ ra bệnh cụ thể: video-level cao mà s
 | BM25 trên caption | ⚠️ Ở bộ nhãn tự sinh đây là phép thử **quan trọng nhất**: caption do Gemini sinh **từ chính keyframe đáp án**, nên nếu OCR/metadata chứa lại đúng từ ngữ đó, bài toán "rò rỉ" và giải được bằng từ khoá thuần. BM25 cao bất thường ⇒ bộ nhãn hỏng, không phải hệ thống giỏi |
 | CLIP ViT-B/32 | Baseline multimodal phổ biến, dễ chạy. **Phải chạy bằng encoder của mình trên keyframe của mình** — `clip-features-32/` của BTC gắn với keyframe BTC nên không so được ở mức segment (`references.md` §2.5) |
 | **BEiT-3** | Hệ thống chính |
-| BEiT-3 + Hybrid (RRF) | Đo đóng góp riêng của fusion |
+| ~~BEiT-3 + Hybrid (RRF)~~ | Bỏ 2026-08-12 — xem §F4. Bộ nhãn `aic_eval_v1` không đo công bằng được kênh OCR nên phép đo "đóng góp riêng của fusion" này vô nghĩa trên bộ nhãn hiện tại |
 
 ### 6.4 Nhóm B — Metrics TRAKE / DANTE
 
@@ -513,7 +516,6 @@ Báo cáo `Sequence Exact-Match` và `Kendall's tau` cho từng giá trị, tác
 |---|---|---|
 | Semantic | ⚠️ ≤ 150 ms | ⚠️ ≤ 300 ms |
 | OCR (ES) | ⚠️ ≤ 100 ms | ⚠️ ≤ 250 ms |
-| Hybrid (RRF) | ⚠️ ≤ 250 ms | ⚠️ ≤ 500 ms |
 | DANTE (N=5) | ⚠️ ≤ 1 s | ⚠️ ≤ 2 s |
 | QUEST (có gọi LLM) | ⚠️ ≤ 3 s | ⚠️ ≤ 6 s |
 | VQA answering | ⚠️ ≤ 5 s | ⚠️ ≤ 10 s |
@@ -668,6 +670,8 @@ Khi hệ thống nộp bài mở:
 > **Về giao diện frontend:** khi tới bước triển khai UI, **phải hỏi ý người chủ dự án về thiết kế giao diện trước** — họ sẽ gửi mẫu thiết kế mong muốn.
 >
 > Mô tả UI trong §F9 và trong paper baseline chỉ dùng làm **tham chiếu chức năng** (những thao tác giao diện cần hỗ trợ), **không** phải bản thiết kế phải sao chép. Không tự dựng UI giống paper.
+>
+> **P1.6 (2026-08-12):** chủ dự án chủ động mở gate này, không đợi mẫu thiết kế — cho phép build theo (A)–(D) của §F9 làm bố cục, chỉnh hình thức sau. Ràng buộc "hỏi trước khi build UI" vẫn giữ nguyên cho các phase UI sau (P2 QUEST/DANTE, P3 VQA/submissions) trừ khi chủ dự án lặp lại quyết định tương tự.
 
 Các quyết định đã chốt khác:
 

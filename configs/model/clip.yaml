@@ -1,0 +1,34 @@
+# ClipEncoder config (app/encoders/clip_baseline.py) -- P1.4 mandatory
+# baseline (PRD §6.3): "CLIP ViT-B/32 ... phải chạy bằng encoder của mình
+# trên keyframe của mình". Weights auto-download via open_clip on first use
+# (cached under torch hub / open_clip cache dir), no manual checkpoint file
+# needed unlike beit3.yaml.
+#
+# model_name MUST be the "-quickgelu" variant, not plain "ViT-B-32":
+# OpenAI's original checkpoint was trained with QuickGELU activation, not
+# standard GELU. Loading `pretrained_tag: openai` onto plain "ViT-B-32"
+# still downloads the correct weight VALUES (shapes match) but runs them
+# through the WRONG activation function -- open_clip warns
+# "QuickGELU mismatch" and the resulting vectors are silently wrong
+# (verified 2026-08-12: `open_clip.list_pretrained()` confirms
+# ('ViT-B-32-quickgelu', 'openai') is the registered correct pair).
+#
+# model_id is embedded in the Milvus collection name (CLAUDE.md §3: "đổi
+# model ⇒ collection mới"). If you ever swap pretrained_tag to a different
+# CLIP checkpoint, you MUST also change model_id -- otherwise the new
+# checkpoint's vectors get silently mixed into this collection.
+model_name: ViT-B-32-quickgelu
+pretrained_tag: openai
+device: cuda
+# Đo thật 2026-08-12 trên RTX 3070 (--limit-videos): batch=64 ~47 keyframe/s,
+# batch=256 ~59,5 keyframe/s (+27%), VRAM chỉ ~1-1,5GB cả hai mức -- nút thắt
+# là decode ảnh trên CPU (PIL, tuần tự), không phải GPU/VRAM, nên tăng batch
+# thêm nữa lợi ích biên nhỏ. 256 là điểm dừng hợp lý.
+batch_size: 256
+model_id: clip_vit_b32_openai
+# Số luồng CPU decode/resize ảnh song song (app/encoders/clip_baseline.py
+# ThreadPoolExecutor) -- chỗ nghẽn thật (xem comment batch_size ở trên), nên
+# đây mới là nút vặn đúng chỗ để giảm thời gian embed, không phải batch_size.
+# 8 là mặc định thận trọng cho CPU đa nhân phổ thông đi kèm RTX 3070 -- tăng
+# lên nếu máy nhiều nhân hơn và vẫn thấy CPU chưa bão hoà (Task Manager).
+preprocess_workers: 8

@@ -4,3 +4,26 @@
 # for more hits than the contest will accept.
 default_top_k: 20
 max_top_k: 100
+
+# POST /api/search/image upload guard (plan §P1.1, CLAUDE.md §7: validate
+# size + MIME on any uploaded image, never store it permanently).
+max_upload_size_bytes: 10485760  # 10 MiB
+allowed_upload_mime_types:
+  - image/jpeg
+  - image/png
+  - image/webp
+
+# GET /api/keyframes/{id}/thumbnail (plan §P1.6): on-demand resize + disk
+# cache -- the imported Kaggle keyframe set has no pre-made thumbnail
+# (pipelines/import_embed_out.py sets thumbnail_path == image_path), so the
+# live corpus is 221,903 full-res JPEGs (~40 GB) with nothing pre-resized.
+thumbnail_cache_dir: data/thumbnail_cache
+thumbnail_max_px: 320
+thumbnail_jpeg_quality: 80
+thumbnail_cache_max_age_seconds: 31536000  # 1 year -- images are immutable per keyframe_id
+
+# scripts/build_thumbnails.py (batch cache warm): PIL decode/resize/encode
+# is CPU-bound and releases the GIL, same reasoning as ClipEncoder's
+# preprocess_workers (app/encoders/clip_baseline.py) -- threading, not
+# multiprocessing, since no image data needs to cross a process boundary.
+thumbnail_build_workers: 8

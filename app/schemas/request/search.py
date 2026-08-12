@@ -22,6 +22,8 @@ def _load_config() -> dict:
 _config = _load_config()
 DEFAULT_TOP_K: int = _config["default_top_k"]
 MAX_TOP_K: int = _config["max_top_k"]
+MAX_UPLOAD_SIZE_BYTES: int = _config["max_upload_size_bytes"]
+ALLOWED_UPLOAD_MIME_TYPES: frozenset[str] = frozenset(_config["allowed_upload_mime_types"])
 
 
 class SearchRequest(BaseModel):

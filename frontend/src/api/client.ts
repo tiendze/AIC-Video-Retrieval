@@ -1,0 +1,88 @@
+import type {
+  ApiErrorBody,
+  SearchMode,
+  SearchResponse,
+  VideoInfo,
+  VideoKeyframesResponse,
+} from './types'
+
+// Thrown for every non-2xx response -- callers branch on `errorCode`
+// (app/schemas/response/error.py's {detail, error_code, request_id}).
+export class ApiError extends Error {
+  readonly status: number
+  readonly errorCode: string
+  readonly requestId: string
+
+  constructor(status: number, body: ApiErrorBody) {
+    super(body.detail)
+    this.status = status
+    this.errorCode = body.error_code
+    this.requestId = body.request_id
+  }
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(path, init)
+  if (!response.ok) {
+    const body = (await response.json()) as ApiErrorBody
+    throw new ApiError(response.status, body)
+  }
+  return response.json() as Promise<T>
+}
+
+// POST /api/search (app/api/search.py)
+export function search(
+  query: string,
+  mode: SearchMode,
+  topK: number,
+  signal?: AbortSignal,
+): Promise<SearchResponse> {
+  return request<SearchResponse>('/api/search', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, mode, top_k: topK }),
+    signal,
+  })
+}
+
+// POST /api/search/image (app/api/search.py) -- used both for direct
+// upload and for "Find Similar Images" (plan §P1.6: fetch a result's own
+// full image, then re-search with it as the query).
+export function searchByImage(
+  file: Blob,
+  topK: number,
+  signal?: AbortSignal,
+): Promise<SearchResponse> {
+  const formData = new FormData()
+  formData.append('file', file)
+  formData.append('top_k', String(topK))
+  return request<SearchResponse>('/api/search/image', {
+    method: 'POST',
+    body: formData,
+    signal,
+  })
+}
+
+// GET /api/videos/{id} (app/api/videos.py)
+export function getVideo(videoId: string): Promise<VideoInfo> {
+  return request<VideoInfo>(`/api/videos/${encodeURIComponent(videoId)}`)
+}
+
+// GET /api/videos/{id}/keyframes (app/api/videos.py)
+export function getVideoKeyframes(videoId: string): Promise<VideoKeyframesResponse> {
+  return request<VideoKeyframesResponse>(
+    `/api/videos/${encodeURIComponent(videoId)}/keyframes`,
+  )
+}
+
+// Backs "Find Similar Images": fetch a keyframe's own full-res image bytes
+// (GET /api/keyframes/{id}/image) so they can be re-submitted to
+// POST /api/search/image -- goes through the exact same encoder path as any
+// other image upload (CLAUDE.md §3: one encoder, one preprocessing).
+export async function fetchImageBlob(imageUrl: string): Promise<Blob> {
+  const response = await fetch(imageUrl)
+  if (!response.ok) {
+    throw new Error(`Failed to fetch image at ${imageUrl}: HTTP ${response.status}`)
+  }
+  return response.blob()
+}

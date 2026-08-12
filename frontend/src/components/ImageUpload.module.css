@@ -1,0 +1,24 @@
+.dropZone,
+.dropZoneActive {
+  padding: 10px;
+  border: 1px dashed #444;
+  color: #999;
+  font-size: 12px;
+  cursor: pointer;
+  text-align: center;
+}
+
+.dropZoneActive {
+  border-color: #2f6fed;
+  color: #ddd;
+}
+
+.hiddenInput {
+  display: none;
+}
+
+.error {
+  display: block;
+  margin-top: 4px;
+  color: #e05555;
+}
