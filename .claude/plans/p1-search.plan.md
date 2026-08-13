@@ -206,7 +206,7 @@ Mô tả UI trong paper baseline và PRD §F9 chỉ là **danh sách năng lực
 
 ---
 
-## P1.6 — Frontend (⬜ đã duyệt kế hoạch 2026-08-12, CHƯA thực thi)
+## P1.6 — Frontend (✅ XONG 2026-08-13 — merge vào main qua `f175ba7`)
 
 **Làm gì:** React + Vite + TypeScript theo danh sách năng lực chức năng của paper (§P1.5), kèm phần backend còn thiếu để UI chạy được.
 
@@ -285,18 +285,18 @@ Ràng buộc **kỹ thuật** (độc lập với hình thức giao diện, gi�
 
 `docs/architecture.md` §7 (thêm 4 endpoint vào bảng API contract) · §8 (thay "thiết kế chốt sau" bằng quyết định thật + ngày mở gate) · `docs/PRD.md` §F9 (ghi quyết định placeholder disabled) · `README.md` (lệnh chạy frontend).
 
-**Verify:**
-- `pytest --cov=app` xanh, coverage ≥ 80% trên module mới (`thumbnail_service.py`, `api/keyframes.py`); `ruff` + `black` sạch
-- `npm run test` (Vitest) xanh — 4 test biến ràng buộc thành tiêu chí đo được: `test_mode_change_preserves_typed_query` · `test_result_card_shows_video_id_and_timestamp_without_hover` · `test_grid_mounts_bounded_dom_nodes_for_1000_hits` · `test_shortcut_does_not_fire_while_typing_in_query_input`
-- ~~Grid mượt với ≥ 1.000 thumbnail~~ → **lưới sống bị chặn ở 100 kết quả bởi `max_top_k` (luật nộp bài AIC, xem phát hiện (2) ở trên)**. Virtualization chứng minh bằng fixture tổng hợp 1.000 item trong test; lưới sống nghiệm thu bằng cuộn 100 kết quả thật
-- Đổi mode giữa lúc đang gõ → ô nhập giữ nguyên nội dung
-- Chạy thử một phiên tìm kiếm thật, bấm giờ (chủ dự án chạy — cần Docker + GPU, CLAUDE.md §10):
-  ```powershell
-  docker compose up -d
-  ./.venv/Scripts/python.exe -m uvicorn app.main:app --port 8000
-  # terminal 2:
-  cd frontend ; npm run dev      # http://localhost:5173
-  ```
+**Verify — chạy thật 2026-08-13:**
+- `pytest -m "not integration and not model" --cov=app` → **463 passed, 3 skipped, 26 deselected**. `app/api/keyframes.py` · `app/api/videos.py` · `app/services/thumbnail_service.py` = **100% coverage**.
+- `npm run test -- --run` (Vitest) → **6 test file, 18 test PASS**. 4 ràng buộc bắt buộc đều có test (tên mô tả hành vi, không phải tên hàm `test_x_y_z` literal — đúng quy ước RTL/Vitest của repo):
+  - `App.test.tsx` → *"preserves the typed query when switching search mode"*
+  - `components/ResultCard.test.tsx` → *"shows video_id and timestamp as always-visible text, not only on hover"*
+  - `components/ResultGrid.test.tsx` → *"mounts a bounded number of DOM nodes for 1,000 hits (virtualized)"*
+  - `hooks/useKeyboardShortcuts.test.tsx` → *"does not fire mode/nav shortcuts while typing in the query input"*
+  - Thêm ngoài kế hoạch gốc (không giảm phạm vi, chỉ mở rộng): `TopKControl.test.tsx` (6 test), `KeyframeDetail.test.tsx` (2 test, đóng detail khi bấm "Find Similar Images").
+- ~~Grid mượt với ≥ 1.000 thumbnail~~ → **lưới sống bị chặn ở 100 kết quả bởi `max_top_k`** (luật nộp bài AIC, phát hiện (2) ở trên). Virtualization chứng minh bằng fixture tổng hợp 1.000 item trong test; lưới sống nghiệm thu bằng cuộn 100 kết quả thật.
+- Đổi mode giữa lúc đang gõ → ô nhập giữ nguyên nội dung — pass qua `App.test.tsx`.
+- Docs cập nhật cùng change: `architecture.md` §7 (2 endpoint keyframes mới đánh dấu ✅) + §8 (quyết định gate P1.5 + ngày mở gate) · `PRD.md` §F9 (mục A/B/D nào disabled kèm badge, mục nào chạy đầy đủ) · `README.md` (lệnh chạy frontend).
+- Phiên tìm kiếm thật trên UI sống (docker compose + uvicorn + `npm run dev`) — **chủ dự án đã tự chạy 2026-08-13, xác nhận dùng được** (CLAUDE.md §10, tôi không tự chạy Docker/GPU).
 
 **Ngoài phạm vi P1.6:** bảng latency p50/p95 (P1.7 — `useSearch.ts` đã đo sẵn để P1.7 chỉ việc thu thập) · degraded mode (P1.8) · bộ lọc metadata (§P1.5).
 
@@ -338,6 +338,6 @@ Ràng buộc **kỹ thuật** (độc lập với hình thức giao diện, gi�
 - [x] Bảng so sánh baseline đầy đủ — §P1.4, 4 baseline (Random · BM25 · CLIP ViT-B/32 · BEiT-3). Hàng thứ 5 (BEiT-3 + Hybrid RRF) bị bỏ có lý do, xem §P1.3
 - [x] Encoder chính đã chốt **dựa trên số đo** — BEiT-3 (0,4809) thắng CLIP ViT-B/32 (0,3376) segment-level, mọi metric (§P1.4)
 - [ ] Bảng latency p50/p95 thật (P1.7)
-- [ ] UI dùng được để thao tác thật — theo danh sách năng lực chức năng của paper (§P1.5: không có mẫu thiết kế riêng, chủ dự án sẽ yêu cầu chỉnh hình thức sau)
+- [x] UI dùng được để thao tác thật — §P1.6, XONG 2026-08-13, merge `f175ba7`. Theo danh sách năng lực chức năng của paper (§P1.5: không có mẫu thiết kế riêng, chủ dự án sẽ yêu cầu chỉnh hình thức sau). Backend 463 passed/100% coverage module mới, frontend 18 test PASS, chủ dự án tự xác nhận phiên search thật trên UI sống chạy ổn.
 - [ ] Degraded mode chạy được (P1.8)
 - [ ] Báo cáo phase theo template CLAUDE.md §8
