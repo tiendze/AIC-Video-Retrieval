@@ -335,14 +335,31 @@ Ràng buộc **kỹ thuật** (độc lập với hình thức giao diện, gi�
 
 ---
 
-## P1.8 — Degraded mode
+## P1.8 — Degraded mode — ✅ XONG 2026-08-13
 
 **Làm gì:** kiểm chứng yêu cầu T5 — hệ thống sống sót khi thiếu thành phần.
 
 - Tắt Elasticsearch ⇒ tự chuyển **semantic-only**, không crash, thông báo rõ ràng trên UI (giải phóng ~2 GB RAM).
 - Mất mạng ⇒ semantic search vẫn chạy đầy đủ; chỉ QUEST / OCR / VQA ngừng.
 
-**Verify:** test tích hợp có tắt ES; `test_search_falls_back_to_semantic_when_es_unavailable`.
+**Diễn giải lại tên test gốc trong plan (chủ động, ghi lại lý do):** bản kế hoạch gốc đặt tên `test_search_falls_back_to_semantic_when_es_unavailable`, gợi ý một request `mode=ocr` khi ES down sẽ *âm thầm đổi* sang kết quả semantic. Đối chiếu `docs/architecture.md` §9.3 ("hệ thống chuyển sang semantic-only, **mất chức năng OCR search**") và CLAUDE.md §7 ("lỗi hiện ra UI phải đọc được, không dump traceback" — ngụ ý báo lỗi rõ, không đổi hành vi âm thầm), tôi chọn cách hiểu: **hệ thống** (không phải từng request) sống sót ở chế độ semantic-only; một request `mode=ocr` tường minh khi ES down phải trả lỗi rõ ràng ("OCR không khả dụng"), **không** âm thầm trả kết quả semantic thay thế — người dùng yêu cầu OCR thì phải biết họ không có OCR, không nhận nhầm kết quả khác mà tưởng là OCR.
+
+**2 lỗ hổng thật tìm được khi điều tra (chưa ai biết trước khi làm P1.8):**
+1. `app/main.py`'s `lifespan()` gọi `await app.state.es_store.ensure_index()` không bọc try/except — ES down lúc khởi động làm **toàn bộ app crash lúc startup**, kể cả semantic (vi phạm thẳng lời hứa "chuyển sang semantic-only"). Đây là bug nghiêm trọng nhất, không phải thiếu tính năng.
+2. `SearchService._search_ocr` không bắt lỗi kết nối ES — request `mode=ocr` khi ES down rơi xuống handler lỗi chung `_handle_unexpected_error` (500 "Internal server error"), không crash toàn tiến trình nhưng thông báo sai bản chất (trông như bug hệ thống, không phải trạng thái suy giảm đã biết).
+
+**Đã làm (TDD RED→GREEN từng bước, 4 checkpoint commit):**
+- `app/main.py`: bọc `es_store.ensure_index()` trong `try/except elasticsearch.ConnectionError`, log warning, tiếp tục khởi động. `tests/test_main.py` — 2 test mới (`_FakeEsStoreDown`): app không crash lúc ES down, `POST /api/search` mode=semantic vẫn 200.
+- `app/services/search_service.py`: `SearchServiceError` thêm `error_code`/`status_code` (mặc định giữ nguyên `invalid_search_mode`/400 cho case cũ — không phá test có sẵn); `_search_ocr` bắt `elasticsearch.ConnectionError`, raise `SearchServiceError("...", error_code="ocr_unavailable", status_code=503)`. `app/api/search.py` đọc `exc.error_code`/`exc.status_code` thay vì hardcode. `tests/test_search_service.py` + `tests/test_search_api.py` — 3 test mới, xác nhận 503 + `error_code="ocr_unavailable"` tới tận response.
+- Frontend: `api/types.ts` (`HealthStatus`) + `api/client.ts` (`getHealth()`) mirror `GET /health` có sẵn từ P0.8 (không cần sửa backend health — đã báo đúng `elasticsearch_ok` từ trước). `hooks/useHealth.ts` poll 30s, degrade an toàn khi `/health` chính nó cũng down. `components/StatusBar.tsx` thêm prop `degradedMessage`; `components/ModeSelector.tsx` thêm prop `ocrDisabled` (disable nút OCR + tooltip, không chặn chuyển về Semantic). `App.tsx` wire `useHealth()` vào cả hai. 4 file test mới (`useHealth.test.tsx`, `StatusBar.test.tsx`, `ModeSelector.test.tsx`) + `App.test.tsx` cập nhật mock `getHealth` để không vỡ test cũ.
+- Verify: `pytest -m "not integration and not model" --cov=app --cov=eval --cov=scripts` → **481 passed**, `app/api/search.py` = 100%, `app/main.py` = 90% (phần thiếu là các factory function không unit-test, không liên quan P1.8), `app/services/search_service.py` = 90% (phần thiếu là `_reciprocal_rank_fusion` chưa wire, có từ trước). `npm run test -- --run` → **9 file, 29 test PASS**. `npx tsc -b` sạch. `ruff check` + `black --check` + `oxlint` sạch trên mọi file mới/sửa.
+
+**Còn thiếu (không thuộc phạm vi P1.8, ghi nhận để không quên):**
+- Chưa có test tích hợp thật kèm docker-compose tắt hẳn container ES (CLAUDE.md §10 — cần chủ dự án tự chạy `docker compose stop elasticsearch` rồi thao tác UI thật). Test hiện tại dùng fake ES store ném lỗi kết nối — đúng lỗi thật (`elasticsearch.ConnectionError`) nhưng không phải phiên chạy thật trên container.
+- Nhánh "mất mạng ⇒ Gemini/OpenAI không khả dụng" của T5 chưa có test riêng — về kiến trúc đã đúng (semantic search không gọi Gemini/OpenAI ở đường search, mọi model chạy local), nhưng chưa verify bằng test tường minh.
+- Backend cắt kết nối ES **sau khi** app đã khởi động thành công (không phải lúc startup) dùng chung code path `_search_ocr`'s try/except — đã cover bằng fake, chưa verify qua kịch bản "ES chết giữa chừng phiên đang chạy" trên stack thật.
+
+**Verify:** test tích hợp có tắt ES; ~~`test_search_falls_back_to_semantic_when_es_unavailable`~~ đổi tên/diễn giải thành `test_lifespan_survives_es_unreachable_at_startup` + `test_ocr_mode_raises_clear_error_when_elasticsearch_unavailable` (lý do đổi cách hiểu, xem trên).
 
 ---
 
@@ -354,5 +371,5 @@ Ràng buộc **kỹ thuật** (độc lập với hình thức giao diện, gi�
 - [x] Encoder chính đã chốt **dựa trên số đo** — BEiT-3 (0,4809) thắng CLIP ViT-B/32 (0,3376) segment-level, mọi metric (§P1.4)
 - [x] Bảng latency p50/p95 thật — §P1.7, XONG 2026-08-13. Semantic 2435/3621ms **vượt mục tiêu ~16×/~12×** (nguyên nhân đã điều tra: `LocalNmtTranslator` chạy CPU theo thiết kế, xem PRD §6.6), OCR 27/54ms đạt mục tiêu. `Rank-in-Grid` đã có tên trong report của `eval/run.py`. Tối ưu latency semantic để lại backlog phase sau, có chủ đích.
 - [x] UI dùng được để thao tác thật — §P1.6, XONG 2026-08-13, merge `f175ba7`. Theo danh sách năng lực chức năng của paper (§P1.5: không có mẫu thiết kế riêng, chủ dự án sẽ yêu cầu chỉnh hình thức sau). Backend 463 passed/100% coverage module mới, frontend 18 test PASS, chủ dự án tự xác nhận phiên search thật trên UI sống chạy ổn.
-- [ ] Degraded mode chạy được (P1.8)
-- [ ] Báo cáo phase theo template CLAUDE.md §8
+- [x] Degraded mode chạy được — §P1.8, XONG 2026-08-13. 2 bug thật sửa được: (1) lifespan crash toàn app khi ES down lúc khởi động (vi phạm thẳng lời hứa semantic-only), (2) OCR request khi ES down trả 500 chung chung thay vì lỗi rõ ràng — nay trả 503 `ocr_unavailable`. UI hiện banner + disable nút OCR khi `GET /health` báo `elasticsearch_ok=false`. 481 passed backend, 29 passed frontend. Còn thiếu: chưa test tích hợp thật với container ES bị tắt (chủ dự án tự chạy sau).
+- [x] Báo cáo phase theo template CLAUDE.md §8 — báo cáo P1.6/P1.7/P1.8 đã đưa trực tiếp trong hội thoại kèm mỗi phase; nội dung tương đương cũng nằm trong phần "Đã làm" của từng mục §P1.6–§P1.8 ở trên.

@@ -624,7 +624,7 @@ Khi hệ thống nộp bài mở:
 | RAM hệ thống | Tối thiểu 16 GB, **khuyến nghị 32 GB** — ba store chạy cùng máy là sức ép lên RAM chứ không phải VRAM |
 | JVM heap của Elasticsearch | Giới hạn cứng (≤ 2 GB ở môi trường dev) |
 | Đĩa | Dữ liệu gốc đã chiếm **123 GB** (đo thật). Cộng keyframe tự trích + thumbnail + index ⇒ ⚠️ dự trù **≥ 160 GB** |
-| Chế độ suy giảm | Phải chạy được ở chế độ **semantic-only** khi tắt Elasticsearch |
+| Chế độ suy giảm | Phải chạy được ở chế độ **semantic-only** khi tắt Elasticsearch — ✅ **implement + verify P1.8 (2026-08-13):** `app/main.py`'s `lifespan()` bắt `elasticsearch.ConnectionError` quanh `ensure_index()` (ES down lúc khởi động không còn kéo sập app); `mode="ocr"` khi ES down trả `503 {error_code: "ocr_unavailable"}` rõ ràng thay vì lỗi 500 chung chung; `GET /health` báo `elasticsearch_ok=false`; UI hiện banner + disable nút OCR. Test: `tests/test_main.py::test_lifespan_survives_es_unreachable_at_startup` + `::test_search_endpoint_still_works_when_es_was_unreachable_at_startup`, `tests/test_search_service.py::test_ocr_mode_raises_clear_error_when_elasticsearch_unavailable`, `tests/test_search_api.py::test_ocr_unavailable_error_maps_to_a_503_not_the_generic_400`, `frontend/src/hooks/useHealth.test.tsx`, `frontend/src/components/{StatusBar,ModeSelector}.test.tsx`. |
 
 ### 7.3 Độ tin cậy
 - Ingest **idempotent** và **resume được** (T1) — bắt buộc, không phải "nice to have", vì ingest kéo dài hàng chục giờ
