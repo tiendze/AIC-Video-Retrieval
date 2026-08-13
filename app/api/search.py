@@ -20,6 +20,8 @@ Content-Length, not a hard bound against a client that lies about it.
 
 from __future__ import annotations
 
+import logging
+import time
 import uuid
 from io import BytesIO
 
@@ -39,6 +41,8 @@ from app.schemas.request.search import (
 from app.schemas.response.error import ErrorResponse
 from app.schemas.response.search import SearchHitResponse, SearchResponse
 from app.services.search_service import SearchHit, SearchService, SearchServiceError
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -79,11 +83,25 @@ def _to_response(hits: list[SearchHit]) -> SearchResponse:
 async def search(
     body: SearchRequest, service: SearchService = Depends(get_search_service)
 ) -> SearchResponse:
+    start = time.perf_counter()
     try:
         hits = await service.search(body.query, mode=body.mode, top_k=body.top_k)
     except SearchServiceError as exc:
         raise APIError(detail=str(exc), error_code="invalid_search_mode", status_code=400) from exc
 
+    # plan §P1.7, PRD §6.6: operational latency measurement -- p50/p95 per
+    # mode are computed offline (scripts/measure_search_latency.py) from
+    # request logs like this one. No `cache_hit` field: /api/search has no
+    # result cache to report a hit/miss for (only thumbnails do, a different
+    # endpoint), so the field would always read False and mislead a reader
+    # into thinking a cache exists here.
+    latency_ms = (time.perf_counter() - start) * 1000
+    logger.info(
+        "search request completed: mode=%s latency_ms=%.1f num_results=%d",
+        body.mode,
+        latency_ms,
+        len(hits),
+    )
     return _to_response(hits)
 
 
