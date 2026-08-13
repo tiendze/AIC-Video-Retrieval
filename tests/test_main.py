@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+from elasticsearch import ConnectionError as EsConnectionError
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
@@ -54,6 +55,16 @@ class _FakeMongoStore:
 
     async def close(self) -> None:
         self.closed = True
+
+
+class _FakeEsStoreDown(_FakeEsStore):
+    """Simulates Elasticsearch unreachable at startup (plan §P1.8, PRD T5:
+    'hệ thống chuyển sang semantic-only' -- ensure_index failing must not
+    take the whole app down with it)."""
+
+    async def ensure_index(self) -> None:
+        self.ensure_index_called = True
+        raise EsConnectionError("simulated ES down")
 
 
 class _FakeQueryTranslator:
@@ -138,6 +149,67 @@ def test_lifespan_builds_encoder_and_all_three_stores_onto_app_state(
         assert isinstance(state.query_translator, _FakeQueryTranslator)
         assert state.mongo_store.ensure_indexes_called is True
         assert state.es_store.ensure_index_called is True
+
+
+def test_lifespan_survives_es_unreachable_at_startup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """plan §P1.8: Elasticsearch down at startup must degrade to
+    semantic-only, not take the whole app down -- `ensure_index()` raising a
+    connection error must not propagate out of `lifespan`."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-gemini-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "fake-openai-key")
+    monkeypatch.setattr(main_module, "_build_encoder", lambda: _FakeEncoder())
+    monkeypatch.setattr(
+        main_module, "_build_milvus_store", lambda settings, encoder: _FakeMilvusStore()
+    )
+    monkeypatch.setattr(main_module, "_build_es_store", lambda settings: _FakeEsStoreDown())
+    monkeypatch.setattr(main_module, "_build_mongo_store", lambda settings: _FakeMongoStore())
+    monkeypatch.setattr(main_module, "_build_query_translator", lambda: _FakeQueryTranslator())
+
+    app = create_app()
+
+    with TestClient(app) as client:  # must not raise despite ensure_index() failing
+        assert client.app.state.es_store.ensure_index_called is True
+
+
+def test_search_endpoint_still_works_when_es_was_unreachable_at_startup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The core degraded-mode promise: semantic search survives ES being
+    down, not just app startup surviving it."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-gemini-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "fake-openai-key")
+    monkeypatch.setattr(main_module, "_build_encoder", lambda: _FakeEncoder())
+    monkeypatch.setattr(
+        main_module, "_build_milvus_store", lambda settings, encoder: _FakeMilvusStore()
+    )
+    monkeypatch.setattr(main_module, "_build_es_store", lambda settings: _FakeEsStoreDown())
+    monkeypatch.setattr(main_module, "_build_mongo_store", lambda settings: _FakeMongoStore())
+    monkeypatch.setattr(main_module, "_build_query_translator", lambda: _FakeQueryTranslator())
+
+    class _FakeSearchService:
+        async def search(self, query, mode, top_k):
+            return [
+                SearchHit(
+                    keyframe_id="L21_V001_f10",
+                    video_id="L21_V001",
+                    score=0.9,
+                    frame_idx=10,
+                    timestamp=0.4,
+                    thumbnail_path="t.jpg",
+                )
+            ]
+
+    app = create_app()
+    app.dependency_overrides[get_search_service] = lambda: _FakeSearchService()
+
+    with TestClient(app) as client:
+        response = client.post("/api/search", json={"query": "thu tuong", "mode": "semantic"})
+
+    assert response.status_code == 200
 
 
 def test_lifespan_closes_es_and_mongo_stores_on_shutdown(
