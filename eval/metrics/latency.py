@@ -24,7 +24,9 @@ def compute_latency_percentiles(latencies_ms: Sequence[float]) -> LatencyPercent
     (CLAUDE.md §7 -- missing data must fail loudly), matching
     `eval/metrics/retrieval.py`'s `_require_nonempty` convention."""
     if not latencies_ms:
-        raise ValueError("compute_latency_percentiles: latencies_ms is empty -- nothing was measured")
+        raise ValueError(
+            "compute_latency_percentiles: latencies_ms is empty -- nothing was measured"
+        )
     return LatencyPercentiles(
         p50_ms=float(np.percentile(latencies_ms, 50)),
         p95_ms=float(np.percentile(latencies_ms, 95)),

@@ -398,7 +398,7 @@ def _render_report_md(
         "",
         "## Channel metrics",
         "",
-        "| channel | level | AIC Final Score | MRR | mAP | nDCG@10 | median_rank (Rank-in-Grid) | found/total |",
+        "| channel | level | AIC Final Score | MRR | mAP | nDCG@10 | Rank-in-Grid | found/total |",
         "|---|---|---|---|---|---|---|---|",
     ]
     for m in channel_metrics:
@@ -411,10 +411,10 @@ def _render_report_md(
     lines += [
         "",
         "`Rank-in-Grid` (PRD §6.6) is the position of the correct hit in the "
-        "grid the operator has to scroll to -- the `median_rank (Rank-in-Grid)` "
-        "column above IS that metric, aggregated across the eval set; "
-        "per-query values are in `per_query.csv`'s `rank_video`/`rank_segment` "
-        "columns.",
+        "grid the operator has to scroll to -- the `Rank-in-Grid` column "
+        "above is the MEDIAN of that value across the eval set (same "
+        "computation as `median_rank`, just named per PRD §6.6); per-query "
+        "values are in `per_query.csv`'s `rank_video`/`rank_segment` columns.",
     ]
 
     lines += ["", "## Recall@20 by author / batch (segment-level)", ""]

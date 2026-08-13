@@ -13,15 +13,15 @@ import json
 import httpx
 import pytest
 
+from eval.metrics.latency import LatencyPercentiles
 from scripts.measure_search_latency import (
     _benchmark_mode,
     _load_queries,
     _render_report,
 )
-from eval.metrics.latency import LatencyPercentiles
 
 
-def _write_eval_set(tmp_path, records: list[dict]) -> "Path":  # noqa: F821
+def _write_eval_set(tmp_path, records: list[dict]) -> Path:  # noqa: F821
     path = tmp_path / "eval_set.json"
     path.write_text(json.dumps(records), encoding="utf-8")
     return path
@@ -43,7 +43,8 @@ def test_load_queries_reads_captions_from_eval_set_json(tmp_path):
 
 def test_load_queries_respects_limit(tmp_path):
     path = _write_eval_set(
-        tmp_path, [{"caption": f"caption {i}", "video_id": "v", "order_index": i} for i in range(10)]
+        tmp_path,
+        [{"caption": f"caption {i}", "video_id": "v", "order_index": i} for i in range(10)],
     )
 
     queries = _load_queries(path, limit=3)

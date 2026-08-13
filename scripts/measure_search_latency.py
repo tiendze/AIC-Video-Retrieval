@@ -84,7 +84,9 @@ def _benchmark_mode(
 def _render_report(results: dict[str, LatencyPercentiles]) -> str:
     lines = ["| mode | p50 | p95 | n |", "|---|---|---|---|"]
     for mode, stats in results.items():
-        lines.append(f"| {mode} | {stats.p50_ms:.0f} ms | {stats.p95_ms:.0f} ms | {stats.num_requests} |")
+        lines.append(
+            f"| {mode} | {stats.p50_ms:.0f} ms | {stats.p95_ms:.0f} ms | {stats.num_requests} |"
+        )
     return "\n".join(lines)
 
 
@@ -100,7 +102,10 @@ def _parse_args() -> argparse.Namespace:
         help="benchmark only the first N eval captions per mode (default: all)",
     )
     parser.add_argument(
-        "--top-k", type=int, default=None, help="overrides configs/search/search.yaml's default_top_k"
+        "--top-k",
+        type=int,
+        default=None,
+        help="overrides configs/search/search.yaml's default_top_k",
     )
     return parser.parse_args()
 
@@ -125,7 +130,11 @@ def main() -> None:
             stats = compute_latency_percentiles(latencies_ms)
             results[mode] = stats
             logger.info(
-                "%s: p50=%.1fms p95=%.1fms (n=%d)", mode, stats.p50_ms, stats.p95_ms, stats.num_requests
+                "%s: p50=%.1fms p95=%.1fms (n=%d)",
+                mode,
+                stats.p50_ms,
+                stats.p95_ms,
+                stats.num_requests,
             )
 
     print()
