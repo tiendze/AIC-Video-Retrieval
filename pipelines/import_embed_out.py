@@ -225,6 +225,94 @@ def to_keyframe_document(keyframe: ImportedKeyframe, image_dir: Path) -> Keyfram
     )
 
 
+@dataclass(frozen=True)
+class VectorsOnlyKeyframe:
+    """One keyframe row for `--encoder`-flagged (non-`beit3`) imports:
+    metadata (`global_index`/`frame_idx`/`timestamp`) comes ENTIRELY from
+    MongoDB, already written there by the primary BEiT-3 import — only
+    `embedding` comes from the candidate encoder's own embed_out artifact.
+    Never used to build a `KeyframeDocument`/`VideoDocument`; this row only
+    ever becomes a `KeyframeVector` (Milvus), see
+    `vectors_only_row_to_milvus_vector` below."""
+
+    keyframe_id: str
+    video_id: str
+    global_index: int
+    frame_idx: int
+    timestamp: float
+    embedding: np.ndarray
+    author: str
+    batch: str
+
+
+def build_vectors_only_rows(
+    video_id: str,
+    vectors: np.ndarray,
+    jsonl_rows: Sequence[dict],
+    mongo_keyframe_docs: Sequence[dict],
+    author: str,
+) -> list[VectorsOnlyKeyframe]:
+    """Joins a candidate encoder's embed_out vectors to the metadata MongoDB
+    ALREADY has for this video (written by the primary `--encoder beit3`
+    import) — vectors-only mode never re-derives `global_index`/`frame_idx`/
+    `timestamp`, it reads them straight from Mongo so a second encoder's
+    collection can never desync those values from what DANTE/search already
+    rely on (encoder-swap plan §"Quyết định chiến lược #2").
+
+    Raises ValueError if the artifact's `keyframe_id` set for this video does
+    not EXACTLY match Mongo's — a partial/extra/missing set here means the
+    candidate artifact came from a different keyframe source than what is
+    already ingested, and importing it anyway would silently create a
+    collection with holes or with `keyframe_id`s search can never resolve
+    back to metadata (CLAUDE.md §3: "hỏng âm thầm").
+    """
+    mongo_by_id = {doc["keyframe_id"]: doc for doc in mongo_keyframe_docs}
+    artifact_ids = {row["keyframe_id"] for row in jsonl_rows}
+    mongo_ids = set(mongo_by_id)
+
+    missing_in_mongo = artifact_ids - mongo_ids
+    missing_in_artifact = mongo_ids - artifact_ids
+    if missing_in_mongo or missing_in_artifact:
+        raise ValueError(
+            f"{video_id}: keyframe_id set mismatch between embed_out artifact and MongoDB -- "
+            f"{len(missing_in_mongo)} in artifact but not Mongo "
+            f"(e.g. {sorted(missing_in_mongo)[:5]}), "
+            f"{len(missing_in_artifact)} in Mongo but not artifact "
+            f"(e.g. {sorted(missing_in_artifact)[:5]})"
+        )
+
+    batch = batch_of(video_id)
+    rows = []
+    for i, row in enumerate(jsonl_rows):
+        doc = mongo_by_id[row["keyframe_id"]]
+        rows.append(
+            VectorsOnlyKeyframe(
+                keyframe_id=row["keyframe_id"],
+                video_id=video_id,
+                global_index=doc["global_index"],
+                frame_idx=doc["frame_idx"],
+                timestamp=doc["timestamp"],
+                embedding=vectors[i],
+                author=author,
+                batch=batch,
+            )
+        )
+    return rows
+
+
+def vectors_only_row_to_milvus_vector(row: VectorsOnlyKeyframe) -> KeyframeVector:
+    return KeyframeVector(
+        keyframe_id=row.keyframe_id,
+        embedding=row.embedding,
+        video_id=row.video_id,
+        global_index=row.global_index,
+        frame_idx=row.frame_idx,
+        timestamp=row.timestamp,
+        author=row.author,
+        batch=row.batch,
+    )
+
+
 def build_video_document(
     video: VideoRef, keyframes: Sequence[ImportedKeyframe], fps: float
 ) -> VideoDocument:

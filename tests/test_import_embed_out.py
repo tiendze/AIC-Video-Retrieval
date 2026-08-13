@@ -17,7 +17,9 @@ from pipelines.import_embed_out import (
     STATUS_COMPLETE,
     ImportedKeyframe,
     ShotRange,
+    VectorsOnlyKeyframe,
     build_imported_keyframes,
+    build_vectors_only_rows,
     build_video_document,
     discover_video_ids,
     is_video_already_imported,
@@ -26,6 +28,7 @@ from pipelines.import_embed_out import (
     resolve_shot_id,
     to_keyframe_document,
     to_milvus_vector,
+    vectors_only_row_to_milvus_vector,
 )
 
 
@@ -304,3 +307,78 @@ class TestBuildVideoDocument:
         assert doc.publish_date == "01/08/2024"
         assert doc.watch_url == "https://x"
         assert doc.channel_id == "UCx"
+
+
+class TestBuildVectorsOnlyRows:
+    def test_joins_artifact_vectors_with_mongo_metadata(self):
+        vectors = np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
+        jsonl_rows = [
+            {"keyframe_id": "L21_V001_f10", "video_id": "L21_V001", "frame_idx": 10},
+            {"keyframe_id": "L21_V001_f20", "video_id": "L21_V001", "frame_idx": 20},
+        ]
+        mongo_keyframe_docs = [
+            {"keyframe_id": "L21_V001_f10", "global_index": 100, "frame_idx": 10, "timestamp": 0.4},
+            {"keyframe_id": "L21_V001_f20", "global_index": 101, "frame_idx": 20, "timestamp": 0.8},
+        ]
+
+        rows = build_vectors_only_rows(
+            "L21_V001", vectors, jsonl_rows, mongo_keyframe_docs, author="ch"
+        )
+
+        assert len(rows) == 2
+        assert rows[0].keyframe_id == "L21_V001_f10"
+        assert rows[0].video_id == "L21_V001"
+        assert rows[0].global_index == 100
+        assert rows[0].frame_idx == 10
+        assert rows[0].timestamp == pytest.approx(0.4)
+        assert rows[0].author == "ch"
+        assert rows[0].batch == "L21"
+        np.testing.assert_array_equal(rows[0].embedding, vectors[0])
+        np.testing.assert_array_equal(rows[1].embedding, vectors[1])
+        assert rows[1].global_index == 101
+
+    def test_raises_when_artifact_has_keyframe_id_missing_from_mongo(self):
+        vectors = np.zeros((1, 2), dtype=np.float32)
+        jsonl_rows = [{"keyframe_id": "L21_V001_f99", "video_id": "L21_V001", "frame_idx": 99}]
+        mongo_keyframe_docs = [
+            {"keyframe_id": "L21_V001_f10", "global_index": 0, "frame_idx": 10, "timestamp": 0.4}
+        ]
+
+        with pytest.raises(ValueError, match="keyframe_id set mismatch"):
+            build_vectors_only_rows("L21_V001", vectors, jsonl_rows, mongo_keyframe_docs, author="")
+
+    def test_raises_when_mongo_has_keyframe_id_missing_from_artifact(self):
+        vectors = np.zeros((1, 2), dtype=np.float32)
+        jsonl_rows = [{"keyframe_id": "L21_V001_f10", "video_id": "L21_V001", "frame_idx": 10}]
+        mongo_keyframe_docs = [
+            {"keyframe_id": "L21_V001_f10", "global_index": 0, "frame_idx": 10, "timestamp": 0.4},
+            {"keyframe_id": "L21_V001_f20", "global_index": 1, "frame_idx": 20, "timestamp": 0.8},
+        ]
+
+        with pytest.raises(ValueError, match="keyframe_id set mismatch"):
+            build_vectors_only_rows("L21_V001", vectors, jsonl_rows, mongo_keyframe_docs, author="")
+
+
+class TestVectorsOnlyRowToMilvusVector:
+    def test_carries_every_field(self):
+        row = VectorsOnlyKeyframe(
+            keyframe_id="L21_V001_f10",
+            video_id="L21_V001",
+            global_index=5,
+            frame_idx=10,
+            timestamp=0.4,
+            embedding=np.array([1.0, 0.0], dtype=np.float32),
+            author="ch",
+            batch="L21",
+        )
+
+        vector = vectors_only_row_to_milvus_vector(row)
+
+        assert vector.keyframe_id == "L21_V001_f10"
+        assert vector.video_id == "L21_V001"
+        assert vector.global_index == 5
+        assert vector.frame_idx == 10
+        assert vector.timestamp == pytest.approx(0.4)
+        assert vector.author == "ch"
+        assert vector.batch == "L21"
+        np.testing.assert_array_equal(vector.embedding, row.embedding)

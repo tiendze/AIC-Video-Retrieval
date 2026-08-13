@@ -105,6 +105,64 @@ def cosine_per_row(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     return np.sum(a_norm * b_norm, axis=1)
 
 
+def verify_hf_identity(manifest: dict, hf_repo_id: str, hf_revision: str) -> None:
+    """Raises EmbedParityError if the artifact's manifest doesn't name the SAME
+    HuggingFace repo/revision this encoder config is pinned to. This is the
+    HF-hub-based encoders' equivalent of verify_checksums() -- there is no
+    local checkpoint FILE to hash (weights load via `from_pretrained`), so
+    identity starts with (repo_id, commit revision); verify_weight_sha256()
+    below covers the case the revision matches but the underlying bytes
+    somehow don't."""
+    if manifest.get("hf_repo_id") != hf_repo_id:
+        raise EmbedParityError(
+            f"hf_repo_id mismatch: manifest={manifest.get('hf_repo_id')!r} local={hf_repo_id!r}"
+        )
+    if manifest.get("hf_revision") != hf_revision:
+        raise EmbedParityError(
+            f"hf_revision mismatch: manifest={manifest.get('hf_revision')!r} local={hf_revision!r} "
+            "-- Kaggle and local are pinned to different commits of the same model"
+        )
+
+
+def verify_weight_sha256(manifest: dict, compute_sha256: Callable[[str], str]) -> None:
+    """Raises EmbedParityError if any weight file's hash in
+    `manifest['weight_files_sha256']` doesn't match what `compute_sha256`
+    (filename -> sha256 hex digest) reports right now. `compute_sha256` is
+    injected -- same DI convention as `run_parity_probe`'s `encode_text` --
+    so this stays a pure function in tests; `hf_hub_weight_sha256` below is
+    the real (network-touching) implementation used outside tests."""
+    manifest_hashes = manifest.get("weight_files_sha256")
+    if not manifest_hashes:
+        raise EmbedParityError("manifest missing 'weight_files_sha256' -- cannot verify weight identity")
+    for filename, expected_sha256 in manifest_hashes.items():
+        actual_sha256 = compute_sha256(filename)
+        if actual_sha256 != expected_sha256:
+            raise EmbedParityError(
+                f"weight_files_sha256 mismatch for {filename}: "
+                f"manifest={expected_sha256} local={actual_sha256}"
+            )
+
+
+def hf_hub_weight_sha256(hf_repo_id: str, hf_revision: str) -> Callable[[str], str]:
+    """Returns a `compute_sha256(filename)` callable bound to one
+    (repo, revision) pair, for `verify_weight_sha256`. Downloads (or reuses
+    the local cache of) the file from the HF hub -- the exact bytes
+    `AutoModel.from_pretrained(hf_repo_id, revision=hf_revision)` would load
+    locally, so a match here really does mean "same weights Kaggle used".
+
+    Imports `huggingface_hub` lazily: this module is ALSO used for BEiT-3
+    verification (`verify_checksums`), which must never require installing
+    it just to run a routine beit3 import."""
+
+    def _compute(filename: str) -> str:
+        from huggingface_hub import hf_hub_download
+
+        local_path = Path(hf_hub_download(repo_id=hf_repo_id, filename=filename, revision=hf_revision))
+        return sha256_file(local_path)
+
+    return _compute
+
+
 def run_parity_probe(
     texts: Sequence[str],
     remote_vectors: np.ndarray,

@@ -90,6 +90,35 @@ baseline-clip = [
     "huggingface-hub",
     "safetensors",
 ]
+encoder-candidates = [
+    # encoder-swap plan (.claude/plans/encoder-swap-siglip2-pecore.plan.md
+    # §T2): SigLip2Encoder needs transformers>=4.49 (SigLIP 2 landed there;
+    # the checkpoint's config.json records transformers_version:
+    # "4.49.0.dev0"), which directly conflicts with beit3's
+    # transformers==4.44.2 pin above. Deliberately does NOT depend on
+    # "aic-video-retrieval[ingest]" the way ocr/eval/asr do -- ingest pulls
+    # in [beit3], which would re-introduce the exact conflict this extra
+    # exists to avoid. Install in a SEPARATE venv from the main one (plan
+    # §T0 -- BEiT-3 and this candidate cannot coexist in one
+    # process/interpreter until that spike resolves it):
+    #   python -m venv .venv-candidate
+    #   .venv-candidate/Scripts/pip install -e ".[encoder-candidates]"
+    #
+    # Upper bound verified 2026-08-13 the hard way: an unbounded
+    # "transformers>=4.49" resolved to transformers==5.15.0, which prints
+    # "[transformers] Disabling PyTorch because PyTorch >= 2.5 is required
+    # but found 2.4.1" and silently falls back to a tokenizer-only mode --
+    # AutoModel.from_pretrained then raises ImportError as if torch were
+    # never installed, even though `import torch` alone works fine. Pinning
+    # torch==2.4.1 (matching beit3's pin, kept in sync on purpose) means
+    # transformers must stay below the version that raised its own torch
+    # floor to 2.5. <5.0 keeps this extra inside the 4.x line the
+    # checkpoint's own config.json was verified against, instead of the
+    # untested 5.x API surface.
+    "torch==2.4.1",
+    "transformers>=4.49,<5.0",
+    "pillow==11.0.0",
+]
 [build-system]
 requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"

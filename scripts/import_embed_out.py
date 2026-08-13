@@ -1,29 +1,55 @@
-"""CLI: import a Kaggle-produced embed_out/ artifact into Milvus + MongoDB —
-giai đoạn 2 of `.claude/plans/kaggle-offline-embed.plan.md`.
+"""CLI: import a Kaggle-produced embed_out/ artifact into Milvus (+ MongoDB
+for the primary encoder) — giai đoạn 2 of `.claude/plans/kaggle-offline-embed.plan.md`,
+extended by `.claude/plans/encoder-swap-siglip2-pecore.plan.md` §T5 with a
+second, non-destructive import path for candidate encoders.
 
-Runs the parity gate from `pipelines/verify_embed_parity.py` first (same
-checks as `scripts/verify_embed_parity.py` — checksum + probe cosine), then
-for every `video_id` under `data/embed_out/vectors/`: joins its embedding
-matrix with `data/shots.json` (real shot boundaries -> `shot_id`) and the
-raw `.mp4`'s fps (-> `timestamp`), assigns a contiguous `global_index`, and
-writes rows to both Milvus (`MilvusStore.upsert`) and MongoDB
-(`KeyframeDocument` + `VideoDocument`) — CLAUDE.md §3: `frame_idx` must
-travel with every keyframe in *both* stores, not just Milvus.
+Two modes, selected by --encoder:
+
+  --encoder beit3 (default, UNCHANGED behavior from before this flag existed)
+      The PRIMARY pipeline. Runs the parity gate from
+      `pipelines/verify_embed_parity.py` (checksum + text-probe cosine), then
+      for every `video_id` under `data/embed_out/vectors/`: joins its
+      embedding matrix with `data/shots.json` (real shot boundaries ->
+      `shot_id`) and the raw `.mp4`'s fps (-> `timestamp`), assigns a
+      contiguous `global_index`, and writes rows to BOTH Milvus
+      (`MilvusStore.upsert`) and MongoDB (`KeyframeDocument` +
+      `VideoDocument`) — CLAUDE.md §3: `frame_idx` must travel with every
+      keyframe in *both* stores.
+
+  --encoder <candidate> (e.g. siglip2)
+      Vectors-only mode. Runs a candidate-specific parity gate (HF repo/
+      revision + weight sha256 + text probe — no local checkpoint file to
+      hash). Writes ONLY to that encoder's own Milvus collection
+      (`keyframes_<model_id>`), reading `global_index`/`frame_idx`/
+      `timestamp`/`author`/`batch` from the MongoDB rows the PRIMARY import
+      already wrote — never touches MongoDB. This is what keeps a second
+      encoder's collection from ever desyncing `global_index` from the
+      `s_v`/`e_v` DANTE already relies on (encoder-swap plan §"Quyết định
+      chiến lược #2"). Requires the primary (`--encoder beit3`) import to
+      have already run for every video this artifact covers.
+
+⚠️ Image probe is NOT yet verified for candidate encoders (encoder-swap plan
+§T4's image-probe design is not implemented here) — identity for candidates
+currently rests on hf_repo_id/hf_revision + weight_files_sha256 + the text
+probe only. `_run_candidate_parity_gate` logs this explicitly every run.
 
 Prerequisites:
   docker compose up -d                     # Milvus + MongoDB
-  bash scripts/setup_beit3.sh               # models/beit3/*  (parity probe)
+  bash scripts/setup_beit3.sh               # models/beit3/*  (--encoder beit3 parity probe)
   data/embed_out/ downloaded and unzipped from Kaggle
   data/shots.json, data/keyframe/, data/Videos_L*/video/*.mp4 present locally
+                                             # (--encoder beit3 only)
 
 WARNING: per CLAUDE.md §10, this writes to a live Milvus/MongoDB and — with
---reset — drops/deletes existing collections. Prepared here for you to run
-yourself, not run automatically.
+--reset — drops/deletes existing collections (MongoDB rows too, but ONLY for
+--encoder beit3; other encoders' --reset only ever drops their own Milvus
+collection). Prepared here for you to run yourself, not run automatically.
 
 Usage:
   python scripts/import_embed_out.py --reset
   python scripts/import_embed_out.py --limit-videos 1      # smoke test
   python scripts/import_embed_out.py --device cpu           # no GPU for the probe
+  python scripts/import_embed_out.py --encoder siglip2 --embed-out-dir data/embed_out_siglip2
 """
 
 from __future__ import annotations
@@ -37,13 +63,16 @@ from pathlib import Path
 import yaml
 
 from app.config import Settings
+from app.encoders.base import MultimodalEncoder
 from app.encoders.beit3 import BEiT3Encoder
+from app.encoders.factory import build_encoder
 from app.stores.milvus_client import MilvusStore
 from app.stores.mongo_client import MongoStore
 from datasets.aic2026 import AIC2026Adapter
 from datasets.base import VideoRef
 from pipelines.import_embed_out import (
     build_imported_keyframes,
+    build_vectors_only_rows,
     build_video_document,
     discover_video_ids,
     is_video_already_imported,
@@ -51,16 +80,20 @@ from pipelines.import_embed_out import (
     load_video_vectors,
     to_keyframe_document,
     to_milvus_vector,
+    vectors_only_row_to_milvus_vector,
 )
 from pipelines.ingest import next_global_index_start
 from pipelines.verify_embed_parity import (
     EmbedParityError,
     ParityReport,
+    hf_hub_weight_sha256,
     load_manifest,
     load_probe,
     run_parity_probe,
     verify_checksums,
+    verify_hf_identity,
     verify_manifest_fields,
+    verify_weight_sha256,
 )
 from pipelines.video_io import read_video_info
 
@@ -78,6 +111,13 @@ _BEIT3_CONFIG_PATH = _REPO_ROOT / "configs" / "model" / "beit3.yaml"
 _MILVUS_CONFIG_PATH = _REPO_ROOT / "configs" / "stores" / "milvus.yaml"
 _COSINE_THRESHOLD = 0.9999  # kaggle-offline-embed.plan.md §3 "Parity probe"
 
+# --encoder <key> -> configs/model/<key>.yaml. "beit3" is the default and
+# only key that ever reaches the primary (Mongo-writing) import path below.
+_ENCODER_CONFIG_PATHS = {
+    "beit3": _BEIT3_CONFIG_PATH,
+    "siglip2": _REPO_ROOT / "configs" / "model" / "siglip2.yaml",
+}
+
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -87,11 +127,37 @@ def _parse_args() -> argparse.Namespace:
         "--embed-out-dir", default=str(_REPO_ROOT / "data" / "embed_out"), help="Path to embed_out/"
     )
     parser.add_argument(
-        "--dataset-root", type=Path, default=_REPO_ROOT / "data", help="AIC2026Adapter root"
+        "--dataset-root",
+        type=Path,
+        default=_REPO_ROOT / "data",
+        help="AIC2026Adapter root (--encoder beit3 only)",
     )
-    parser.add_argument("--shots-json", type=Path, default=_REPO_ROOT / "data" / "shots.json")
-    parser.add_argument("--image-dir", type=Path, default=_REPO_ROOT / "data" / "keyframe")
+    parser.add_argument(
+        "--shots-json",
+        type=Path,
+        default=_REPO_ROOT / "data" / "shots.json",
+        help="(--encoder beit3 only)",
+    )
+    parser.add_argument(
+        "--image-dir",
+        type=Path,
+        default=_REPO_ROOT / "data" / "keyframe",
+        help="(--encoder beit3 only)",
+    )
     parser.add_argument("--device", default="cuda", help="'cuda' or 'cpu' (parity probe only)")
+    parser.add_argument(
+        "--encoder",
+        choices=sorted(_ENCODER_CONFIG_PATHS),
+        default="beit3",
+        help=(
+            "Which encoder's artifact to import. 'beit3' (default) is the PRIMARY pipeline "
+            "and is UNCHANGED from before this flag existed: writes both Milvus and MongoDB. "
+            "Any other value runs vectors-only mode: writes ONLY that encoder's own Milvus "
+            "collection, reading global_index/frame_idx/timestamp/author/batch from the "
+            "MongoDB rows the primary import already wrote for these video_ids — never "
+            "touches MongoDB. Requires the primary import to have already run first."
+        ),
+    )
     parser.add_argument(
         "--limit-videos",
         type=int,
@@ -102,9 +168,11 @@ def _parse_args() -> argparse.Namespace:
         "--reset",
         action="store_true",
         help=(
-            "Drop the Milvus collection and delete every MongoDB videos/keyframes "
-            "document before importing (plan §9.5: this keyframe source replaces "
-            "the P0.7 TransNetV2 pilot data wholesale, not alongside it)."
+            "--encoder beit3: drop the Milvus collection AND delete every MongoDB "
+            "videos/keyframes document before importing (plan §9.5: this keyframe source "
+            "replaces the P0.7 TransNetV2 pilot data wholesale). "
+            "Any other --encoder: drop ONLY that encoder's own Milvus collection — "
+            "MongoDB is NEVER touched by --reset outside the beit3 path."
         ),
     )
     return parser.parse_args()
@@ -116,9 +184,9 @@ def _load_yaml(path: Path) -> dict:
 
 
 def _run_parity_gate(embed_out_dir: Path, beit3_config: dict, device: str) -> BEiT3Encoder:
-    """Blocks import outright on any mismatch (CLAUDE.md §3) — mirrors
-    scripts/verify_embed_parity.py exactly, returning the encoder built for
-    the probe so its identity (model_id/embedding_dim) drives MilvusStore."""
+    """UNCHANGED from before --encoder existed. Blocks import outright on any
+    mismatch (CLAUDE.md §3), returning the encoder built for the probe so its
+    identity (model_id/embedding_dim) drives MilvusStore."""
     manifest = load_manifest(embed_out_dir / "manifest.json")
     try:
         verify_checksums(
@@ -155,7 +223,66 @@ def _run_parity_gate(embed_out_dir: Path, beit3_config: dict, device: str) -> BE
     return encoder
 
 
-def _build_milvus_store(settings: Settings, encoder: BEiT3Encoder) -> MilvusStore:
+def _check_manifest_encoder_kind(manifest: dict, expected: str) -> None:
+    """Cross-checks the artifact's own manifest against --encoder BEFORE
+    running any candidate-specific verification -- catches "pointed
+    --embed-out-dir at the wrong artifact" immediately with a clear message,
+    instead of a confusing downstream hf_repo_id/hf_revision mismatch."""
+    actual = manifest.get("encoder_kind", "beit3")
+    if actual != expected:
+        logger.error(
+            "BLOCKED: manifest.encoder_kind=%r does not match --encoder %r -- wrong "
+            "--embed-out-dir for this --encoder?",
+            actual,
+            expected,
+        )
+        sys.exit(1)
+
+
+def _run_candidate_parity_gate(
+    embed_out_dir: Path, manifest: dict, config_path: Path, config: dict, device: str
+) -> MultimodalEncoder:
+    """Parity gate for non-beit3 (HF-hub-backed) encoders: no local checkpoint
+    FILE to hash, so identity is (hf_repo_id, hf_revision) + a hash of the
+    weight file(s) actually behind that revision, plus the same text probe
+    beit3 uses. Blocks on any mismatch, same as _run_parity_gate."""
+    try:
+        verify_hf_identity(manifest, hf_repo_id=config["hf_repo_id"], hf_revision=config["hf_revision"])
+        verify_weight_sha256(
+            manifest,
+            compute_sha256=hf_hub_weight_sha256(config["hf_repo_id"], config["hf_revision"]),
+        )
+    except EmbedParityError as exc:
+        logger.error("BLOCKED: %s", exc)
+        sys.exit(1)
+
+    encoder = build_encoder(config_path, device=device)
+
+    try:
+        verify_manifest_fields(
+            manifest, model_id=encoder.model_id, embedding_dim=encoder.embedding_dim
+        )
+    except EmbedParityError as exc:
+        logger.error("BLOCKED: %s", exc)
+        sys.exit(1)
+
+    texts, remote_vectors = load_probe(embed_out_dir / "probe")
+    probe_results = run_parity_probe(texts, remote_vectors, encoder.encode_text)
+    report = ParityReport(probe_results=probe_results, threshold=_COSINE_THRESHOLD)
+    logger.info("text parity probe: min_cosine=%.6f passed=%s", report.min_cosine, report.passed)
+    if not report.passed:
+        logger.error("BLOCKED: text parity probe failed -- refusing to import %s", embed_out_dir / "vectors")
+        sys.exit(1)
+
+    logger.warning(
+        "Image probe chua duoc xac minh (encoder-swap plan T4 chua implement) -- do tin cay "
+        "cua artifact nay dua tren hf_revision + weight_files_sha256 + text probe, KHONG "
+        "co image probe."
+    )
+    return encoder
+
+
+def _build_milvus_store(settings: Settings, encoder: MultimodalEncoder) -> MilvusStore:
     config = _load_yaml(_MILVUS_CONFIG_PATH)
     return MilvusStore(
         uri=settings.milvus_uri,
@@ -179,9 +306,10 @@ async def _import_video(
     mongo: MongoStore,
     global_index_start: int,
 ) -> int:
-    """Imports one video's keyframes into Milvus + MongoDB. Returns the
-    number of keyframes written, so the caller can advance global_index_start
-    for the next video without a DB round trip per video."""
+    """UNCHANGED from before --encoder existed. Imports one video's keyframes
+    into Milvus + MongoDB. Returns the number of keyframes written, so the
+    caller can advance global_index_start for the next video without a DB
+    round trip per video."""
     video_ref = video_map.get(video_id)
     if video_ref is None:
         raise ValueError(f"{video_id}: in embed_out/vectors/ but not found by AIC2026Adapter")
@@ -207,7 +335,31 @@ async def _import_video(
     return len(keyframes)
 
 
+async def _import_video_vectors_only(
+    video_id: str, *, embed_out_dir: Path, milvus: MilvusStore, mongo: MongoStore
+) -> int:
+    """Imports one video's candidate-encoder vectors into Milvus ONLY —
+    global_index/frame_idx/timestamp/author/batch all come from MongoDB,
+    which the PRIMARY (--encoder beit3) import already wrote. Never calls
+    mongo.bulk_insert_keyframes / mongo.upsert_video — see module docstring
+    and encoder-swap plan §"Quyết định chiến lược #2"."""
+    vectors, jsonl_rows = load_video_vectors(embed_out_dir / "vectors", video_id)
+    mongo_keyframe_docs = await mongo.get_keyframes_for_video(video_id)
+    if not mongo_keyframe_docs:
+        raise ValueError(
+            f"{video_id}: no keyframes in MongoDB -- import the primary (--encoder beit3) "
+            "artifact for this video first"
+        )
+    video_doc = await mongo.get_video(video_id)
+    author = (video_doc or {}).get("author", "")
+
+    rows = build_vectors_only_rows(video_id, vectors, jsonl_rows, mongo_keyframe_docs, author)
+    milvus.upsert([vectors_only_row_to_milvus_vector(r) for r in rows])
+    return len(rows)
+
+
 async def _reset_stores(milvus: MilvusStore, mongo: MongoStore) -> None:
+    """--encoder beit3 --reset ONLY. UNCHANGED from before --encoder existed."""
     logger.warning(
         "--reset: dropping Milvus collection %s and MongoDB videos/keyframes",
         milvus.collection_name,
@@ -217,28 +369,29 @@ async def _reset_stores(milvus: MilvusStore, mongo: MongoStore) -> None:
     await mongo.videos.delete_many({})
 
 
-async def _main() -> int:
-    args = _parse_args()
-    settings = Settings()
-    embed_out_dir = Path(args.embed_out_dir)
-    beit3_config = _load_yaml(_BEIT3_CONFIG_PATH)
+def _reset_milvus_only(milvus: MilvusStore) -> None:
+    """Any non-beit3 --encoder --reset. Deliberately never touches MongoDB —
+    vectors-only mode's whole point is that MongoDB stays exactly what the
+    primary import wrote (encoder-swap plan risk R11)."""
+    logger.warning(
+        "--reset: dropping Milvus collection %s (vectors-only mode -- MongoDB untouched)",
+        milvus.collection_name,
+    )
+    milvus.drop_collection()
 
-    encoder = _run_parity_gate(embed_out_dir, beit3_config, args.device)
-    milvus = _build_milvus_store(settings, encoder)
-    mongo = MongoStore(uri=settings.mongo_uri)
-    await mongo.ensure_indexes()
 
-    if args.reset:
-        await _reset_stores(milvus, mongo)
-
+async def _run_primary_import(
+    args: argparse.Namespace,
+    video_ids: list[str],
+    embed_out_dir: Path,
+    milvus: MilvusStore,
+    mongo: MongoStore,
+) -> int:
+    """UNCHANGED from before --encoder existed (extracted from the former
+    _main() body verbatim, so --encoder beit3's behavior is identical)."""
     adapter = AIC2026Adapter(dataset_root=args.dataset_root, eval_set_path=Path("/dev/null"))
     video_map = {v.video_id: v for v in adapter.iter_videos("all")}
     shot_index = load_shot_index(args.shots_json)
-
-    video_ids = discover_video_ids(embed_out_dir / "vectors")
-    if args.limit_videos is not None:
-        video_ids = video_ids[: args.limit_videos]
-    logger.info("Importing %d video(s) from %s", len(video_ids), embed_out_dir)
 
     global_index_start = await next_global_index_start(mongo)
     total_keyframes = 0
@@ -284,6 +437,83 @@ async def _main() -> int:
 
     await mongo.close()
     return 1 if failed_video_ids else 0
+
+
+async def _run_vectors_only_import(
+    args: argparse.Namespace,
+    video_ids: list[str],
+    embed_out_dir: Path,
+    milvus: MilvusStore,
+    mongo: MongoStore,
+) -> int:
+    """No resume/checkpoint bookkeeping here, unlike _run_primary_import:
+    MilvusStore.upsert is idempotent per keyframe_id regardless, and unlike
+    the primary path's GPU-bound embed step, re-upserting an already-done
+    video here just re-reads a small .npy/.jsonl pair and re-sends the same
+    vectors — cheap enough that a full re-run on retry is an acceptable
+    simplification, not a footgun."""
+    total_keyframes = 0
+    failed_video_ids: list[str] = []
+    for video_id in video_ids:
+        try:
+            written = await _import_video_vectors_only(
+                video_id, embed_out_dir=embed_out_dir, milvus=milvus, mongo=mongo
+            )
+        except (ValueError, OSError) as exc:
+            logger.error("import failed for video_id=%s: %s", video_id, exc)
+            failed_video_ids.append(video_id)
+            continue
+        total_keyframes += written
+        logger.info("[%s] %s: %d keyframe(s) upserted", args.encoder, video_id, written)
+
+    logger.info(
+        "Done (vectors-only, encoder=%s): %d video(s) imported, %d keyframe(s) written, %d failed",
+        args.encoder,
+        len(video_ids) - len(failed_video_ids),
+        total_keyframes,
+        len(failed_video_ids),
+    )
+    if failed_video_ids:
+        logger.warning("Failed video_id(s): %s", failed_video_ids)
+
+    await mongo.close()
+    return 1 if failed_video_ids else 0
+
+
+async def _main() -> int:
+    args = _parse_args()
+    settings = Settings()
+    embed_out_dir = Path(args.embed_out_dir)
+    config_path = _ENCODER_CONFIG_PATHS[args.encoder]
+    config = _load_yaml(config_path)
+
+    if args.encoder == "beit3":
+        encoder = _run_parity_gate(embed_out_dir, config, args.device)
+    else:
+        manifest = load_manifest(embed_out_dir / "manifest.json")
+        _check_manifest_encoder_kind(manifest, args.encoder)
+        encoder = _run_candidate_parity_gate(embed_out_dir, manifest, config_path, config, args.device)
+
+    milvus = _build_milvus_store(settings, encoder)
+    mongo = MongoStore(uri=settings.mongo_uri)
+    await mongo.ensure_indexes()
+
+    if args.reset:
+        if args.encoder == "beit3":
+            await _reset_stores(milvus, mongo)
+        else:
+            _reset_milvus_only(milvus)
+
+    video_ids = discover_video_ids(embed_out_dir / "vectors")
+    if args.limit_videos is not None:
+        video_ids = video_ids[: args.limit_videos]
+    logger.info(
+        "Importing %d video(s) from %s (encoder=%s)", len(video_ids), embed_out_dir, args.encoder
+    )
+
+    if args.encoder == "beit3":
+        return await _run_primary_import(args, video_ids, embed_out_dir, milvus, mongo)
+    return await _run_vectors_only_import(args, video_ids, embed_out_dir, milvus, mongo)
 
 
 def main() -> None:

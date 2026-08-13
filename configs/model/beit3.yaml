@@ -5,6 +5,14 @@
 # ⇒ collection mới"). If you change checkpoint_path to a different checkpoint,
 # you MUST also change model_id below — otherwise the new model's vectors get
 # silently mixed into the old model's collection.
+#
+# kind selects the branch in app/encoders/factory.py::build_encoder() -- added
+# for the encoder-swap plan (.claude/plans/encoder-swap-siglip2-pecore.plan.md
+# T1/T5), NOT read anywhere else. Every existing caller (app/main.py,
+# scripts/run_ingest.py, eval/run.py) still constructs BEiT3Encoder directly
+# and never touches this field -- only scripts/import_embed_out.py's new
+# --encoder flag goes through the factory.
+kind: beit3
 checkpoint_path: models/beit3/beit3_base_itc_patch16_224.pth
 sentencepiece_model_path: models/beit3/beit3.spm
 device: cuda

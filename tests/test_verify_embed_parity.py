@@ -23,7 +23,9 @@ from pipelines.verify_embed_parity import (
     run_parity_probe,
     sha256_file,
     verify_checksums,
+    verify_hf_identity,
     verify_manifest_fields,
+    verify_weight_sha256,
 )
 
 
@@ -205,3 +207,72 @@ def test_parity_report_passed_false_when_any_cosine_below_threshold():
 
     assert report.passed is False
     assert report.min_cosine == pytest.approx(0.5)
+
+
+def _candidate_manifest(**overrides) -> dict:
+    base = {
+        "manifest_version": 2,
+        "encoder_kind": "siglip2",
+        "model_id": "siglip2_so400m_p14_384",
+        "embedding_dim": 1152,
+        "hf_repo_id": "google/siglip2-so400m-patch14-384",
+        "hf_revision": "e8e487298228002f3d8a82e0cd5c8ea9c567f57f",
+        "weight_files_sha256": {"model.safetensors": "weight-hash"},
+    }
+    base.update(overrides)
+    return base
+
+
+def test_verify_hf_identity_passes_when_repo_and_revision_match():
+    manifest = _candidate_manifest()
+
+    verify_hf_identity(
+        manifest,
+        hf_repo_id="google/siglip2-so400m-patch14-384",
+        hf_revision="e8e487298228002f3d8a82e0cd5c8ea9c567f57f",
+    )  # must not raise
+
+
+def test_verify_hf_identity_raises_on_repo_id_mismatch():
+    manifest = _candidate_manifest(hf_repo_id="google/siglip2-so400m-patch14-384")
+
+    with pytest.raises(EmbedParityError, match="hf_repo_id mismatch"):
+        verify_hf_identity(
+            manifest, hf_repo_id="google/siglip2-base-patch16-224", hf_revision="anything"
+        )
+
+
+def test_verify_hf_identity_raises_on_revision_mismatch():
+    manifest = _candidate_manifest(hf_revision="e8e487298228002f3d8a82e0cd5c8ea9c567f57f")
+
+    with pytest.raises(EmbedParityError, match="hf_revision mismatch"):
+        verify_hf_identity(
+            manifest,
+            hf_repo_id="google/siglip2-so400m-patch14-384",
+            hf_revision="0000000000000000000000000000000000000",
+        )
+
+
+def test_verify_weight_sha256_passes_when_all_files_match():
+    manifest = _candidate_manifest(
+        weight_files_sha256={"model.safetensors": "abc123", "extra.bin": "def456"}
+    )
+
+    verify_weight_sha256(
+        manifest, compute_sha256=lambda filename: {"model.safetensors": "abc123", "extra.bin": "def456"}[filename]
+    )  # must not raise
+
+
+def test_verify_weight_sha256_raises_on_mismatch():
+    manifest = _candidate_manifest(weight_files_sha256={"model.safetensors": "expected-hash"})
+
+    with pytest.raises(EmbedParityError, match="weight_files_sha256 mismatch for model.safetensors"):
+        verify_weight_sha256(manifest, compute_sha256=lambda filename: "different-hash")
+
+
+def test_verify_weight_sha256_raises_when_manifest_missing_field():
+    manifest = _candidate_manifest()
+    del manifest["weight_files_sha256"]
+
+    with pytest.raises(EmbedParityError, match="missing 'weight_files_sha256'"):
+        verify_weight_sha256(manifest, compute_sha256=lambda filename: "irrelevant")

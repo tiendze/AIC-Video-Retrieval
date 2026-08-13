@@ -1,0 +1,40 @@
+# SigLip2Encoder config (app/encoders/siglip2.py) -- encoder-swap plan
+# (.claude/plans/encoder-swap-siglip2-pecore.plan.md §T2). Weights load from
+# the HF hub on first use (cached under the HF cache dir), no manual
+# checkpoint file needed, unlike beit3.yaml.
+#
+# kind selects the branch in app/encoders/factory.py::build_encoder() (encoder-swap
+# plan T1/T5) -- read only by scripts/import_embed_out.py's --encoder flag.
+kind: siglip2
+#
+# hf_revision is a COMMIT SHA, not a branch name -- pinned so "main" moving
+# forward on the hub can never silently change what gets encoded between the
+# Kaggle embed run and a later local query-time load. Verified 2026-08-13 via
+# https://huggingface.co/api/models/google/siglip2-so400m-patch14-384.
+hf_repo_id: google/siglip2-so400m-patch14-384
+hf_revision: e8e487298228002f3d8a82e0cd5c8ea9c567f57f
+device: cuda
+batch_size: 16
+preprocess_workers: 8
+
+# model_id is embedded in the Milvus collection name (CLAUDE.md §3: "đổi
+# model ⇒ collection mới"). If you ever change hf_repo_id/hf_revision to a
+# different checkpoint, you MUST also change model_id -- otherwise the new
+# checkpoint's vectors get silently mixed into this collection.
+model_id: siglip2_so400m_p14_384
+
+# embedding_dim = 1152 (verified 2026-08-13 from the checkpoint's
+# config.json: vision_config.hidden_size == text_config.projection_size ==
+# 1152). Not read from this file -- SigLip2Encoder reports it as a property,
+# same pattern as BEiT3Encoder/ClipEncoder, so it can never drift from what
+# the loaded model actually returns.
+
+# SigLIP 2 was trained with fixed text padding, NOT dynamic padding --
+# https://huggingface.co/docs/transformers/main/en/model_doc/siglip2 :
+# "IMPORTANT: we pass padding=max_length and max_length=64 since the model
+# was trained with this". Calling the processor with default padding still
+# runs and still returns an L2-normalized vector -- it is just the WRONG
+# vector, with no exception to catch it. Same failure class as CLIP's
+# QuickGELU mismatch (configs/model/clip.yaml). SigLip2Encoder must hard-code
+# padding="max_length" using this value, not read it as a free parameter.
+max_text_tokens: 64
