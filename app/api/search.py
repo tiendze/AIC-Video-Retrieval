@@ -87,7 +87,12 @@ async def search(
     try:
         hits = await service.search(body.query, mode=body.mode, top_k=body.top_k)
     except SearchServiceError as exc:
-        raise APIError(detail=str(exc), error_code="invalid_search_mode", status_code=400) from exc
+        # plan §P1.8: exc carries its own error_code/status_code -- distinct
+        # causes (unknown mode vs. Elasticsearch down for `ocr`, CLAUDE.md
+        # §7) must not collapse onto one hardcoded response.
+        raise APIError(
+            detail=str(exc), error_code=exc.error_code, status_code=exc.status_code
+        ) from exc
 
     # plan §P1.7, PRD §6.6: operational latency measurement -- p50/p95 per
     # mode are computed offline (scripts/measure_search_latency.py) from

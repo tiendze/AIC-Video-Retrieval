@@ -168,6 +168,24 @@ def test_search_service_error_maps_to_unified_400_error_schema():
     assert set(body.keys()) == {"detail", "error_code", "request_id"}
 
 
+def test_ocr_unavailable_error_maps_to_a_503_not_the_generic_400():
+    # plan §P1.8: SearchServiceError's error_code/status_code must actually
+    # reach the response, not get collapsed onto the old hardcoded
+    # invalid_search_mode/400 pair.
+    error = SearchServiceError(
+        "OCR search is unavailable: Elasticsearch is unreachable",
+        error_code="ocr_unavailable",
+        status_code=503,
+    )
+    service = _FakeSearchService(error=error)
+    client = _client(service)
+
+    response = client.post("/api/search", json={"query": "x", "mode": "ocr"})
+
+    assert response.status_code == 503
+    assert response.json()["error_code"] == "ocr_unavailable"
+
+
 def test_search_logs_mode_latency_and_num_results(caplog):
     # plan §P1.7, PRD §6.6: every search request must log mode/latency/result
     # count for operational latency measurement. No cache_hit field -- there

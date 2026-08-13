@@ -54,6 +54,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 import numpy as np
+from elasticsearch import ConnectionError as EsConnectionError
 from PIL import Image
 
 from app.encoders.base import MultimodalEncoder
@@ -71,7 +72,23 @@ _DEFAULT_RRF_K = 60  # plan §P1.3: RRF's own well-known literature default,
 
 
 class SearchServiceError(Exception):
-    """Raised for a caller error, e.g. an unknown search mode."""
+    """Raised for an expected failure the caller must react to. Two distinct
+    causes share this type: a caller mistake (unknown mode -- the original,
+    default meaning) and a degraded dependency (Elasticsearch down for
+    `ocr`, plan §P1.8). `error_code`/`status_code` let
+    `app/api/search.py` map each cause to the right HTTP response without
+    parsing the message text (CLAUDE.md §7: every error needs a
+    machine-readable code, not just a human-readable one)."""
+
+    def __init__(
+        self,
+        message: str,
+        error_code: str = "invalid_search_mode",
+        status_code: int = 400,
+    ) -> None:
+        super().__init__(message)
+        self.error_code = error_code
+        self.status_code = status_code
 
 
 @dataclass(frozen=True)
@@ -153,7 +170,20 @@ class SearchService:
         return results
 
     async def _search_ocr(self, query: str, top_k: int) -> list[SearchHit]:
-        hits = await self._es_store.search(query, top_k)
+        try:
+            hits = await self._es_store.search(query, top_k)
+        except EsConnectionError as exc:
+            # plan §P1.8, PRD T5: degraded mode -- Elasticsearch down must
+            # surface as a readable "OCR unavailable" error, not an
+            # unhandled exception that falls through to a generic 500.
+            # Semantic search is a separate code path (_search_semantic)
+            # and is unaffected.
+            raise SearchServiceError(
+                "OCR search is unavailable: Elasticsearch is unreachable "
+                "(semantic search is unaffected)",
+                error_code="ocr_unavailable",
+                status_code=503,
+            ) from exc
         mongo_docs = await self._mongo_store.get_keyframes_by_ids(
             [hit["keyframe_id"] for hit in hits]
         )

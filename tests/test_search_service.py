@@ -15,6 +15,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+from elasticsearch import ConnectionError as EsConnectionError
 from PIL import Image
 
 from app.services.search_service import SearchHit, SearchService, SearchServiceError
@@ -61,6 +62,15 @@ class _FakeEsStore:
     async def search(self, query_text: str, top_k: int, video_id: str | None = None) -> list[dict]:
         self.search_calls.append((query_text, top_k))
         return self._hits
+
+
+class _FakeEsStoreDown:
+    """Simulates Elasticsearch unreachable mid-request (plan §P1.8) --
+    distinct from `_FakeEsStore` (which returns real hits) so a test can
+    choose which failure mode it wants."""
+
+    async def search(self, query_text: str, top_k: int, video_id: str | None = None) -> list[dict]:
+        raise EsConnectionError("simulated ES down")
 
 
 class _FakeMongoStore:
@@ -221,6 +231,36 @@ async def test_unknown_mode_raises_search_service_error():
 
     with pytest.raises(SearchServiceError):
         await service.search("query", mode="video", top_k=5)  # type: ignore[arg-type]
+
+
+def test_unknown_mode_error_keeps_the_original_error_code_and_status():
+    # plan §P1.8: SearchServiceError grew error_code/status_code so
+    # app/api/search.py can distinguish "caller's mistake" (this case) from
+    # "dependency is down" (test_ocr_mode_raises_clear_error_when...
+    # below) -- the default must stay exactly what it was before that change.
+    error = SearchServiceError("Unknown search mode: 'video'")
+
+    assert error.error_code == "invalid_search_mode"
+    assert error.status_code == 400
+
+
+async def test_ocr_mode_raises_clear_error_when_elasticsearch_unavailable():
+    # plan §P1.8, PRD T5: an ES-down OCR request must surface as a readable
+    # degraded-mode error (CLAUDE.md §7), not an unhandled exception that
+    # falls through to the generic "Internal server error" 500 handler.
+    encoder = _FakeEncoder(np.zeros((1, 4), dtype=np.float32))
+    milvus_store = _FakeMilvusStore([])
+    es_store = _FakeEsStoreDown()
+    mongo_store = _FakeMongoStore({})
+    service = SearchService(
+        encoder=encoder, milvus_store=milvus_store, es_store=es_store, mongo_store=mongo_store
+    )
+
+    with pytest.raises(SearchServiceError) as exc_info:
+        await service.search("x", mode="ocr", top_k=5)
+
+    assert exc_info.value.error_code == "ocr_unavailable"
+    assert exc_info.value.status_code == 503
 
 
 async def test_semantic_mode_translates_query_before_encoding_when_translator_configured():
