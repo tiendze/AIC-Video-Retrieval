@@ -30,6 +30,15 @@ export interface ApiErrorBody {
   request_id: string
 }
 
+// app/schemas/response/health.py: HealthResponse -- polled by useHealth
+// (plan §P1.8) to detect Elasticsearch being down (degraded mode, PRD T5).
+export interface HealthStatus {
+  status: 'ok' | 'degraded'
+  milvus_ok: boolean
+  elasticsearch_ok: boolean
+  mongodb_ok: boolean
+}
+
 // app/schemas/response/video.py: VideoResponse
 export interface VideoInfo {
   video_id: string
