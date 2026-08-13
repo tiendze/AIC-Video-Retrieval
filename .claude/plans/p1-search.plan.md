@@ -1,7 +1,7 @@
 # P1 — Tìm kiếm cơ bản
 
 > **Quay lại:** [`roadmap.plan.md`](./roadmap.plan.md) · **Trước:** [`p0-foundation.plan.md`](./p0-foundation.plan.md) · **Tiếp theo:** [`p2-quest-dante.plan.md`](./p2-quest-dante.plan.md)
-> **Trạng thái:** ⬜ chưa bắt đầu · **Điều kiện vào:** P0 đã có bảng metrics thật
+> **Trạng thái:** 🟡 ĐÓNG 2026-08-13 (chủ dự án quyết định dừng ở đây — 1 mục exit criteria còn mở, xem "Định nghĩa xong của P1" bên dưới) · **Điều kiện vào:** P0 đã có bảng metrics thật
 
 **Exit criteria (PRD §4):** đạt mục tiêu Recall@10 trong PRD §6.7; UI dùng được để thao tác thật.
 
@@ -365,7 +365,9 @@ Ràng buộc **kỹ thuật** (độc lập với hình thức giao diện, gi�
 
 ## Định nghĩa "xong" của P1
 
-- [ ] Recall@10 đạt mục tiêu PRD §6.7 (bảng đã hiệu chỉnh ở P0.10)
+> **Quyết định đóng phase (chủ dự án, 2026-08-13):** dừng P1 tại đây dù mục Recall@10 bên dưới còn ⬜ — không đo/hiệu chỉnh thêm trong lượt này. Ghi lại nguyên trạng, không đánh dấu xong giả.
+
+- [ ] Recall@10 đạt mục tiêu PRD §6.7 (bảng đã hiệu chỉnh ở P0.10) — **còn mở, P1 đóng mà chưa xử lý mục này.** Số baseline gần nhất (P1.4, `semantic_live_en`): AIC Final Score 0,4809 segment-level — bảng §6.7 quy đổi Recall@10 riêng chưa được đối chiếu lại trong phase này.
 - [x] ~~`test_hybrid_not_worse_than_best_single_channel` pass~~ — **F4 đã bị bỏ kèm lý do** (§P1.3, 2026-08-12: hybrid thấp hơn kênh đơn tốt nhất ở cả 2 lần đo; bộ nhãn còn cấu trúc không đo công bằng được OCR ⇒ xoá hẳn mode `hybrid`)
 - [x] Bảng so sánh baseline đầy đủ — §P1.4, 4 baseline (Random · BM25 · CLIP ViT-B/32 · BEiT-3). Hàng thứ 5 (BEiT-3 + Hybrid RRF) bị bỏ có lý do, xem §P1.3
 - [x] Encoder chính đã chốt **dựa trên số đo** — BEiT-3 (0,4809) thắng CLIP ViT-B/32 (0,3376) segment-level, mọi metric (§P1.4)
