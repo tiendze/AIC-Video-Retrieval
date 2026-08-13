@@ -305,3 +305,34 @@ def test_write_report_creates_metrics_json_report_md_and_per_query_csv(tmp_path)
     metrics_doc = (tmp_path / "metrics.json").read_text(encoding="utf-8")
     assert "abc123" in metrics_doc
     assert "v1" in metrics_doc
+
+
+def test_report_md_labels_median_rank_as_rank_in_grid(tmp_path):
+    # plan §P1.7, PRD §6.6: "Rank-in-Grid" is the position of the correct
+    # hit in the grid the operator has to scroll to -- exactly what
+    # median_rank already aggregates (first_hit_rank per query). This test
+    # locks in that the report makes that mapping explicit by NAME, not just
+    # by number, so a reader of report.md can trace it back to PRD §6.6
+    # without reading eval/run.py's source.
+    video_metrics = compute_channel_metrics("semantic", "video", [1, 3], top_ks=(1, 5, 20, 50, 100))
+    segment_metrics = compute_channel_metrics(
+        "semantic", "segment", [1, 3], top_ks=(1, 5, 20, 50, 100)
+    )
+
+    write_report(
+        tmp_path,
+        git_sha="abc123",
+        eval_set_version="v1",
+        eval_set_hash="deadbeef",
+        num_video_ids=1,
+        num_queries=2,
+        seed=42,
+        channel_metrics=[video_metrics, segment_metrics],
+        author_breakdown={},
+        batch_breakdown={},
+        leakage_report=None,
+        per_query=[],
+    )
+
+    report_md = (tmp_path / "report.md").read_text(encoding="utf-8")
+    assert "Rank-in-Grid" in report_md
