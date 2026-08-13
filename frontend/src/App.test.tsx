@@ -13,6 +13,11 @@ vi.mock('./api/client', () => ({
   getVideo: vi.fn(),
   getVideoKeyframes: vi.fn(),
   fetchImageBlob: vi.fn(),
+  // Never resolves -- these tests aren't about health/degraded-mode
+  // (plan §P1.8 has its own coverage in ModeSelector.test.tsx/
+  // StatusBar.test.tsx), so useHealth() should just sit at its initial
+  // "not checked yet" (null) state throughout.
+  getHealth: vi.fn().mockReturnValue(new Promise(() => {})),
   ApiError: class ApiError extends Error {},
 }))
 

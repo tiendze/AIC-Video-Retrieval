@@ -398,7 +398,7 @@ def _render_report_md(
         "",
         "## Channel metrics",
         "",
-        "| channel | level | AIC Final Score | MRR | mAP | nDCG@10 | median_rank | found/total |",
+        "| channel | level | AIC Final Score | MRR | mAP | nDCG@10 | Rank-in-Grid | found/total |",
         "|---|---|---|---|---|---|---|---|",
     ]
     for m in channel_metrics:
@@ -408,6 +408,14 @@ def _render_report_md(
             f"{'n/a' if m.median_rank is None else f'{m.median_rank:.1f}'} | "
             f"{m.num_found}/{m.num_queries} |"
         )
+    lines += [
+        "",
+        "`Rank-in-Grid` (PRD §6.6) is the position of the correct hit in the "
+        "grid the operator has to scroll to -- the `Rank-in-Grid` column "
+        "above is the MEDIAN of that value across the eval set (same "
+        "computation as `median_rank`, just named per PRD §6.6); per-query "
+        "values are in `per_query.csv`'s `rank_video`/`rank_segment` columns.",
+    ]
 
     lines += ["", "## Recall@20 by author / batch (segment-level)", ""]
     for channel, by_author in author_breakdown.items():

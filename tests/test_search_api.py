@@ -12,6 +12,7 @@ tests/test_search_service.py.
 from __future__ import annotations
 
 import io
+import logging
 
 import pytest
 from fastapi import FastAPI, UploadFile
@@ -165,6 +166,75 @@ def test_search_service_error_maps_to_unified_400_error_schema():
     body = response.json()
     assert body["error_code"] == "invalid_search_mode"
     assert set(body.keys()) == {"detail", "error_code", "request_id"}
+
+
+def test_ocr_unavailable_error_maps_to_a_503_not_the_generic_400():
+    # plan §P1.8: SearchServiceError's error_code/status_code must actually
+    # reach the response, not get collapsed onto the old hardcoded
+    # invalid_search_mode/400 pair.
+    error = SearchServiceError(
+        "OCR search is unavailable: Elasticsearch is unreachable",
+        error_code="ocr_unavailable",
+        status_code=503,
+    )
+    service = _FakeSearchService(error=error)
+    client = _client(service)
+
+    response = client.post("/api/search", json={"query": "x", "mode": "ocr"})
+
+    assert response.status_code == 503
+    assert response.json()["error_code"] == "ocr_unavailable"
+
+
+def test_search_logs_mode_latency_and_num_results(caplog):
+    # plan §P1.7, PRD §6.6: every search request must log mode/latency/result
+    # count for operational latency measurement. No cache_hit field -- there
+    # is no result cache for /api/search (only GET /api/keyframes/*
+    # thumbnails cache; a different endpoint entirely), so a field that would
+    # always read False belongs nowhere near this log line (chủ dự án
+    # 2026-08-13: drop rather than fake it).
+    service = _FakeSearchService(hits=_ONE_HIT)
+    client = _client(service)
+
+    with caplog.at_level(logging.INFO, logger="app.api.search"):
+        response = client.post("/api/search", json={"query": "thu tuong", "mode": "semantic"})
+
+    assert response.status_code == 200
+    records = [r for r in caplog.records if r.name == "app.api.search"]
+    assert len(records) == 1
+    message = records[0].getMessage()
+    assert "mode=semantic" in message
+    assert "num_results=1" in message
+    assert "latency_ms=" in message
+    # cache_hit must never appear -- there is nothing behind it to measure.
+    assert "cache_hit" not in message.lower()
+
+
+def test_search_logs_zero_results_and_correct_mode_for_ocr(caplog):
+    service = _FakeSearchService(hits=[])
+    client = _client(service)
+
+    with caplog.at_level(logging.INFO, logger="app.api.search"):
+        client.post("/api/search", json={"query": "x", "mode": "ocr"})
+
+    records = [r for r in caplog.records if r.name == "app.api.search"]
+    assert len(records) == 1
+    message = records[0].getMessage()
+    assert "mode=ocr" in message
+    assert "num_results=0" in message
+
+
+def test_search_does_not_log_on_service_error(caplog):
+    # A failed search never completed, so there is no request latency worth
+    # logging for it -- the error path already has its own handling
+    # (test_search_service_error_maps_to_unified_400_error_schema).
+    service = _FakeSearchService(error=SearchServiceError("Unknown search mode: 'x'"))
+    client = _client(service)
+
+    with caplog.at_level(logging.INFO, logger="app.api.search"):
+        client.post("/api/search", json={"query": "x", "mode": "semantic"})
+
+    assert not [r for r in caplog.records if r.name == "app.api.search"]
 
 
 def test_search_by_image_returns_200_with_mapped_hits():

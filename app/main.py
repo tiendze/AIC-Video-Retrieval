@@ -1,8 +1,10 @@
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 import yaml
+from elasticsearch import ConnectionError as EsConnectionError
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -29,6 +31,8 @@ _SEARCH_CONFIG_PATH = _REPO_ROOT / "configs" / "search" / "search.yaml"
 # Mirrors scripts/run_ingest.py's _ES_OCR_INDEX_NAME -- the OCR branch writes
 # to this same index name, so the API must read from it, not a new default.
 _ES_OCR_INDEX_NAME = "ocr_keyframes"
+
+logger = logging.getLogger(__name__)
 
 
 def _load_yaml(path: Path) -> dict:
@@ -105,7 +109,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.query_translator = _build_query_translator()
     app.state.thumbnail_service = _build_thumbnail_service(app.state.mongo_store)
     await app.state.mongo_store.ensure_indexes()
-    await app.state.es_store.ensure_index()
+    try:
+        await app.state.es_store.ensure_index()
+    except EsConnectionError:
+        # plan §P1.8, PRD T5: Elasticsearch unreachable at startup must
+        # degrade to semantic-only, not take the whole app down --
+        # GET /health already reports elasticsearch_ok=False so the
+        # frontend can show this (app/services/health_service.py).
+        logger.warning(
+            "Elasticsearch unreachable at startup -- starting in semantic-only "
+            "degraded mode (OCR search will return a clear error until it recovers)"
+        )
     yield
     await app.state.es_store.close()
     await app.state.mongo_store.close()

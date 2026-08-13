@@ -1,5 +1,6 @@
 import type {
   ApiErrorBody,
+  HealthStatus,
   SearchMode,
   SearchResponse,
   VideoInfo,
@@ -61,6 +62,12 @@ export function searchByImage(
     body: formData,
     signal,
   })
+}
+
+// GET /health (app/api/health.py) -- polled by useHealth (plan §P1.8) to
+// detect Elasticsearch being down and show a degraded-mode banner.
+export function getHealth(): Promise<HealthStatus> {
+  return request<HealthStatus>('/health')
 }
 
 // GET /api/videos/{id} (app/api/videos.py)

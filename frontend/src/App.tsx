@@ -9,9 +9,14 @@ import { ResultGrid } from './components/ResultGrid'
 import { SearchBar } from './components/SearchBar'
 import { StatusBar } from './components/StatusBar'
 import { TopKControl } from './components/TopKControl'
+import { useHealth } from './hooks/useHealth'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { useSearch } from './hooks/useSearch'
 import './App.css'
+
+// plan §P1.8, PRD T5: shown in StatusBar and used to disable OCR mode
+// whenever GET /health reports elasticsearch_ok=false.
+const ES_DOWN_MESSAGE = 'Elasticsearch không khả dụng — chỉ tìm kiếm Semantic'
 
 // Index maps 1/2/3 shortcut keys onto modes -- keeps useKeyboardShortcuts
 // mode-agnostic (plan §P1.6: "1/2/3 đổi mode").
@@ -34,6 +39,8 @@ function App() {
   } = useSearch()
   const [selectedHit, setSelectedHit] = useState<SearchHit | null>(null)
   const queryInputRef = useRef<HTMLInputElement>(null)
+  const health = useHealth()
+  const esDown = health?.elasticsearch_ok === false
 
   // Shared by ImageUpload's manual upload and every "Find Similar Images"
   // trigger (result card + detail panel) -- fetches the target's own
@@ -58,7 +65,7 @@ function App() {
       <header className="app-header">
         <SearchBar ref={queryInputRef} query={query} onQueryChange={setQuery} onSubmit={runSearch} />
         <div className="app-toolbar">
-          <ModeSelector mode={mode} onChange={setMode} />
+          <ModeSelector mode={mode} onChange={setMode} ocrDisabled={esDown} />
           <TopKControl topK={topK} onChange={setTopK} />
           <FilterPanel />
         </div>
@@ -68,6 +75,7 @@ function App() {
           latencyMs={latencyMs}
           isLoading={isLoading}
           error={error}
+          degradedMessage={esDown ? ES_DOWN_MESSAGE : null}
         />
       </header>
       <main className="app-grid">
