@@ -512,15 +512,21 @@ Báo cáo `Sequence Exact-Match` và `Kendall's tau` cho từng giá trị, tác
 
 **Độ trễ** (đo từ lúc nhận request đến lúc trả response, không tính render):
 
-| Chế độ | p50 | p95 |
-|---|---|---|
-| Semantic | ⚠️ ≤ 150 ms | ⚠️ ≤ 300 ms |
-| OCR (ES) | ⚠️ ≤ 100 ms | ⚠️ ≤ 250 ms |
-| DANTE (N=5) | ⚠️ ≤ 1 s | ⚠️ ≤ 2 s |
-| QUEST (có gọi LLM) | ⚠️ ≤ 3 s | ⚠️ ≤ 6 s |
-| VQA answering | ⚠️ ≤ 5 s | ⚠️ ≤ 10 s |
+| Chế độ | p50 | p95 | Mục tiêu p50 | Mục tiêu p95 |
+|---|---|---|---|---|
+| **Semantic** | 🔴 **2435 ms** | 🔴 **3621 ms** | ≤ 150 ms | ≤ 300 ms |
+| **OCR (ES)** | ✅ **27 ms** | ✅ **54 ms** | ≤ 100 ms | ≤ 250 ms |
+| DANTE (N=5) | ⚠️ chưa đo — chưa xây (P2) | ⚠️ chưa đo — chưa xây (P2) | ≤ 1 s | ≤ 2 s |
+| QUEST (có gọi LLM) | ⚠️ chưa đo — chưa xây (P2) | ⚠️ chưa đo — chưa xây (P2) | ≤ 3 s | ≤ 6 s |
+| VQA answering | ⚠️ chưa đo — chưa xây (P3) | ⚠️ chưa đo — chưa xây (P3) | ≤ 5 s | ≤ 10 s |
 
-⚠️ **Đọc lại các mốc latency trên theo đề AIC 2026.** Điểm không còn giảm theo thời gian trả lời, nên đây **không còn là ngưỡng ăn điểm** mà là ngưỡng để người vận hành duyệt được 100 kết quả trong một phiên. Vượt mốc là khó chịu, không phải mất điểm — đừng đánh đổi chất lượng xếp hạng lấy latency.
+**Đo thật 2026-08-13** (`scripts/measure_search_latency.py --base-url http://localhost:8000`, plan §P1.7): toàn bộ 173 caption của `aic_eval_v1.json` làm query, `top_k=20`, đo trọn HTTP round-trip client→server→client qua `httpx` (không phải chỉ gọi `SearchService` trong tiến trình). Chạy trên máy chủ dự án (RTX 3070, docker-compose sống).
+
+🔴 **Semantic vượt mục tiêu p50/p95 tới ~16×/~12×, và vượt cả sàn cũ (≤ 800 ms).** Nguyên nhân đã điều tra, không phải bug: `SearchService._search_semantic()` dịch VI→EN qua `LocalNmtTranslator` (`app/services/query_translator.py`) trước khi encode — bắt buộc vì text tower của BEiT-3 chỉ train tiếng Anh (P0.9: AIC Final Score 0,045 tiếng Việt vs 0,62 tiếng Anh trên cùng collection). `configs/model/query_translator.yaml` cố ý đặt `device: cpu` để dành trọn 8GB VRAM cho BEiT-3 (CLAUDE.md §1.4) — decode autoregressive của model seq2seq cỡ T5-base trên CPU là phần chiếm gần hết ~2,4s đó. `ocr` không qua translator nên chỉ 27ms, xác nhận đúng translator là nút thắt, không phải Milvus/Elasticsearch/Mongo.
+
+⚠️ **Quyết định 2026-08-13 (chủ dự án):** ghi nhận số đo thật, KHÔNG tối ưu ngay trong P1.7 — phạm vi phase này là *đo*, không phải *tối ưu*, tránh scope creep. Việc chuyển translator sang GPU đụng ngân sách VRAM 8GB (ràng buộc cứng CLAUDE.md §1.4) nên cần cân nhắc riêng, không quyết vội. **Backlog cho phase sau:** thử `device: cuda` cho `LocalNmtTranslator` (đo VRAM còn đủ cho cả BEiT-3 + EnViT5 cùng lúc không — ingest không chạy song song với serving nên có thể có headroom), hoặc cache bản dịch cho câu hỏi lặp, hoặc đổi sang translator nhẹ hơn.
+
+**Đọc lại các mốc latency trên theo đề AIC 2026.** Điểm không còn giảm theo thời gian trả lời, nên đây **không còn là ngưỡng ăn điểm** mà là ngưỡng để người vận hành duyệt được 100 kết quả trong một phiên. Vượt mốc là khó chịu, không phải mất điểm — đừng đánh đổi chất lượng xếp hạng lấy latency. Dù vậy, 2,4s/query là đủ chậm để ảnh hưởng trải nghiệm thao tác thật, nên vẫn đáng ưu tiên ở backlog gần, không phải bỏ qua.
 
 **Metrics mô phỏng chế độ thi** — ⚠️ **giá trị đã giảm mạnh so với bản trước.** `TTFC` / `STC` / `Success Rate @ 300s` sinh ra để mô phỏng luật phạt theo thời gian và số lần nộp sai của AIC 2025; luật đó **không còn**. Giữ lại vì vẫn đo được trải nghiệm vận hành thật, nhưng **không** dùng để đánh giá chất lượng hệ thống — `AIC Final Score` (§6.3) mới là thứ thay thế:
 
@@ -532,6 +538,8 @@ Báo cáo `Sequence Exact-Match` và `Kendall's tau` cho từng giá trị, tác
 | **Rank-in-Grid** | Vị trí của kết quả đúng trong lưới mà người vận hành phải cuộn tới | Log tự động — proxy rẻ cho TTFC, đo được không cần con người |
 
 `Rank-in-Grid` là metric thay thế thực dụng: chạy tự động trên toàn bộ bộ eval, tương quan mạnh với TTFC nhưng không tốn công tổ chức phiên thao tác.
+
+✅ **Đã implement (P1.7, 2026-08-13).** Không phải metric mới — chính là `first_hit_rank` mỗi truy vấn đã được `eval/run.py` tính từ P0.9 (`score_channel`), gộp lại thành `median_rank` mỗi channel. P1.7 chỉ gắn tên `Rank-in-Grid` vào `report.md` (cột "Rank-in-Grid" trong bảng channel metrics + chú thích) để người đọc lần ra được về đúng metric này của PRD mà không cần đọc source `eval/run.py`. Số per-query nằm ở `rank_video`/`rank_segment` trong `per_query.csv`. Số thật gần nhất: report `20260812T133350Z_d562f8e377bc5d15807ac0cb18e37b6b67c530e9` (kênh `semantic_live_en`, segment-level) — chưa chạy lại từ khi đổi label, nên report cũ trên đĩa chưa có tên cột mới; số median_rank vẫn đúng, chỉ chưa mang tên "Rank-in-Grid" cho tới lần `eval/run.py` chạy tiếp theo.
 
 **Hiệu quả hạ tầng:**
 

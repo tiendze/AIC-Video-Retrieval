@@ -302,21 +302,36 @@ Ràng buộc **kỹ thuật** (độc lập với hình thức giao diện, gi�
 
 ---
 
-## P1.7 — Đo latency & Rank-in-Grid
+## P1.7 — Đo latency & Rank-in-Grid — ✅ XONG 2026-08-13
 
 **Làm gì:** lấp các ô ⚠️ trong PRD §6.6 bằng số thật.
 
-| Chế độ | Mục tiêu p50 | Mục tiêu p95 |
-|---|---|---|
-| Semantic | ≤ 150 ms | ≤ 300 ms |
-| OCR (ES) | ≤ 100 ms | ≤ 250 ms |
-| Hybrid (RRF) | ≤ 250 ms | ≤ 500 ms |
+⚠️ Bảng gốc bên dưới (trước khi thực thi) liệt kê hàng `Hybrid (RRF)` — **đã lỗi thời**, mode `hybrid` bị xoá hẳn ở P1.3 (2026-08-12). Bảng mục tiêu đúng nằm trong PRD §6.6, không lặp lại ở đây để tránh hai nguồn trôi nhau.
 
-- Đo từ lúc nhận request đến lúc trả response, **không tính render**.
-- **`Rank-in-Grid`**: vị trí của kết quả đúng trong lưới mà người vận hành phải cuộn tới. Chạy tự động trên toàn bộ bộ eval — proxy rẻ cho `TTFC`, tương quan mạnh nhưng không cần tổ chức phiên thao tác có người.
-- Mỗi request search log: mode · độ trễ · số kết quả · cache hit/miss.
+**Quyết định thiết kế trước khi code (chủ dự án, 2026-08-13):**
+- **Bỏ field `cache_hit`/`cache_miss` khỏi log request** — `/api/search` không có tầng cache kết quả nào (chỉ `GET /api/keyframes/*` thumbnail mới có cache, khác endpoint). Field luôn `False` sẽ gây hiểu nhầm là có cache — log chỉ còn `mode`/`latency_ms`/`num_results`.
+- **Đo p50/p95 qua HTTP thật** (không phải gọi `SearchService` trong tiến trình như `eval/run.py`) — đúng nghĩa "nhận request → trả response" của PRD, tính cả overhead FastAPI/serialize.
+- **`Rank-in-Grid` không phải xây mới** — nó chính là `first_hit_rank` mỗi truy vấn mà `eval/run.py::score_channel` đã tính từ P0.9, gộp thành `median_rank` mỗi channel. Việc còn thiếu chỉ là gắn đúng tên "Rank-in-Grid" vào report để truy vết về PRD §6.6.
 
-**Verify:** bảng latency thật thay cho ⚠️ trong PRD §6.6.
+**Đã làm (TDD RED→GREEN từng bước, 4 checkpoint commit):**
+- `eval/metrics/latency.py` (mới) — `compute_latency_percentiles()`: percentile thuần qua `numpy`, raise `ValueError` khi rỗng (đúng quy ước `_require_nonempty` của `eval/metrics/retrieval.py`). `tests/test_latency_metrics.py` — 4 test.
+- `app/api/search.py` — route `POST /api/search` đo `time.perf_counter()` quanh `service.search()`, `logger.info("search request completed: mode=%s latency_ms=%.1f num_results=%d", ...)` sau khi thành công (không log khi lỗi — nhánh lỗi coi như chưa hoàn tất request). `tests/test_search_api.py` — 3 test mới (`caplog`), khẳng định không có `cache_hit` trong message.
+- `scripts/measure_search_latency.py` (mới) — CLI benchmark `POST /api/search` qua `httpx.Client` thật, dùng captions của `aic_eval_v1.json` làm query, warm-up 3 request trước mỗi mode, in bảng markdown p50/p95/n. Chỉ benchmark `semantic`/`ocr` — `DANTE`/`QUEST`/`VQA` chưa tồn tại (P2/P3). CLAUDE.md §10: chuẩn bị sẵn, chủ dự án tự chạy. `tests/test_measure_search_latency.py` — 5 test (`httpx.MockTransport`, không cần server sống): `_load_queries`, `_benchmark_mode` (post đúng mode/query, raise đúng lỗi HTTP), `_render_report`.
+- `eval/run.py::_render_report_md` — đổi cột `median_rank` thành `Rank-in-Grid` + thêm đoạn chú thích ánh xạ về PRD §6.6 và `per_query.csv`'s `rank_video`/`rank_segment`. `tests/test_eval_run.py` — 1 test mới khẳng định label xuất hiện trong `report.md`.
+- Verify: `pytest -m "not integration and not model" --cov=app --cov=eval --cov=scripts` → **476 passed, 3 skipped, 26 deselected**; `app/api/search.py` + `eval/metrics/latency.py` = 100% coverage; `ruff check` + `black --check` sạch trên toàn bộ file mới/sửa.
+
+**Kết quả đo thật 2026-08-13** (chủ dự án tự chạy `docker compose up -d` + uvicorn + `scripts/measure_search_latency.py`, 173 query, `top_k=20`):
+
+| mode | p50 | p95 | n |
+|---|---|---|---|
+| semantic | 2435 ms | 3621 ms | 173 |
+| ocr | 27 ms | 54 ms | 173 |
+
+🔴 **Semantic vượt mục tiêu (≤150ms/≤300ms) ~16×/~12×.** Điều tra ngay: nguyên nhân là `LocalNmtTranslator` (dịch VI→EN bắt buộc trước khi encode, P0.9) chạy `device: cpu` theo thiết kế cố ý (`configs/model/query_translator.yaml` — dành VRAM cho BEiT-3, CLAUDE.md §1.4). `ocr` không qua translator nên 27ms, xác nhận đúng translator là nút thắt. **Quyết định (chủ dự án, 2026-08-13): ghi nhận số thật, KHÔNG tối ưu trong P1.7** — phạm vi phase là đo, tối ưu (thử `device: cuda`, cache bản dịch, đổi translator nhẹ hơn) để lại backlog phase sau, vì đụng ngân sách VRAM cứng cần cân nhắc riêng. Chi tiết đầy đủ + backlog: PRD §6.6.
+
+**Verify:** bảng latency thật đã thay ⚠️ trong PRD §6.6 (hàng Semantic/OCR; DANTE/QUEST/VQA giữ ⚠️ vì chưa xây). `Rank-in-Grid` đã có tên trong `eval/run.py`'s report kể từ lần chạy tiếp theo (report cũ trên đĩa vẫn đúng số, chỉ chưa mang tên mới).
+
+**Còn thiếu:** tối ưu latency semantic (backlog, xem PRD §6.6) — không thuộc phạm vi P1.7.
 
 ---
 
@@ -337,7 +352,7 @@ Ràng buộc **kỹ thuật** (độc lập với hình thức giao diện, gi�
 - [x] ~~`test_hybrid_not_worse_than_best_single_channel` pass~~ — **F4 đã bị bỏ kèm lý do** (§P1.3, 2026-08-12: hybrid thấp hơn kênh đơn tốt nhất ở cả 2 lần đo; bộ nhãn còn cấu trúc không đo công bằng được OCR ⇒ xoá hẳn mode `hybrid`)
 - [x] Bảng so sánh baseline đầy đủ — §P1.4, 4 baseline (Random · BM25 · CLIP ViT-B/32 · BEiT-3). Hàng thứ 5 (BEiT-3 + Hybrid RRF) bị bỏ có lý do, xem §P1.3
 - [x] Encoder chính đã chốt **dựa trên số đo** — BEiT-3 (0,4809) thắng CLIP ViT-B/32 (0,3376) segment-level, mọi metric (§P1.4)
-- [ ] Bảng latency p50/p95 thật (P1.7)
+- [x] Bảng latency p50/p95 thật — §P1.7, XONG 2026-08-13. Semantic 2435/3621ms **vượt mục tiêu ~16×/~12×** (nguyên nhân đã điều tra: `LocalNmtTranslator` chạy CPU theo thiết kế, xem PRD §6.6), OCR 27/54ms đạt mục tiêu. `Rank-in-Grid` đã có tên trong report của `eval/run.py`. Tối ưu latency semantic để lại backlog phase sau, có chủ đích.
 - [x] UI dùng được để thao tác thật — §P1.6, XONG 2026-08-13, merge `f175ba7`. Theo danh sách năng lực chức năng của paper (§P1.5: không có mẫu thiết kế riêng, chủ dự án sẽ yêu cầu chỉnh hình thức sau). Backend 463 passed/100% coverage module mới, frontend 18 test PASS, chủ dự án tự xác nhận phiên search thật trên UI sống chạy ổn.
 - [ ] Degraded mode chạy được (P1.8)
 - [ ] Báo cáo phase theo template CLAUDE.md §8
