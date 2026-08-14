@@ -77,11 +77,57 @@ def _frame_row(
     }
 
 
-def _service(rows_by_video, videos, vectors):
+class _FakeQueryTranslator:
+    """Mirrors tests/test_search_service.py's own Fake -- one Vietnamese
+    string in, one fixed English string out, call log kept."""
+
+    def __init__(self, translated: str) -> None:
+        self._translated = translated
+        self.translate_calls: list[str] = []
+
+    def translate(self, vietnamese: str) -> str:
+        self.translate_calls.append(vietnamese)
+        return self._translated
+
+
+def _service(rows_by_video, videos, vectors, query_translator=None):
     encoder = _FakeEncoder(vectors)
     milvus = _FakeMilvusStore(rows_by_video)
     mongo = _FakeMongoStore(videos)
-    return TrakeService(encoder=encoder, milvus_store=milvus, mongo_store=mongo), encoder, milvus
+    service = TrakeService(
+        encoder=encoder, milvus_store=milvus, mongo_store=mongo, query_translator=query_translator
+    )
+    return service, encoder, milvus
+
+
+async def test_trake_search_translates_every_event_when_a_translator_is_given():
+    # Regression 2026-08-14 (real eval/run.py run against production data):
+    # TrakeService encoded raw Vietnamese captions directly, the exact VI/EN
+    # mismatch already diagnosed and fixed for SearchService._search_semantic
+    # (BEiT-3's text tower is English-trained) -- video_level_recall_at_k was
+    # 0.0000 across every TRAKE query. Must translate each event BEFORE
+    # encode_text, same as SearchService.
+    events_vectors = np.stack([_unit(hot=0)])
+    rows = {"video_a": [_frame_row("video_a_f0", 0, 0, 0.0, hot=0)]}
+    videos = [_video_doc("video_a", 0, 0)]
+    translator = _FakeQueryTranslator("translated")
+    service, encoder, _ = _service(rows, videos, events_vectors, query_translator=translator)
+
+    await service.search(["su kien tieng viet"], top_k=10)
+
+    assert translator.translate_calls == ["su kien tieng viet"]
+    assert encoder.encode_text_calls == [["translated"]]
+
+
+async def test_trake_search_does_not_translate_when_no_translator_is_given():
+    events_vectors = np.stack([_unit(hot=0)])
+    rows = {"video_a": [_frame_row("video_a_f0", 0, 0, 0.0, hot=0)]}
+    videos = [_video_doc("video_a", 0, 0)]
+    service, encoder, _ = _service(rows, videos, events_vectors, query_translator=None)
+
+    await service.search(["su kien tieng viet"], top_k=10)
+
+    assert encoder.encode_text_calls == [["su kien tieng viet"]]
 
 
 async def test_trake_search_returns_the_higher_scoring_video_first():
