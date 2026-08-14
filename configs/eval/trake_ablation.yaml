@@ -1,0 +1,93 @@
+# eval/run.py EvalRunConfig -- P2.4 DANTE λ ablation sweep (plan §P2.4,
+# PRD §6.4's mandatory ablation table). Same EvalRunConfig shape as
+# trake_val.yaml (CLAUDE.md §6: eval/run.py is the ONE entry point -- this
+# is a config variant, not a second script), with score_trake_ablation: true
+# added on top. score_trake stays false here: the ablation sweep already
+# reruns every N in trake_sequence_lengths for EVERY λ below, so a single-λ
+# score_trake pass on top would only duplicate one of those cells' worth of
+# search cost for no new information -- run trake_val.yaml separately for
+# the single-λ report.
+split: all
+
+dataset_root: data
+eval_set_path: configs/eval/aic_eval_v1.json
+pilot_available_path: configs/eval/pilot_available_v1.txt
+
+top_ks: [1, 5, 20, 50, 100]
+
+# Kept minimal (the ablation sweep is the point of this config) -- semantic
+# still runs so the report isn't ablation-only with nothing to sanity-check
+# search_service wiring against.
+modes: [semantic]
+
+random_baseline_seed: 20260810
+leakage_jaccard_threshold: 0.5
+vietnamese_stopwords:
+  - "một"
+  - "các"
+  - "là"
+  - "và"
+  - "có"
+  - "của"
+  - "trong"
+  - "được"
+  - "này"
+  - "đang"
+  - "với"
+  - "cho"
+  - "tại"
+  - "về"
+  - "người"
+  - "đó"
+  - "khi"
+  - "đã"
+  - "sẽ"
+  - "những"
+  - "trên"
+  - "bị"
+  - "để"
+  - "ra"
+  - "vào"
+  - "lên"
+  - "theo"
+  - "hay"
+  - "hoặc"
+  - "rất"
+
+reports_dir: reports
+
+# Off for this config -- these load extra GPU models unrelated to the
+# ablation sweep (aic_pilot.yaml is where the KIS-channel diagnostics live).
+query_translation_path: ""
+query_translation_modes: [semantic]
+translate_semantic_live: false
+score_clip_baseline: false
+
+# P2.3's single-λ channel -- off here (see file-header rationale above).
+score_trake: false
+trake_top_k: 10
+trake_lambda_penalty: null
+
+# P2.4 (PRD §6.4): the actual point of this config file. PRD §6.4's mandatory
+# breakdown is N ∈ {3, 5, 7}, but N=7 is DROPPED here for the SAME reason
+# already documented in trake_val.yaml (chủ dự án 2026-08-14, verified
+# against a real run): aic_eval_v1.json's TRAKE candidates were sampled with
+# build_eval_set.yaml's trake_sequence_length=5, so a 7-consecutive-
+# order_index run cannot exist in the frozen label set --
+# run_trake_lambda_ablation() correctly raises ValueError (CLAUDE.md §7)
+# rather than printing a silent all-zero N=7 row. Re-add 7 here only after
+# regenerating aic_eval_v1.json with trake_sequence_length>=7 (a NEW
+# eval_set_version + full re-review + full baseline re-run, CLAUDE.md §8 --
+# not a config-only change, and NOT something this agent runs unattended:
+# CLAUDE.md §10, Gemini-cost + human-review step).
+trake_sequence_lengths: [3, 5]
+
+# Plan §P2.4's mandatory sweep. λ=0.0 is the pure order-constraint case (no
+# time-distance penalty) -- the row that answers whether DANTE's distance
+# penalty contributes anything beyond the ordering constraint alone. The
+# other six values bracket the paper's two proposed figures (λ=0.001 for
+# index distance 3-15, λ=0.01 for distance 1-3) with finer steps on both
+# sides so the report can show where the curve actually bends, not just
+# compare two arbitrary points.
+score_trake_ablation: true
+trake_ablation_lambda_values: [0.0, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1]
