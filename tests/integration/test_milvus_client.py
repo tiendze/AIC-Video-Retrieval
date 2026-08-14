@@ -180,6 +180,68 @@ def test_upsert_is_idempotent_on_same_keyframe_id(store: MilvusStore) -> None:
     assert len(results) == 1
 
 
+def test_get_vectors_for_video_round_trips_through_real_milvus_query(store: MilvusStore) -> None:
+    # plan §P2.2: TrakeService's frame-vector source. Unlike search()
+    # (exercised above), this proves the `&&`-joined boolean filter
+    # expression (`video_id == "..." && global_index >= N && global_index
+    # <= M`) is actually valid Milvus query() syntax, not just a string the
+    # Fake client happened to accept.
+    store.upsert(
+        [
+            KeyframeVector(
+                keyframe_id="video_a_10",
+                embedding=_unit_vector(hot_index=0),
+                video_id="video_a",
+                global_index=10,
+                frame_idx=100,
+                timestamp=4.0,
+                author="channel_a",
+                batch="L21",
+            ),
+            KeyframeVector(
+                keyframe_id="video_a_11",
+                embedding=_unit_vector(hot_index=1),
+                video_id="video_a",
+                global_index=11,
+                frame_idx=110,
+                timestamp=4.4,
+                author="channel_a",
+                batch="L21",
+            ),
+            # Outside [10, 11] and a different video_id -- must not leak in.
+            KeyframeVector(
+                keyframe_id="video_a_12",
+                embedding=_unit_vector(hot_index=2),
+                video_id="video_a",
+                global_index=12,
+                frame_idx=120,
+                timestamp=4.8,
+                author="channel_a",
+                batch="L21",
+            ),
+            KeyframeVector(
+                keyframe_id="video_b_10",
+                embedding=_unit_vector(hot_index=3),
+                video_id="video_b",
+                global_index=10,
+                frame_idx=100,
+                timestamp=4.0,
+                author="channel_b",
+                batch="L21",
+            ),
+        ]
+    )
+
+    rows = store.get_vectors_for_video("video_a", s_v=10, e_v=11)
+
+    assert [r["keyframe_id"] for r in rows] == ["video_a_10", "video_a_11"]
+    assert [r["global_index"] for r in rows] == [10, 11]
+    assert [r["frame_idx"] for r in rows] == [100, 110]
+    assert isinstance(rows[0]["embedding"], np.ndarray)
+    assert rows[0]["embedding"].dtype == np.float32
+    np.testing.assert_allclose(rows[0]["embedding"], _unit_vector(hot_index=0))
+
+
 @pytest.fixture()
 def transcript_store(raw_client: MilvusClient) -> Iterator[TranscriptMilvusStore]:
     model_id = f"test_{uuid.uuid4().hex[:8]}"
