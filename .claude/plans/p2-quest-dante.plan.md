@@ -47,7 +47,7 @@ Yêu cầu triển khai:
 
 ---
 
-## P2.2 — `POST /api/trake` + bộ eval TRAKE
+## P2.2 — `POST /api/trake` + bộ eval TRAKE ✅ hoàn thành (2026-08-14)
 
 **Làm gì:** đưa DANTE ra API và dựng ground truth.
 
@@ -56,6 +56,21 @@ Yêu cầu triển khai:
 - Cố định seed khi lấy mẫu bộ eval.
 
 **Verify:** gọi endpoint với một chuỗi thật từ val → trả về đúng cấu trúc, thứ tự không đảo.
+
+**Kết quả thực tế:**
+- **Bộ eval N-segment-liên-tiếp đã có sẵn từ P0.4** (`eval/build_eval_set.extract_trake_sequences(segments, n)`, dùng `order_index` của `GroundTruthSegment`) — P2.2 không phải viết lại phần này, chỉ cần endpoint.
+- Files mới: `app/services/trake_service.py` (`TrakeService`, `TrakeVideoResult`, `TrakeKeyframe`), `app/api/trake.py` (router), `app/schemas/request|response/trake.py`, `configs/search/trake.yaml`. Sửa: `app/stores/milvus_client.py` (+`MilvusStore.get_vectors_for_video()` — `query()` filter chính xác trả về `embedding` thô, khác `search()` là ANN không trả `embedding`), `app/dependencies.py` (+`get_trake_service`), `app/main.py` (đăng ký router).
+- **Thiết kế:** `TrakeService.search()` encode N câu mô tả sự kiện → duyệt **mọi** video `ingest_status == "complete"` (đúng "duyệt từng video v" trong architecture.md §3.5 — paper không lọc ứng viên trước) → lấy vector keyframe trong `[s_v, e_v]` từ Milvus → chạy `dante_search` → xếp hạng theo `DANTE[v]`, trả top-k.
+- **Bug phát hiện qua TDD (RED thật, không phải giả định):** `dante_search` tái tạo `global_index = s_v + local_column_index`, giả định `[s_v, e_v]` liên tục tuyệt đối (đúng bất biến CLAUDE.md §3). Test đầu tiên dựng dữ liệu global_index thưa (0 và 9, thiếu 1–8) để mô phỏng "cách xa nhau" đã vi phạm chính bất biến đó, khiến service map nhầm keyframe (`KeyError`). Đã thêm `_is_dense_global_index_range()` guard: video có khoảng trống global_index bị bỏ qua + log cảnh báo, không crash — cùng lúc sửa lại test cho đúng bất biến (dùng frame đệm lấp đầy) thay vì né nó.
+- Video không đủ N frame, có khoảng trống global_index, hoặc DANTE không tìm được chuỗi hữu hạn (điểm `-inf`) → bị bỏ qua + log `video_id`, không làm hỏng cả request (CLAUDE.md §7).
+- `.venv/Scripts/python.exe -m pytest tests/test_trake_service.py tests/test_trake_api.py tests/test_milvus_client.py --cov=... --cov-report=term-missing` → **27/27 passed**, coverage **100%** trên `trake_service.py` (67/67 dòng), `app/api/trake.py`, `app/schemas/request/trake.py`, `app/schemas/response/trake.py`
+- Toàn bộ suite: `534 passed, 3 skipped` (không regression so với baseline 514 trước P2.1+P2.2), `ruff check` + `black --check` sạch
+- Git checkpoint theo TDD: `75a19d2` (RED — test), `472ceb5` (GREEN — implementation)
+
+**Còn thiếu / rủi ro đã biết:**
+- Chưa đo latency thật của `TrakeService.search()` khi duyệt toàn bộ corpus (873 video) — thiết kế "duyệt từng video" đúng theo paper nhưng chưa benchmark; TRAKE không bị ràng buộc latency chặt như KIS/QA (PRD §1.2) nên chấp nhận được ở P2.2, sẽ đo lại nếu P2.3/P2.4 cho thấy chậm.
+- Chưa test integration thật với Milvus/MongoDB sống (chỉ Fake) — theo CLAUDE.md §10, việc chạy thật cần Docker do chủ dự án tự thực hiện.
+- `eval/metrics/trake.py` (Sequence Exact-Match, Kendall's tau) là phạm vi P2.3, chưa làm.
 
 ---
 
