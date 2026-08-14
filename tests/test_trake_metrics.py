@@ -92,7 +92,9 @@ def test_per_event_hits_is_false_when_timestamp_falls_outside_its_own_window():
 
 
 def test_per_event_hits_window_bounds_are_inclusive():
-    events = _events((10.0, 12.0),)
+    events = _events(
+        (10.0, 12.0),
+    )
 
     assert per_event_hits([10.0], events) == (True,)
     assert per_event_hits([12.0], events) == (True,)
@@ -159,6 +161,20 @@ def test_kendall_tau_raises_on_fewer_than_two_points():
 def test_kendall_tau_raises_on_mismatched_lengths():
     with pytest.raises(ValueError, match="length"):
         kendall_tau([0, 1], [0, 1, 2])
+
+
+def test_kendall_tau_handles_a_pair_tied_only_in_x():
+    # pair (0,1): dx=0 (tied in x), dy=1 -- excluded from concordant/discordant
+    # counts but still counted in the tau-b denominator via tied_x.
+    assert kendall_tau([0, 0, 1], [0, 1, 2]) == pytest.approx(2 / 6**0.5)
+
+
+def test_kendall_tau_handles_a_pair_tied_only_in_y():
+    assert kendall_tau([0, 1, 2], [0, 0, 1]) == pytest.approx(2 / 6**0.5)
+
+
+def test_kendall_tau_is_0_when_every_pair_is_tied_in_both_x_and_y():
+    assert kendall_tau([0, 0], [0, 0]) == pytest.approx(0.0)
 
 
 # --------------------------------------------------------------------------
