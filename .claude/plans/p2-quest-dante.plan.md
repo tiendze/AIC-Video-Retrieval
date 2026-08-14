@@ -101,9 +101,14 @@ Yêu cầu triển khai:
 - Git checkpoint theo TDD: `a4352d9`/`4634442` (metrics.py RED/GREEN), `17635e8`/`557e9d8` (trake_run.py RED/GREEN), `276a3e9`/`ba3b899` (wiring vào eval/run.py RED/GREEN)
 
 **Còn thiếu / rủi ro đã biết:**
-- **Chưa chạy `python -m eval.run --config configs/eval/trake_val.yaml` thật** — cần Docker (Milvus/MongoDB/ES) + GPU load BEiT-3, để bạn tự chạy. Đây là bước verify cuối cùng chứng minh cả pipeline hoạt động đúng với dữ liệu thật.
+- ~~Chưa chạy `python -m eval.run --config configs/eval/trake_val.yaml` thật~~ **Đã chạy 2026-08-14, tìm ra 2 bug thật:**
+  1. **N=7 crash** — `aic_eval_v1.json` được sinh với `trake_sequence_length: 5` (`configs/eval/build_eval_set.yaml`), nên chuỗi 7-shot-liên-tiếp gần như không tồn tại trong bộ nhãn đã đóng băng. `run_trake_eval` raise đúng theo thiết kế (CLAUDE.md §7), không phải bug logic. **Fix:** bỏ N=7 khỏi `trake_val.yaml` (chỉ còn N∈{3,5}); N=7 cần sinh lại bộ eval (`eval_set_version` mới, review tay lại — CLAUDE.md §8), để dành cho P2.4.
+  2. **Mất 333 giây tính toán thật** — N=3 (256s) và N=5 (76s) chạy xong rồi mới crash ở N=7 (cuối vòng lặp), mà `write_report()` chỉ chạy sau khi toàn bộ vòng lặp xong ⇒ không ghi được gì ra đĩa. **Fix:** `run_trake_eval` giờ kiểm tra TẤT CẢ N có dữ liệu trước khi chạy bất kỳ search tốn kém nào (fail nhanh <1s thay vì sau nhiều phút). Đồng thời bọc `try/finally` quanh thân `_main()` để `mongo.close()`/`es.close()` luôn chạy dù có lỗi giữa chừng (log gốc có `Unclosed client session`).
+  - Commit fix: `b33027a` (RED), `bf3e966` (GREEN — cả 2 bug).
+  - **Chưa chạy lại lần nữa sau fix** — bạn cần chạy lại `python -m eval.run --config configs/eval/trake_val.yaml` để xác nhận qua hết cả 2 N và có report.md thật.
+  - ⚠️ **Cần để ý khi chạy lại:** log gốc cho thấy `Sequence Exact-Match = 0.0000` cho CẢ N=3 (17/17 truy vấn) lẫn N=5 (5/5 truy vấn) — không một truy vấn nào khớp. Có thể là hiện tượng thật (PRD §6.4 tự cảnh báo video tin tức là "chuỗi phóng sự rời rạc", λ có thể đóng góp ít hơn kỳ vọng), nhưng 0/22 tuyệt đối cũng đáng ngờ. Chưa chẩn đoán được vì report.md chưa từng được ghi ra (bug #2 ở trên). Sau khi chạy lại, nếu vẫn 0.0000, hãy xem `video_level_recall_at_k` trong `report.md`/`metrics.json`: nếu **cũng** ~0 thì là lỗi "chọn sai video" (search/DANTE); nếu video_level cao mà sequence_exact_match thấp thì là lỗi "đúng video, sai frame" (nhãn hoặc λ) — hai nguyên nhân cần hướng sửa khác nhau.
 - "Thời gian chạy theo T" trong bảng PRD §6.4 mới có wall-clock TỔNG mỗi nhóm N (không phải sweep T tăng dần) — phần kiểm chứng `O(NT)` bằng số đã có sẵn ở `test_dante_service.py::test_dante_runtime_is_linear_in_t` (P2.1); nếu cần đồ thị T-sweep riêng cho báo cáo thì đó là bổ sung sau, chưa làm ở P2.3.
-- `eval/run.py` đã vượt 800 dòng (1013 dòng) — vi phạm có từ trước P2.3, chưa refactor, cần một task riêng.
+- `eval/run.py` đã vượt 800 dòng (~1020 dòng) — vi phạm có từ trước P2.3, chưa refactor, cần một task riêng.
 - Bảng ablation `λ` (P2.4) chưa làm — `trake_lambda_penalty` trong config hiện chỉ nhận 1 giá trị/lần chạy.
 
 ---
