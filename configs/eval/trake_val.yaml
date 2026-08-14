@@ -60,13 +60,24 @@ query_translation_modes: [semantic]
 translate_semantic_live: false
 score_clip_baseline: false
 
-# P2.3 (PRD §6.4): the actual point of this config file. N ∈ {3, 5, 7} is
-# PRD §6.4's mandatory breakdown -- report every one of them, not a subset.
+# P2.3 (PRD §6.4): the actual point of this config file. PRD §6.4's
+# mandatory breakdown is N ∈ {3, 5, 7}, but N=7 is DROPPED here (chủ dự án
+# 2026-08-14, verified against a real run): aic_eval_v1.json's TRAKE
+# candidates were sampled with build_eval_set.yaml's trake_sequence_length=5
+# (40 sequences × 5 consecutive shots each), so a 7-consecutive-order_index
+# run essentially cannot exist in the frozen label set --
+# run_trake_eval() correctly raises ValueError rather than printing a
+# silent all-zero N=7 row (CLAUDE.md §7). Re-add 7 here only after
+# regenerating aic_eval_v1.json with trake_sequence_length>=7 (a NEW
+# eval_set_version + full re-review + full baseline re-run, CLAUDE.md §8 --
+# not a config-only change) -- tracked for P2.4's ablation table, which
+# needs the full N∈{3,5,7} breakdown and will have to solve this first.
+#
 # trake_top_k=10 mirrors TrakeService's own configs/search/trake.yaml
 # default_top_k. trake_lambda_penalty: null uses configs/search/dante.yaml's
 # configured value (P2.4's ablation sweep is a SEPARATE config surface, not
 # this file -- see plan §P2.4).
 score_trake: true
-trake_sequence_lengths: [3, 5, 7]
+trake_sequence_lengths: [3, 5]
 trake_top_k: 10
 trake_lambda_penalty: null

@@ -184,6 +184,26 @@ async def test_run_trake_eval_raises_when_a_sequence_length_has_no_extractable_s
         )
 
 
+async def test_run_trake_eval_fails_fast_before_running_any_query_when_a_later_n_is_unextractable():
+    # Regression (chủ dự án 2026-08-14, real run): N=3 and N=5 succeeded
+    # (256s + 76s of real DANTE search) before N=7 crashed at the END of the
+    # loop with nothing written to disk -- all of that work was wasted.
+    # Every sequence_length must be validated BEFORE any searcher.search()
+    # call runs, so a data gap is caught in milliseconds, not minutes.
+    searcher = _FakeSearcher([_perfect_hit_result(), _perfect_hit_result()])
+
+    with pytest.raises(ValueError, match="N=5"):
+        await run_trake_eval(
+            searcher,
+            ground_truth=_SEQUENCE_A,  # only 3 consecutive shots -- N=5 unextractable
+            sequence_lengths=[3, 5],
+            top_k=10,
+            lambda_penalty=None,
+        )
+
+    assert searcher.calls == []
+
+
 # --------------------------------------------------------------------------
 # render_trake_report_md
 # --------------------------------------------------------------------------
