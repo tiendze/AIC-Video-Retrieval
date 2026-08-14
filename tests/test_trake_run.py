@@ -15,10 +15,13 @@ import pytest
 
 from datasets.base import GroundTruthSegment
 from eval.trake_run import (
+    TrakeAblationCell,
     TrakeGroupMetrics,
     aggregate_trake_group,
+    render_trake_ablation_report_md,
     render_trake_report_md,
     run_trake_eval,
+    run_trake_lambda_ablation,
     run_trake_queries,
 )
 
@@ -247,5 +250,146 @@ def test_render_trake_report_md_shows_na_when_nothing_was_found():
     ]
 
     report = render_trake_report_md(groups)
+
+    assert "n/a" in report
+
+
+# --------------------------------------------------------------------------
+# run_trake_lambda_ablation -- P2.4 sweep: λ ∈ lambda_values × N ∈
+# sequence_lengths, reusing the SAME extracted sequences for every λ (only
+# DANTE's DP changes across λ, not which ground-truth sequences exist).
+# --------------------------------------------------------------------------
+
+
+async def test_run_trake_lambda_ablation_produces_one_cell_per_lambda_times_n():
+    # 1 sequence_length (N=3, the only one extractable from _SEQUENCE_A) x
+    # 2 lambda values = 2 cells, one searcher.search() call each.
+    searcher = _FakeSearcher([_perfect_hit_result(), _perfect_hit_result()])
+
+    cells = await run_trake_lambda_ablation(
+        searcher,
+        ground_truth=_SEQUENCE_A,
+        sequence_lengths=[3],
+        lambda_values=[0.0, 0.01],
+        top_k=10,
+    )
+
+    assert [(c.lambda_penalty, c.metrics.sequence_length) for c in cells] == [
+        (0.0, 3),
+        (0.01, 3),
+    ]
+    assert all(c.metrics.num_queries == 1 for c in cells)
+
+
+async def test_run_trake_lambda_ablation_passes_each_lambda_value_to_the_searcher():
+    searcher = _FakeSearcher([_perfect_hit_result(), _perfect_hit_result()])
+
+    await run_trake_lambda_ablation(
+        searcher,
+        ground_truth=_SEQUENCE_A,
+        sequence_lengths=[3],
+        lambda_values=[0.0, 0.01],
+        top_k=10,
+    )
+
+    assert [call[2] for call in searcher.calls] == [0.0, 0.01]
+
+
+async def test_run_trake_lambda_ablation_raises_when_a_sequence_length_has_no_extractable_sequence():
+    searcher = _FakeSearcher([_perfect_hit_result()])
+
+    with pytest.raises(ValueError, match="N=5"):
+        await run_trake_lambda_ablation(
+            searcher,
+            ground_truth=_SEQUENCE_A,  # only 3 consecutive shots available
+            sequence_lengths=[5],
+            lambda_values=[0.0],
+            top_k=10,
+        )
+
+
+async def test_run_trake_lambda_ablation_fails_fast_before_running_any_query():
+    # Same fail-fast contract as run_trake_eval (P2.3 regression, plan
+    # §P2.3): every N must be validated extractable BEFORE any expensive
+    # searcher.search() call runs for ANY λ.
+    searcher = _FakeSearcher([_perfect_hit_result()])
+
+    with pytest.raises(ValueError, match="N=5"):
+        await run_trake_lambda_ablation(
+            searcher,
+            ground_truth=_SEQUENCE_A,  # only 3 consecutive shots -- N=5 unextractable
+            sequence_lengths=[3, 5],
+            lambda_values=[0.0, 0.01, 0.1],
+            top_k=10,
+        )
+
+    assert searcher.calls == []
+
+
+# --------------------------------------------------------------------------
+# render_trake_ablation_report_md
+# --------------------------------------------------------------------------
+
+
+def test_render_trake_ablation_report_md_shows_sequence_exact_match_and_kendall_tau_grids():
+    cells = [
+        TrakeAblationCell(
+            lambda_penalty=0.0,
+            metrics=TrakeGroupMetrics(
+                sequence_length=3,
+                num_queries=10,
+                num_found=8,
+                sequence_exact_match=0.4,
+                video_level_recall_at_k=0.8,
+                per_event_recall_at_k=(0.9, 0.7, 0.6),
+                mean_kendall_tau=0.85,
+                mean_offset_sec=1.2,
+                wall_clock_sec=3.4,
+            ),
+        ),
+        TrakeAblationCell(
+            lambda_penalty=0.001,
+            metrics=TrakeGroupMetrics(
+                sequence_length=3,
+                num_queries=10,
+                num_found=8,
+                sequence_exact_match=0.47,
+                video_level_recall_at_k=0.88,
+                per_event_recall_at_k=(0.9, 0.7, 0.65),
+                mean_kendall_tau=0.91,
+                mean_offset_sec=0.8,
+                wall_clock_sec=3.5,
+            ),
+        ),
+    ]
+
+    report = render_trake_ablation_report_md(cells)
+
+    assert "0.4000" in report  # λ=0 Sequence Exact-Match
+    assert "0.4700" in report  # λ=0.001 Sequence Exact-Match
+    assert "0.8500" in report  # λ=0 Kendall's tau
+    assert "0.9100" in report  # λ=0.001 Kendall's tau
+    assert "N=3" in report
+
+
+def test_render_trake_ablation_report_md_shows_na_for_a_missing_cell():
+    cells = [
+        TrakeAblationCell(
+            lambda_penalty=0.0,
+            metrics=TrakeGroupMetrics(
+                sequence_length=3,
+                num_queries=5,
+                num_found=0,
+                sequence_exact_match=0.0,
+                video_level_recall_at_k=0.0,
+                per_event_recall_at_k=(0.0, 0.0, 0.0),
+                mean_kendall_tau=None,
+                mean_offset_sec=None,
+                wall_clock_sec=0.5,
+            ),
+        )
+    ]
+
+    report = render_trake_ablation_report_md(cells)
 
     assert "n/a" in report
