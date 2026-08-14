@@ -139,6 +139,21 @@ Paper đề xuất `λ = 0.001` (khoảng cách index 3–15) và `λ = 0.01` (k
 
 **Verify:** bảng ablation 7 × 3; `configs/` ghi lại giá trị `λ` được chọn cuối cùng kèm lý do.
 
+**Kết quả thực tế (code + test, 2026-08-14):**
+- Files mới/sửa: `eval/trake_run.py` (+`TrakeAblationCell` frozen dataclass, `run_trake_lambda_ablation()`, `render_trake_ablation_report_md()`), `eval/run.py` (+`score_trake_ablation`/`trake_ablation_lambda_values` trong `EvalRunConfig`, `_load_config()` đọc field mới, `write_report()` nhận `trake_ablation_cells` optional ghi vào cả `metrics.json` lẫn `report.md`, wiring trong `_main()` — dùng chung một `TrakeService` với kênh `score_trake` P2.3 nếu cả hai cùng bật), `configs/eval/trake_ablation.yaml` (config mới, `score_trake_ablation: true`, 7 giá trị λ đúng PRD §6.4).
+- **Thiết kế:** mỗi N chỉ `extract_trake_sequences()` **một lần** (độc lập với λ), rồi chạy lại `searcher.search()` cho từng λ trên đúng tập sequence đó — λ chỉ đổi DP bên trong DANTE, không đổi ground truth. Giữ đúng bất biến fail-fast của P2.3 (`run_trake_eval`): mọi N được validate **trước** khi bất kỳ search tốn kém nào chạy cho **bất kỳ** λ nào — một N thiếu dữ liệu (vd. N=7) bị bắt trong mili-giây, không phải sau nhiều ô λ×N đã chạy xong.
+- Báo cáo gồm 2 bảng riêng (Sequence Exact-Match và Kendall's tau) vì PRD §6.4 yêu cầu cả hai số cho mỗi ô, một số duy nhất không thể hiện đủ.
+- `.venv/Scripts/python.exe -m pytest tests/test_trake_run.py tests/test_eval_run.py --cov=eval.trake_run --cov=eval.run --cov-report=term-missing` → `eval/trake_run.py` **100%** coverage (109/109 dòng); `eval/run.py` 65% tổng thể (không đổi so với P2.3 — phần chưa cover là `_main()`/store-building, cần Docker+GPU thật, không unit-test được, đúng pattern các phase trước).
+- `python -c "from eval.run import _load_config; _load_config(Path('configs/eval/trake_ablation.yaml'))"` → load thành công, `score_trake_ablation=True`, `trake_ablation_lambda_values=(0.0, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1)`, `trake_sequence_lengths=(3, 5)` — xác nhận wiring config đúng, **KHÔNG chạy được** `python -m eval.run --config configs/eval/trake_ablation.yaml` thật (cần Docker + GPU, để chủ dự án tự chạy theo CLAUDE.md §10).
+- Toàn bộ suite: `601 passed, 4 skipped` (không regression so với baseline P2.3), `ruff check` + `black --check` sạch trên `eval/`.
+- Git checkpoint theo TDD: `d41ab86` (trake_run.py RED), `4f02ef6` (trake_run.py GREEN), `1600ad4` (eval/run.py wiring RED), `cb72597` (eval/run.py wiring GREEN), `e60dcf3` (config file).
+
+**Còn thiếu / rủi ro đã biết:**
+- **N=7 vẫn chưa chạy được** — lý do giống hệt P2.3: `aic_eval_v1.json` chỉ có chuỗi 5-shot-liên-tiếp (`build_eval_set.yaml: trake_sequence_length: 5`), nên nếu thêm N=7 vào `trake_ablation_lambda_values` × N sweep sẽ raise `ValueError` ngay (đúng thiết kế fail-fast, CLAUDE.md §7). `configs/eval/trake_ablation.yaml` chỉ khai `trake_sequence_lengths: [3, 5]`. Cần regen `aic_eval_v1.json` với `trake_sequence_length≥7` (eval_set_version mới + review tay + chạy lại toàn bộ baseline, CLAUDE.md §8) trước khi bảng ablation đủ 7×3 — việc này **không** tự động hoá được (Gemini cost + human review), chủ dự án tự quyết định khi nào làm.
+- **Chưa có số đo thật nào** — mọi thứ ở trên mới dừng ở "code đúng, wiring đúng, test Fake pass". Kết luận về `λ = 0` (paper chỉ dùng ràng buộc thứ tự hay hình phạt khoảng cách thật sự đóng góp) **chỉ trả lời được sau khi chủ dự án chạy** `python -m eval.run --config configs/eval/trake_ablation.yaml` (Docker + GPU, CLAUDE.md §10) và đọc `report.md`/`metrics.json` sinh ra trong `reports/`.
+- `configs/search/dante.yaml`'s `lambda_penalty` chưa được cập nhật thành giá trị "được chọn cuối cùng" — đợi số đo thật từ sweep trên mới quyết định, đúng tinh thần "không sửa số trước khi thấy kết quả" (CLAUDE.md §8).
+- `eval/run.py` vẫn ~1080 dòng, vượt giới hạn 800 dòng CLAUDE.md §6 — vi phạm có từ trước P2.3, P2.4 chỉ thêm ~35 dòng có kiểm soát (field config + wiring), không phải nguồn gốc vi phạm; refactor tách file vẫn là việc riêng ngoài phạm vi P2.4.
+
 ---
 
 ## P2.5 — `quest_service.py` (2 nhánh)
@@ -170,8 +185,8 @@ Paper đề xuất `λ = 0.001` (khoảng cách index 3–15) và `λ = 0.01` (k
 
 - [x] `Sequence Exact-Match (N=3)` đạt mục tiêu PRD §6.7 — **0.4706** ≥ 0,40 (xuất sắc), 2026-08-14, mẫu 17 truy vấn ⚠️ nhỏ
 - [x] `Kendall's tau` đạt mục tiêu §6.7 — **0.9089** (N=3) / **0.9897** (N=5) ≥ 0,90 (xuất sắc), 2026-08-14
-- [ ] **Bảng ablation `λ` đầy đủ 7 × 3**, có kết luận rõ về `λ = 0` — N=7 cần sinh lại bộ eval trước (xem P2.3 "còn thiếu")
+- [ ] **Bảng ablation `λ` đầy đủ 7 × 3**, có kết luận rõ về `λ = 0` — code+wiring xong 2026-08-14 (`configs/eval/trake_ablation.yaml`), nhưng **chỉ chạy được 3×2 (N∈{3,5})**; N=7 vẫn cần sinh lại bộ eval trước (xem P2.3/P2.4 "còn thiếu"), và chưa có số đo thật nào (cần chủ dự án chạy Docker+GPU, CLAUDE.md §10)
 - [x] Chứng minh thực nghiệm `O(NT)` (đồ thị thời gian theo T) — `test_dante_service.py::test_dante_runtime_is_linear_in_t` (P2.1)
 - [ ] QUEST hai nhánh chạy được, có fallback, hiển thị `q₀` + `q_r`
-- [x] Coverage ≥ 80% — 100% trên toàn bộ module TRAKE mới (P2.1–P2.3)
-- [x] Báo cáo phase theo template CLAUDE.md §8 — mục P2.1/P2.2/P2.3 trong file này
+- [x] Coverage ≥ 80% — 100% trên toàn bộ module TRAKE mới (P2.1–P2.4)
+- [x] Báo cáo phase theo template CLAUDE.md §8 — mục P2.1/P2.2/P2.3/P2.4 trong file này
