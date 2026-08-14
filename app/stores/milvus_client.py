@@ -181,6 +181,24 @@ class MilvusStore:
         )
         return results[0]
 
+    def get_vectors_for_video(self, video_id: str, s_v: int, e_v: int) -> list[dict]:
+        """All keyframe vectors for one video's `[s_v, e_v]` global_index range,
+        sorted by `global_index` -- the frame-vector source for DANTE's
+        per-video DP (CLAUDE.md §4: `global_index`/`s_v`/`e_v` are DANTE's
+        prerequisites). Unlike `search()` (ANN top_k), this is an exact
+        filter lookup via `query()`, and returns the raw `embedding` --
+        `search()` deliberately omits it from `output_fields` since ranking
+        callers never need the vector itself back.
+        """
+        rows = self._client.query(
+            collection_name=self._collection_name,
+            filter=f'video_id == "{video_id}" && global_index >= {s_v} && global_index <= {e_v}',
+            output_fields=["keyframe_id", "embedding", "global_index", "frame_idx", "timestamp"],
+        )
+        for row in rows:
+            row["embedding"] = np.asarray(row["embedding"], dtype=np.float32)
+        return sorted(rows, key=lambda r: r["global_index"])
+
 
 @dataclass(frozen=True)
 class TranscriptVector:

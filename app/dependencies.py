@@ -14,6 +14,7 @@ from app.services.health_service import HealthService
 from app.services.query_translator import QueryTranslator
 from app.services.search_service import SearchService
 from app.services.thumbnail_service import ThumbnailService
+from app.services.trake_service import TrakeService
 from app.stores.es_client import EsStore
 from app.stores.milvus_client import MilvusStore
 from app.stores.mongo_client import MongoStore
@@ -49,6 +50,14 @@ def get_health_service(
     mongo_store: MongoStore = Depends(get_mongo_store),
 ) -> HealthService:
     return HealthService(milvus_store=milvus_store, es_store=es_store, mongo_store=mongo_store)
+
+
+def get_trake_service(
+    encoder: MultimodalEncoder = Depends(get_encoder),
+    milvus_store: MilvusStore = Depends(get_milvus_store),
+    mongo_store: MongoStore = Depends(get_mongo_store),
+) -> TrakeService:
+    return TrakeService(encoder=encoder, milvus_store=milvus_store, mongo_store=mongo_store)
 
 
 def get_search_service(

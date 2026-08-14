@@ -1,0 +1,7 @@
+# TrakeService/API top_k bounds (app/schemas/request/trake.py, app/api/trake.py).
+# A separate file from search.yaml -- POST /api/trake ranks VIDEOS (each
+# holding an N-keyframe sequence), a different unit than POST /api/search's
+# per-keyframe top_k, so the two bounds are not the same knob even though
+# they currently share the same submission-cap ceiling (references.md §1.2).
+default_top_k: 10
+max_top_k: 100
