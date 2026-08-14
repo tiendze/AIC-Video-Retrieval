@@ -54,6 +54,7 @@ from app.config import Settings
 from app.encoders.beit3 import BEiT3Encoder
 from app.services.query_translator import LocalNmtTranslator
 from app.services.search_service import SearchService
+from app.services.trake_service import TrakeService
 from app.stores.es_client import EsStore
 from app.stores.milvus_client import MilvusStore
 from app.stores.mongo_client import MongoStore
@@ -75,6 +76,7 @@ from eval.metrics.retrieval import (
     recall_at_k_by_group,
 )
 from eval.query_translation import build_query_transform, load_translations
+from eval.trake_run import TrakeGroupMetrics, render_trake_report_md, run_trake_eval
 
 for _stream in (sys.stdout, sys.stderr):
     if hasattr(_stream, "reconfigure"):
@@ -137,6 +139,19 @@ class EvalRunConfig:
     # themselves) -- flip to True once it has, otherwise this channel is
     # silently skipped rather than erroring on a missing collection.
     score_clip_baseline: bool = False
+    # P2.3 (PRD §6.4): scores an EXTRA TRAKE/DANTE section appended to the
+    # SAME report -- one N-consecutive-shot sequence per N in
+    # trake_sequence_lengths is one query, run through TrakeService and
+    # scored with eval.metrics.trake (Sequence Exact-Match, Kendall's tau,
+    # etc). False by default: it drives TrakeService's own per-video-in-
+    # corpus DANTE loop (architecture.md §3.5), a separate cost from the
+    # KIS/OCR channels above.
+    score_trake: bool = False
+    trake_sequence_lengths: tuple[int, ...] = (3, 5, 7)
+    trake_top_k: int = 10
+    # None = use configs/search/dante.yaml's configured lambda_penalty
+    # (same "None means default" contract as TrakeService.search()).
+    trake_lambda_penalty: float | None = None
 
 
 @dataclass(frozen=True)
@@ -484,6 +499,7 @@ def write_report(
     batch_breakdown: Mapping[str, Mapping[str, float]],
     leakage_report: LeakageReport | None,
     per_query: Sequence[PerQueryResult],
+    trake_groups: Sequence[TrakeGroupMetrics] | None = None,
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -498,25 +514,33 @@ def write_report(
         "author_breakdown": {k: dict(v) for k, v in author_breakdown.items()},
         "batch_breakdown": {k: dict(v) for k, v in batch_breakdown.items()},
         "leakage_report": asdict(leakage_report) if leakage_report is not None else None,
+        # None (not "trake" key omitted) when score_trake was off -- a
+        # reader of metrics.json can tell "not run" from "ran, empty" the
+        # same way leakage_report already distinguishes the two.
+        "trake": [asdict(g) for g in trake_groups] if trake_groups is not None else None,
     }
     (output_dir / "metrics.json").write_text(
         json.dumps(metrics_doc, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    (output_dir / "report.md").write_text(
-        _render_report_md(
-            git_sha=git_sha,
-            eval_set_version=eval_set_version,
-            eval_set_hash=eval_set_hash,
-            num_video_ids=num_video_ids,
-            num_queries=num_queries,
-            seed=seed,
-            channel_metrics=channel_metrics,
-            author_breakdown=author_breakdown,
-            batch_breakdown=batch_breakdown,
-            leakage_report=leakage_report,
-        ),
-        encoding="utf-8",
+    report_md = _render_report_md(
+        git_sha=git_sha,
+        eval_set_version=eval_set_version,
+        eval_set_hash=eval_set_hash,
+        num_video_ids=num_video_ids,
+        num_queries=num_queries,
+        seed=seed,
+        channel_metrics=channel_metrics,
+        author_breakdown=author_breakdown,
+        batch_breakdown=batch_breakdown,
+        leakage_report=leakage_report,
     )
+    if trake_groups is not None:
+        # Appended to the SAME report.md a KIS/OCR run already writes (plan
+        # §P2.3) -- one report per eval/run.py invocation, not a second file
+        # that could drift out of sync with which git_sha/eval_set it came
+        # from.
+        report_md += "\n" + render_trake_report_md(trake_groups)
+    (output_dir / "report.md").write_text(report_md, encoding="utf-8")
     _write_per_query_csv(output_dir / "per_query.csv", per_query)
 
 
@@ -552,6 +576,9 @@ def _load_config(path: Path) -> EvalRunConfig:
     raw["vietnamese_stopwords"] = tuple(raw.get("vietnamese_stopwords", ()))
     raw["query_translation_modes"] = tuple(
         raw.get("query_translation_modes", EvalRunConfig().query_translation_modes)
+    )
+    raw["trake_sequence_lengths"] = tuple(
+        raw.get("trake_sequence_lengths", EvalRunConfig().trake_sequence_lengths)
     )
     return EvalRunConfig(**raw)
 
@@ -870,12 +897,22 @@ async def _run_all_channels(
     await accumulator.run_and_collect("bm25", BM25Baseline(es))
 
 
+def _build_trake_service(
+    encoder: BEiT3Encoder, milvus: MilvusStore, mongo: MongoStore
+) -> TrakeService:
+    """P2.3 (PRD §6.4): reuses the SAME encoder/Milvus/Mongo instances the
+    KIS/OCR channels above already built -- TRAKE's per-video DP needs the
+    identical vector space (CLAUDE.md §3), not a second encoder."""
+    return TrakeService(encoder=encoder, milvus_store=milvus, mongo_store=mongo)
+
+
 def _write_final_report(
     config: EvalRunConfig,
     ground_truth: Sequence[GroundTruthSegment],
     available: frozenset[str],
     accumulator: _ResultAccumulator,
     leakage_report: LeakageReport | None,
+    trake_groups: Sequence[TrakeGroupMetrics] | None = None,
 ) -> Path:
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     git_sha = _git_sha()
@@ -893,6 +930,7 @@ def _write_final_report(
         batch_breakdown=accumulator.batch_breakdown,
         leakage_report=leakage_report,
         per_query=accumulator.per_query,
+        trake_groups=trake_groups,
     )
     return output_dir
 
@@ -943,7 +981,20 @@ async def _main() -> int:
         config.leakage_jaccard_threshold,
     )
 
-    output_dir = _write_final_report(config, ground_truth, available, accumulator, leakage_report)
+    trake_groups = None
+    if config.score_trake:
+        trake_service = _build_trake_service(encoder, milvus, mongo)
+        trake_groups = await run_trake_eval(
+            trake_service,
+            ground_truth,
+            config.trake_sequence_lengths,
+            config.trake_top_k,
+            config.trake_lambda_penalty,
+        )
+
+    output_dir = _write_final_report(
+        config, ground_truth, available, accumulator, leakage_report, trake_groups
+    )
     logger.info("Wrote report to %s", output_dir)
 
     await mongo.close()

@@ -1,0 +1,72 @@
+# eval/run.py EvalRunConfig -- P2.3 TRAKE evaluation run (plan §P2.3,
+# PRD §6.4). Same EvalRunConfig shape as aic_pilot.yaml (CLAUDE.md §6:
+# eval/run.py is the ONE entry point -- this is a config variant, not a
+# second script), with score_trake: true added and the KIS-focused optional
+# channels (VI->EN sidecar, live-translated, CLIP baseline) turned off so a
+# TRAKE-focused run doesn't pay for GPU-heavy channels it doesn't need.
+split: all
+
+dataset_root: data
+eval_set_path: configs/eval/aic_eval_v1.json
+pilot_available_path: configs/eval/pilot_available_v1.txt
+
+top_ks: [1, 5, 20, 50, 100]
+
+# Kept minimal (TRAKE is the point of this config) -- semantic still runs so
+# the report isn't TRAKE-only with nothing to sanity-check search_service
+# wiring against.
+modes: [semantic]
+
+random_baseline_seed: 20260810
+leakage_jaccard_threshold: 0.5
+vietnamese_stopwords:
+  - "một"
+  - "các"
+  - "là"
+  - "và"
+  - "có"
+  - "của"
+  - "trong"
+  - "được"
+  - "này"
+  - "đang"
+  - "với"
+  - "cho"
+  - "tại"
+  - "về"
+  - "người"
+  - "đó"
+  - "khi"
+  - "đã"
+  - "sẽ"
+  - "những"
+  - "trên"
+  - "bị"
+  - "để"
+  - "ra"
+  - "vào"
+  - "lên"
+  - "theo"
+  - "hay"
+  - "hoặc"
+  - "rất"
+
+reports_dir: reports
+
+# Off for this config -- these load extra GPU models unrelated to TRAKE
+# (aic_pilot.yaml is where the KIS-channel diagnostics live).
+query_translation_path: ""
+query_translation_modes: [semantic]
+translate_semantic_live: false
+score_clip_baseline: false
+
+# P2.3 (PRD §6.4): the actual point of this config file. N ∈ {3, 5, 7} is
+# PRD §6.4's mandatory breakdown -- report every one of them, not a subset.
+# trake_top_k=10 mirrors TrakeService's own configs/search/trake.yaml
+# default_top_k. trake_lambda_penalty: null uses configs/search/dante.yaml's
+# configured value (P2.4's ablation sweep is a SEPARATE config surface, not
+# this file -- see plan §P2.4).
+score_trake: true
+trake_sequence_lengths: [3, 5, 7]
+trake_top_k: 10
+trake_lambda_penalty: null
