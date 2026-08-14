@@ -819,6 +819,56 @@ Chỉ dùng khi cần **encoder dự phòng** (SigLIP/CLIP) theo rủi ro R1.
 
 CLIP ở đây phục vụ **hai mục đích**: vừa là encoder dự phòng, vừa là baseline bắt buộc trong bảng so sánh §6.3 của PRD.
 
+### 6.5 open_clip
+
+Dùng cho `ClipEncoder` (`app/encoders/clip_baseline.py`, baseline P1.4) và `PeCoreEncoder`
+(`app/encoders/pe_core.py`, candidate A2 của
+`.claude/plans/encoder-swap-siglip2-pecore.plan.md`).
+
+- Repo: https://github.com/mlfoundations/open_clip
+- **`llms.txt`: chưa kiểm chứng**
+- Package pin: `open-clip-torch==3.3.0` (`pyproject.toml` extras `baseline-clip`,
+  `encoder-candidates`)
+
+**Load một checkpoint tuỳ ý từ HF Hub** (không cần đăng ký kiến trúc trong open_clip's local
+registry) — dùng cho `PeCoreEncoder`:
+
+```python
+model, _, preprocess = open_clip.create_model_and_transforms("hf-hub:timm/PE-Core-bigG-14-448")
+tokenizer = open_clip.get_tokenizer("hf-hub:timm/PE-Core-bigG-14-448")
+```
+
+Config (`vision_cfg`/`text_cfg`/`preprocess_cfg`, bao gồm `context_length`) đọc thẳng từ
+`open_clip_config.json` trên repo HF — không cần khai lại thủ công.
+
+⚠️ **Không pin được `revision` cho load kiểu `hf-hub:`** — verified 2026-08-14 bằng cách fetch
+trực tiếp source `open-clip-torch==3.3.0`
+(`src/open_clip/factory.py`, `src/open_clip/pretrained.py`): nhánh `hf-hub:` của
+`create_model_and_transforms`/`create_model` gọi
+`download_pretrained_from_hf(model_id, cache_dir=cache_dir)` — **không truyền `revision`**, dù
+`download_pretrained_from_hf()` bản thân nó CÓ tham số `revision` (dùng được nếu tự gọi
+`huggingface_hub.hf_hub_download(..., revision=...)` thủ công thay vì qua
+`create_model_and_transforms`). Khác hẳn `transformers.AutoModel.from_pretrained(revision=...)`
+(§6.4, dùng cho `SigLip2Encoder`). Hệ quả cho encoder nào load kiểu `hf-hub:`: không có
+`revision=` để ghim, phải dựa vào `weight_files_sha256` + probe cosine để bắt drift *sau khi
+đã xảy ra*, không phải chặn từ lúc load — xem `app/encoders/pe_core.py` module docstring.
+
+**PE-Core-bigG-14-448 cụ thể** — verified 2026-08-14 qua
+`https://huggingface.co/api/models/timm/PE-Core-bigG-14-448` +
+`.../raw/main/open_clip_config.json`:
+
+| Trường | Giá trị |
+|---|---|
+| License | `apache-2.0`, không FAIR-NC/non-commercial |
+| `embed_dim` | 1280 |
+| `vision_cfg.image_size` | 448 |
+| `vision_cfg.timm_model_name` | `vit_pe_core_gigantic_patch14_448` (timm-backed ⇒ cần `timm>=1.0.19`, không phải kiến trúc open_clip thuần như `ViT-B-32-quickgelu`) |
+| `text_cfg.context_length` | 72 |
+| `text_cfg` tokenizer | `custom_text: true`, CLIP BPE chuẩn (vocab 49408) — **English-only**, không phải tokenizer đa ngữ |
+| File weight ưu tiên hash | `open_clip_model.safetensors` (có sẵn trên repo, ưu tiên hơn `.bin`) |
+
+**Dùng trong dự án:** `ClipEncoder` (baseline P1.4, ViT-B/32) và `PeCoreEncoder` (candidate A2).
+
 ---
 
 ## 7. Frontend

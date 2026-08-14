@@ -132,16 +132,28 @@ Ràng buộc: RTX 3070 8GB tại chỗ · Kaggle/Colab dùng thoải mái (chủ
 | | Model | Params | Res | Dim | License | Tiếng Việt |
 |---|---|---|---|---|---|---|
 | **A1** | `google/siglip2-so400m-patch14-384` | ~400M (vision) | 384 | ⚠️ **[Cần verify]** (nghi 1152) | ⚠️ **[Cần verify]** (nghi Apache-2.0) | **Native, 109 ngôn ngữ**, tokenizer Gemma |
-| **A2** | `PE-Core-bigG-14-448` (Meta Perception Encoder) | ⚠️ **[Cần verify]** (nghi ~1.8B vision) | 448 | ⚠️ **[Cần verify]** | ⚠️ **[Cần verify]** — Meta có thể là FAIR-NC, **không chắc Apache** | Text tower **chỉ tiếng Anh** ⇒ **bắt buộc giữ envit5** |
+| **A2** | `timm/PE-Core-bigG-14-448` (Meta Perception Encoder, remapped for OpenCLIP) | ~1.8B (vision tower `vit_pe_core_gigantic_patch14_448`, timm-backed) | 448 | **1280** ✅ verified 2026-08-14 | **apache-2.0** ✅ verified 2026-08-14, không FAIR-NC | Text tower **chỉ tiếng Anh** (custom CLIP BPE, `context_length=72`, vocab 49408) ⇒ **bắt buộc giữ envit5** |
 
 - **A1 là cược an toàn**: tỷ lệ chất lượng/chi phí tốt nhất, Apache-2.0 (nếu verify đúng),
   và đa ngữ nên test được cả hai chế độ query miễn phí.
 - **A2 là cược đánh cược**: chính là encoder MERVIN dùng để đạt 79/88. Nhưng nặng nhất, và
   **license là rủi ro thật** — nếu là non-commercial/FAIR-NC thì phải đối chiếu điều lệ BTC.
 
-> ⚠️ **[Cần verify] trước khi implement A2**: tên checkpoint chính xác trên HuggingFace, license,
-> `embedding_dim`, và cách load (repo `facebookresearch/perception_models` hay qua `open_clip`).
-> Phiên nghiên cứu này **chưa** fetch được — lệnh tra cứu bị dừng theo yêu cầu chủ dự án.
+> ✅ **Đóng 2026-08-14** (encoder-swap plan §T3/T7): checkpoint chính xác là
+> `timm/PE-Core-bigG-14-448` (bản OpenCLIP-remapped của Meta, không phải repo gốc
+> `facebookresearch/perception_models`), fetch trực tiếp
+> `https://huggingface.co/api/models/timm/PE-Core-bigG-14-448` +
+> `.../raw/main/open_clip_config.json` (không đoán/tin lại nghiên cứu cũ): license
+> **apache-2.0**, `embedding_dim=1280`, load qua
+> `open_clip.create_model_and_transforms("hf-hub:timm/PE-Core-bigG-14-448")`.
+>
+> ⚠️ Phát hiện thêm ngoài phạm vi câu hỏi ban đầu: `open_clip==3.3.0`'s hf-hub loader
+> **không cho pin `revision`** ở thời điểm load (verify trực tiếp source
+> `src/open_clip/factory.py`/`pretrained.py`) — khác `SigLip2Encoder`
+> (`AutoModel.from_pretrained(..., revision=...)` ghim được). `PeCoreEncoder`
+> (`app/encoders/pe_core.py`) vì vậy không nhận tham số `hf_revision`; cổng an toàn
+> chống drift dựa vào `weight_files_sha256` + image/text probe (T4), không phải pin
+> tại thời điểm load. Xem chi tiết trong docstring của `app/encoders/pe_core.py`.
 
 ### Hạng B — native Vietnamese, bỏ envit5 (chưa chọn)
 
@@ -280,8 +292,8 @@ hẳn**." P1.3 đã chọn "bỏ hẳn" mà **chưa thử chỉnh trọng số**
 
 | # | Câu hỏi | Ảnh hưởng |
 |---|---|---|
-| Q1 | License của PE-Core-bigG-14-448 là gì? | Nếu FAIR-NC, phải đối chiếu điều lệ BTC trước khi đổ compute |
-| Q2 | `embedding_dim` thật của A1/A2? | Quyết định dung lượng Milvus và schema collection |
+| ~~Q1~~ | ~~License của PE-Core-bigG-14-448 là gì?~~ | **Đóng 2026-08-14**: `apache-2.0`, không FAIR-NC — xem §5 |
+| Q2 | `embedding_dim` thật của A1/A2? | A2 đóng 2026-08-14: **1280**. A1 (SigLIP 2) vẫn ghi "1152" trong bảng §5 nhưng KHÔNG có nguồn fetch nào trong doc này xác nhận lại — người triển khai A1 nên đối chiếu, ngoài phạm vi thay đổi này |
 | Q3 | Hai cặp số VI/EN ở §2.1 vì sao lệch? | Ảnh hưởng con số nào được dùng làm baseline chính thức |
 | Q4 | Hạn nộp vòng sơ tuyển còn bao lâu? | Chủ dự án chưa trả lời trực tiếp; quyết định có nên chạy cả A1+A2 hay chỉ A1 |
 | Q5 | Query thi thật dài/phức tạp cỡ nào so với 173 caption tự sinh? | Nếu lệch nhiều, mọi số ở đây lệch theo (CLAUDE.md §1.5) |
