@@ -76,7 +76,14 @@ from eval.metrics.retrieval import (
     recall_at_k_by_group,
 )
 from eval.query_translation import build_query_transform, load_translations
-from eval.trake_run import TrakeGroupMetrics, render_trake_report_md, run_trake_eval
+from eval.trake_run import (
+    TrakeAblationCell,
+    TrakeGroupMetrics,
+    render_trake_ablation_report_md,
+    render_trake_report_md,
+    run_trake_eval,
+    run_trake_lambda_ablation,
+)
 
 for _stream in (sys.stdout, sys.stderr):
     if hasattr(_stream, "reconfigure"):
@@ -152,6 +159,15 @@ class EvalRunConfig:
     # None = use configs/search/dante.yaml's configured lambda_penalty
     # (same "None means default" contract as TrakeService.search()).
     trake_lambda_penalty: float | None = None
+    # P2.4 (PRD §6.4): scores an EXTRA λ-ablation grid -- every λ in
+    # trake_ablation_lambda_values re-run against the SAME extracted N-shot
+    # sequences trake_sequence_lengths already define. Independent of
+    # score_trake (which only ever scores ONE λ, trake_lambda_penalty) --
+    # both can be on in the same run, or this alone. False by default: it
+    # multiplies the per-video-in-corpus DANTE search cost by
+    # len(trake_ablation_lambda_values).
+    score_trake_ablation: bool = False
+    trake_ablation_lambda_values: tuple[float, ...] = (0.0, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1)
 
 
 @dataclass(frozen=True)
@@ -500,6 +516,7 @@ def write_report(
     leakage_report: LeakageReport | None,
     per_query: Sequence[PerQueryResult],
     trake_groups: Sequence[TrakeGroupMetrics] | None = None,
+    trake_ablation_cells: Sequence[TrakeAblationCell] | None = None,
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -518,6 +535,10 @@ def write_report(
         # reader of metrics.json can tell "not run" from "ran, empty" the
         # same way leakage_report already distinguishes the two.
         "trake": [asdict(g) for g in trake_groups] if trake_groups is not None else None,
+        # P2.4: same "None = not run, [] = ran empty" distinction as "trake" above.
+        "trake_ablation": (
+            [asdict(c) for c in trake_ablation_cells] if trake_ablation_cells is not None else None
+        ),
     }
     (output_dir / "metrics.json").write_text(
         json.dumps(metrics_doc, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -540,6 +561,8 @@ def write_report(
         # that could drift out of sync with which git_sha/eval_set it came
         # from.
         report_md += "\n" + render_trake_report_md(trake_groups)
+    if trake_ablation_cells is not None:
+        report_md += "\n" + render_trake_ablation_report_md(trake_ablation_cells)
     (output_dir / "report.md").write_text(report_md, encoding="utf-8")
     _write_per_query_csv(output_dir / "per_query.csv", per_query)
 
@@ -579,6 +602,9 @@ def _load_config(path: Path) -> EvalRunConfig:
     )
     raw["trake_sequence_lengths"] = tuple(
         raw.get("trake_sequence_lengths", EvalRunConfig().trake_sequence_lengths)
+    )
+    raw["trake_ablation_lambda_values"] = tuple(
+        raw.get("trake_ablation_lambda_values", EvalRunConfig().trake_ablation_lambda_values)
     )
     return EvalRunConfig(**raw)
 
@@ -924,6 +950,7 @@ def _write_final_report(
     accumulator: _ResultAccumulator,
     leakage_report: LeakageReport | None,
     trake_groups: Sequence[TrakeGroupMetrics] | None = None,
+    trake_ablation_cells: Sequence[TrakeAblationCell] | None = None,
 ) -> Path:
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     git_sha = _git_sha()
@@ -942,6 +969,7 @@ def _write_final_report(
         leakage_report=leakage_report,
         per_query=accumulator.per_query,
         trake_groups=trake_groups,
+        trake_ablation_cells=trake_ablation_cells,
     )
     return output_dir
 
@@ -994,25 +1022,46 @@ async def _main() -> int:
         )
 
         trake_groups = None
-        if config.score_trake:
-            # Every sequence_length is validated before any expensive
-            # search runs (run_trake_eval's own fail-fast check), but this
-            # try/finally is the second line of defense: ANY exception past
-            # this point (not just an unextractable N) must still close
+        trake_ablation_cells = None
+        if config.score_trake or config.score_trake_ablation:
+            # Shared by both channels below (same encoder/Milvus/Mongo,
+            # CLAUDE.md §3 -- one vector space, not two). This try/finally is
+            # the second line of defense: ANY exception past this point (not
+            # just an unextractable N, which run_trake_eval/run_trake_
+            # lambda_ablation already fail fast on) must still close
             # mongo/es (regression 2026-08-14 -- a real run left both
             # connections open after an uncaught ValueError propagated
             # straight out of _main()).
             trake_service = _build_trake_service(encoder, milvus, mongo)
-            trake_groups = await run_trake_eval(
-                trake_service,
-                ground_truth,
-                config.trake_sequence_lengths,
-                config.trake_top_k,
-                config.trake_lambda_penalty,
-            )
+            if config.score_trake:
+                trake_groups = await run_trake_eval(
+                    trake_service,
+                    ground_truth,
+                    config.trake_sequence_lengths,
+                    config.trake_top_k,
+                    config.trake_lambda_penalty,
+                )
+            if config.score_trake_ablation:
+                # P2.4 (PRD §6.4): separate flag from score_trake -- this
+                # sweeps trake_ablation_lambda_values against the SAME
+                # trake_sequence_lengths, multiplying search cost by
+                # len(trake_ablation_lambda_values) instead of running once.
+                trake_ablation_cells = await run_trake_lambda_ablation(
+                    trake_service,
+                    ground_truth,
+                    config.trake_sequence_lengths,
+                    config.trake_ablation_lambda_values,
+                    config.trake_top_k,
+                )
 
         output_dir = _write_final_report(
-            config, ground_truth, available, accumulator, leakage_report, trake_groups
+            config,
+            ground_truth,
+            available,
+            accumulator,
+            leakage_report,
+            trake_groups,
+            trake_ablation_cells,
         )
         logger.info("Wrote report to %s", output_dir)
     finally:

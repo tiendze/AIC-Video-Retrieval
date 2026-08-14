@@ -295,7 +295,7 @@ async def test_run_trake_lambda_ablation_passes_each_lambda_value_to_the_searche
     assert [call[2] for call in searcher.calls] == [0.0, 0.01]
 
 
-async def test_run_trake_lambda_ablation_raises_when_a_sequence_length_has_no_extractable_sequence():
+async def test_run_trake_lambda_ablation_raises_when_a_sequence_length_is_unextractable():
     searcher = _FakeSearcher([_perfect_hit_result()])
 
     with pytest.raises(ValueError, match="N=5"):
