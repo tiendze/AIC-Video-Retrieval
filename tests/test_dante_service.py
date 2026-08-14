@@ -88,9 +88,12 @@ class TestDanteRuntimeIsLinearInT:
         time_2x = min(_time_dante_search(n_events, base_t * 2, 0.001, seed) for seed in range(3))
 
         ratio = time_2x / time_1x
-        # O(NT) predicts ~2x; O(NT^2) would predict ~4x. Generous band to
-        # absorb system noise while still catching a quadratic regression.
-        assert 1.2 < ratio < 3.0, f"expected ~2x scaling for 2x frames, got ratio={ratio:.2f}"
+        # O(NT) predicts ~2x; O(NT^2) would predict ~4x. Floor is low (not
+        # ~2x) because under full-suite contention this measured as low as
+        # 1.15 with no code change -- the floor only needs to rule out
+        # "runtime independent of T", the ceiling is what actually catches a
+        # quadratic regression.
+        assert 1.05 < ratio < 3.0, f"expected ~2x scaling for 2x frames, got ratio={ratio:.2f}"
 
 
 def _time_dante_search(n_events: int, n_frames: int, lambda_penalty: float, seed: int) -> float:
@@ -150,14 +153,37 @@ class TestDanteSearchErrors:
     def test_raises_when_fewer_frames_than_events_are_available(self) -> None:
         similarity = _similarity([[0.5, 0.5], [0.5, 0.5], [0.5, 0.5]])  # 3 events, 2 frames
 
-        with pytest.raises(DanteServiceError, match="not enough frames"):
+        with pytest.raises(DanteServiceError, match="not enough frames") as exc_info:
             dante_search(similarity, s_v=0, lambda_penalty=0.001)
+
+        # error_code/status_code mirror SearchServiceError (app/services/
+        # search_service.py) so a future POST /api/trake can map this to an
+        # HTTP response without parsing the message text (CLAUDE.md §7).
+        assert exc_info.value.error_code == "insufficient_frames"
+        assert exc_info.value.status_code == 422
 
     def test_raises_on_a_1d_similarity_array(self) -> None:
         similarity = np.array([0.1, 0.2, 0.3])
 
-        with pytest.raises(DanteServiceError, match="2D"):
+        with pytest.raises(DanteServiceError, match="2D") as exc_info:
             dante_search(similarity, s_v=0, lambda_penalty=0.001)
+
+        assert exc_info.value.error_code == "invalid_similarity_shape"
+        assert exc_info.value.status_code == 400
+
+    def test_raises_on_zero_events_instead_of_crashing(self) -> None:
+        # Regression: an empty (0, T) similarity matrix used to index dp[0, :]
+        # on a 0-row array and crash with a raw IndexError instead of the
+        # documented DanteServiceError (CLAUDE.md §7 -- missing/malformed
+        # input must fail loudly through the module's own error type, not an
+        # unrelated exception a caller has no reason to expect or catch).
+        similarity = np.empty((0, 5))
+
+        with pytest.raises(DanteServiceError, match="at least one event") as exc_info:
+            dante_search(similarity, s_v=0, lambda_penalty=0.001)
+
+        assert exc_info.value.error_code == "invalid_similarity_shape"
+        assert exc_info.value.status_code == 400
 
     def test_raises_when_every_forced_path_is_non_finite(self) -> None:
         # T == N leaves exactly one possible index assignment (0, 1, ..., N-1).
@@ -167,8 +193,13 @@ class TestDanteSearchErrors:
         # rather than return a DanteResult with a -inf score.
         similarity = _similarity([[float("-inf"), 0.5], [0.5, float("-inf")]])
 
-        with pytest.raises(DanteServiceError, match="no valid strictly-ordered sequence"):
+        with pytest.raises(
+            DanteServiceError, match="no valid strictly-ordered sequence"
+        ) as exc_info:
             dante_search(similarity, s_v=0, lambda_penalty=0.001)
+
+        assert exc_info.value.error_code == "no_valid_sequence"
+        assert exc_info.value.status_code == 422
 
 
 class TestComputeSimilarityMatrix:

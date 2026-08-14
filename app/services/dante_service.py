@@ -55,7 +55,17 @@ class DanteServiceError(Exception):
     """Raised for a caller-fixable input problem: a malformed similarity
     matrix, or a video whose `[s_v, e_v]` range has fewer frames than events
     requested (CLAUDE.md §7 -- missing/insufficient data must fail loudly,
-    never silently return a shorter-than-requested sequence)."""
+    never silently return a shorter-than-requested sequence).
+
+    Carries `error_code`/`status_code`, mirroring `SearchServiceError`
+    (app/services/search_service.py) -- so the future `POST /api/trake`
+    endpoint (plan §P2.2) can map each distinct cause to an HTTP response
+    without parsing the message text (CLAUDE.md §7)."""
+
+    def __init__(self, message: str, error_code: str, status_code: int) -> None:
+        super().__init__(message)
+        self.error_code = error_code
+        self.status_code = status_code
 
 
 @dataclass(frozen=True)
@@ -103,12 +113,22 @@ def dante_search(
     """
     if similarity.ndim != 2:
         raise DanteServiceError(
-            f"similarity must be a 2D (N events x T frames) array, got shape {similarity.shape}"
+            f"similarity must be a 2D (N events x T frames) array, got shape {similarity.shape}",
+            error_code="invalid_similarity_shape",
+            status_code=400,
         )
     n_events, n_frames = similarity.shape
+    if n_events < 1:
+        raise DanteServiceError(
+            "similarity must contain at least one event (N>=1) row",
+            error_code="invalid_similarity_shape",
+            status_code=400,
+        )
     if n_frames < n_events:
         raise DanteServiceError(
-            f"not enough frames ({n_frames}) in [s_v, e_v] to place {n_events} ordered events"
+            f"not enough frames ({n_frames}) in [s_v, e_v] to place {n_events} ordered events",
+            error_code="insufficient_frames",
+            status_code=422,
         )
 
     dp = np.full((n_events, n_frames), -np.inf, dtype=np.float64)
@@ -138,7 +158,9 @@ def dante_search(
     best_score = float(last_row[best_t])
     if not np.isfinite(best_score):
         raise DanteServiceError(
-            "no valid strictly-ordered sequence exists for this similarity matrix"
+            "no valid strictly-ordered sequence exists for this similarity matrix",
+            error_code="no_valid_sequence",
+            status_code=422,
         )
 
     local_indices = [0] * n_events
