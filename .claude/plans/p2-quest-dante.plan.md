@@ -148,10 +148,29 @@ Paper đề xuất `λ = 0.001` (khoảng cách index 3–15) và `λ = 0.01` (k
 - Toàn bộ suite: `601 passed, 4 skipped` (không regression so với baseline P2.3), `ruff check` + `black --check` sạch trên `eval/`.
 - Git checkpoint theo TDD: `d41ab86` (trake_run.py RED), `4f02ef6` (trake_run.py GREEN), `1600ad4` (eval/run.py wiring RED), `cb72597` (eval/run.py wiring GREEN), `e60dcf3` (config file).
 
+**✅ Kết quả đo thật (chủ dự án chạy 2026-08-14 21:44–22:37, report `reports/20260814T153744Z_8cf63ef.../`):**
+
+7 λ × 2 N (N=7 chưa chạy được, xem "còn thiếu"). N=3: 17 truy vấn/ô. N=5: 5 truy vấn/ô ⚠️ mẫu rất nhỏ, mỗi truy vấn lệch ±0.2 SEM.
+
+| λ | SEM N=3 | tau N=3 | SEM N=5 | tau N=5 |
+|---|---|---|---|---|
+| 0.0 | 0.2941 | 0.8177 | 0.6000 | 0.9897 |
+| 0.0005 | 0.4706 | 0.9089 | 0.8000 | 0.9897 |
+| **0.001** | 0.4706 | 0.9089 | 0.8000 | 0.9897 |
+| 0.005 | 0.5294 | 0.8406 | 0.8000 | 0.9897 |
+| 0.01 | 0.4706 | 0.8291 | 0.6000 | 0.9795 |
+| 0.05 | 0.3529 | 0.6812 | 0.4000 | 0.9692 |
+| 0.1 | 0.1765 | 0.5810 | 0.0000 | 0.6835 |
+
+- **Trả lời câu hỏi bắt buộc của plan — `λ=0` có tương đương phần λ>0 tốt nhất không?** **Không.** `λ=0` kém rõ rệt ở cả hai N (N=3: 0.2941 vs 0.4706–0.5294 SEM; N=5: 0.6000 vs 0.8000 SEM) — bằng chứng thực nghiệm đầu tiên cho thấy **hình phạt khoảng cách của DANTE thực sự đóng góp**, không phải chỉ ràng buộc thứ tự trá hình. Ủng hộ thiết kế paper.
+- λ lớn (0.05, 0.1) làm hỏng kết quả đơn điệu và rõ rệt (N=5, λ=0.1: SEM=0.0000, tau rơi từ ~0.99 xuống 0.6835) — sanity check DP hoạt động đúng hướng.
+- `λ=0.0005` và `λ=0.001` **tie tuyệt đối trên cả 4 số đo** — không có bằng chứng số liệu để phân biệt hai giá trị này (lưu ý ban đầu chủ dự án đọc nhầm 0.0005 là "tốt nhất" khi thực ra nó chỉ hòa với 0.001). `λ=0.005` có SEM N=3 cao nhất toàn sweep (0.5294) nhưng đánh đổi bằng Kendall's tau thấp hơn rõ (0.8406 vs 0.9089) — một trade-off thật, không phải điểm thắng tuyệt đối.
+- **Đã chọn `λ=0.001` làm default cuối cùng** (chủ dự án xác nhận 2026-08-14) — tie-break dùng cơ sở lý thuyết: trùng giá trị paper đề xuất cho khoảng cách index 3–15, trong khi 0.0005 không có cơ sở nào ngoài việc hòa số. Đã ghi lại trong `configs/search/dante.yaml` (giá trị không đổi, `0.001`, chỉ cập nhật comment giải thích + trích dẫn report).
+- Wall-clock ổn định ~375–390s/ô ở N=3 và ~116–138s/ô ở N=5 bất kể λ — đúng kỳ vọng `O(NT)` (λ không đổi độ phức tạp), chênh lệch N=3 vs N=5 chủ yếu do số truy vấn (17 vs 5) chứ không phải T.
+
 **Còn thiếu / rủi ro đã biết:**
-- **N=7 vẫn chưa chạy được** — lý do giống hệt P2.3: `aic_eval_v1.json` chỉ có chuỗi 5-shot-liên-tiếp (`build_eval_set.yaml: trake_sequence_length: 5`), nên nếu thêm N=7 vào `trake_ablation_lambda_values` × N sweep sẽ raise `ValueError` ngay (đúng thiết kế fail-fast, CLAUDE.md §7). `configs/eval/trake_ablation.yaml` chỉ khai `trake_sequence_lengths: [3, 5]`. Cần regen `aic_eval_v1.json` với `trake_sequence_length≥7` (eval_set_version mới + review tay + chạy lại toàn bộ baseline, CLAUDE.md §8) trước khi bảng ablation đủ 7×3 — việc này **không** tự động hoá được (Gemini cost + human review), chủ dự án tự quyết định khi nào làm.
-- **Chưa có số đo thật nào** — mọi thứ ở trên mới dừng ở "code đúng, wiring đúng, test Fake pass". Kết luận về `λ = 0` (paper chỉ dùng ràng buộc thứ tự hay hình phạt khoảng cách thật sự đóng góp) **chỉ trả lời được sau khi chủ dự án chạy** `python -m eval.run --config configs/eval/trake_ablation.yaml` (Docker + GPU, CLAUDE.md §10) và đọc `report.md`/`metrics.json` sinh ra trong `reports/`.
-- `configs/search/dante.yaml`'s `lambda_penalty` chưa được cập nhật thành giá trị "được chọn cuối cùng" — đợi số đo thật từ sweep trên mới quyết định, đúng tinh thần "không sửa số trước khi thấy kết quả" (CLAUDE.md §8).
+- **N=7 vẫn chưa đo được** — lý do giống hệt P2.3: `aic_eval_v1.json` chỉ có chuỗi 5-shot-liên-tiếp. Chủ dự án đã xác nhận (2026-08-14) **chưa cần regen eval set ngay** — chạy N∈{3,5} trước là đủ để ra quyết định `λ`. Khi cần N=7: regen `aic_eval_v1.json` với `trake_sequence_length≥7` (eval_set_version mới + review tay + chạy lại toàn bộ baseline, CLAUDE.md §8), không tự động hoá được.
+- Kết luận `λ=0.001` dựa trên mẫu N=5 rất nhỏ (5 truy vấn/ô) — nên coi là tín hiệu mạnh, chưa phải kết luận thống kê vững, đúng tinh thần cảnh báo mẫu nhỏ đã ghi ở P2.3.
 - `eval/run.py` vẫn ~1080 dòng, vượt giới hạn 800 dòng CLAUDE.md §6 — vi phạm có từ trước P2.3, P2.4 chỉ thêm ~35 dòng có kiểm soát (field config + wiring), không phải nguồn gốc vi phạm; refactor tách file vẫn là việc riêng ngoài phạm vi P2.4.
 
 ---
@@ -185,7 +204,7 @@ Paper đề xuất `λ = 0.001` (khoảng cách index 3–15) và `λ = 0.01` (k
 
 - [x] `Sequence Exact-Match (N=3)` đạt mục tiêu PRD §6.7 — **0.4706** ≥ 0,40 (xuất sắc), 2026-08-14, mẫu 17 truy vấn ⚠️ nhỏ
 - [x] `Kendall's tau` đạt mục tiêu §6.7 — **0.9089** (N=3) / **0.9897** (N=5) ≥ 0,90 (xuất sắc), 2026-08-14
-- [ ] **Bảng ablation `λ` đầy đủ 7 × 3**, có kết luận rõ về `λ = 0` — code+wiring xong 2026-08-14 (`configs/eval/trake_ablation.yaml`), nhưng **chỉ chạy được 3×2 (N∈{3,5})**; N=7 vẫn cần sinh lại bộ eval trước (xem P2.3/P2.4 "còn thiếu"), và chưa có số đo thật nào (cần chủ dự án chạy Docker+GPU, CLAUDE.md §10)
+- [ ] **Bảng ablation `λ` đầy đủ 7 × 3** — **đã đo thật 7×2 (N∈{3,5}), 2026-08-14** (`reports/20260814T153744Z_8cf63ef.../`), kết luận rõ `λ=0` kém rõ rệt λ>0 (không tương đương), đã chọn `λ=0.001` làm default (`configs/search/dante.yaml`); còn thiếu đúng cột N=7 — cần sinh lại bộ eval trước (xem P2.4 "còn thiếu"), chủ dự án đã xác nhận tạm hoãn
 - [x] Chứng minh thực nghiệm `O(NT)` (đồ thị thời gian theo T) — `test_dante_service.py::test_dante_runtime_is_linear_in_t` (P2.1)
 - [ ] QUEST hai nhánh chạy được, có fallback, hiển thị `q₀` + `q_r`
 - [x] Coverage ≥ 80% — 100% trên toàn bộ module TRAKE mới (P2.1–P2.4)
