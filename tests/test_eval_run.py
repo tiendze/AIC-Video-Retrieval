@@ -336,3 +336,76 @@ def test_report_md_labels_median_rank_as_rank_in_grid(tmp_path):
 
     report_md = (tmp_path / "report.md").read_text(encoding="utf-8")
     assert "Rank-in-Grid" in report_md
+
+
+def test_write_report_appends_trake_section_when_trake_groups_given(tmp_path):
+    # plan §P2.3: score_trake: true adds a TRAKE section to the SAME
+    # report.md/metrics.json a KIS/OCR run already writes -- one report per
+    # eval/run.py invocation, not a second file to keep in sync.
+    from eval.trake_run import TrakeGroupMetrics
+
+    video_metrics = compute_channel_metrics(
+        "semantic", "video", [1, None], top_ks=(1, 5, 20, 50, 100)
+    )
+    segment_metrics = compute_channel_metrics(
+        "semantic", "segment", [1, None], top_ks=(1, 5, 20, 50, 100)
+    )
+    trake_groups = [
+        TrakeGroupMetrics(
+            sequence_length=3,
+            num_queries=1,
+            num_found=1,
+            sequence_exact_match=1.0,
+            video_level_recall_at_k=1.0,
+            per_event_recall_at_k=(1.0, 1.0, 1.0),
+            mean_kendall_tau=1.0,
+            mean_offset_sec=0.0,
+            wall_clock_sec=0.1,
+        )
+    ]
+
+    write_report(
+        tmp_path,
+        git_sha="abc123",
+        eval_set_version="v1",
+        eval_set_hash="deadbeef",
+        num_video_ids=1,
+        num_queries=2,
+        seed=42,
+        channel_metrics=[video_metrics, segment_metrics],
+        author_breakdown={},
+        batch_breakdown={},
+        leakage_report=None,
+        per_query=[],
+        trake_groups=trake_groups,
+    )
+
+    report_md = (tmp_path / "report.md").read_text(encoding="utf-8")
+    assert "TRAKE metrics" in report_md
+    metrics_doc = (tmp_path / "metrics.json").read_text(encoding="utf-8")
+    assert "sequence_exact_match" in metrics_doc
+
+
+def test_write_report_omits_trake_section_when_trake_groups_not_given(tmp_path):
+    video_metrics = compute_channel_metrics("semantic", "video", [1], top_ks=(1, 5, 20, 50, 100))
+    segment_metrics = compute_channel_metrics(
+        "semantic", "segment", [1], top_ks=(1, 5, 20, 50, 100)
+    )
+
+    write_report(
+        tmp_path,
+        git_sha="abc123",
+        eval_set_version="v1",
+        eval_set_hash="deadbeef",
+        num_video_ids=1,
+        num_queries=1,
+        seed=42,
+        channel_metrics=[video_metrics, segment_metrics],
+        author_breakdown={},
+        batch_breakdown={},
+        leakage_report=None,
+        per_query=[],
+    )
+
+    report_md = (tmp_path / "report.md").read_text(encoding="utf-8")
+    assert "TRAKE metrics" not in report_md
