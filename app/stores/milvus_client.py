@@ -194,6 +194,11 @@ class MilvusStore:
             collection_name=self._collection_name,
             filter=f'video_id == "{video_id}" && global_index >= {s_v} && global_index <= {e_v}',
             output_fields=["keyframe_id", "embedding", "global_index", "frame_idx", "timestamp"],
+            # Same reasoning as search()'s consistency_level: Milvus's default
+            # "Bounded" consistency can miss a write from moments earlier --
+            # confirmed 2026-08-14, this query returned zero rows against a
+            # real server immediately after upsert() without this.
+            consistency_level="Strong",
         )
         for row in rows:
             row["embedding"] = np.asarray(row["embedding"], dtype=np.float32)
