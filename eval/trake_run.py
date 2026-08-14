@@ -169,6 +169,102 @@ async def run_trake_eval(
     return groups
 
 
+@dataclass(frozen=True)
+class TrakeAblationCell:
+    """One (λ, N) cell of the P2.4 ablation grid (PRD §6.4, plan §P2.4) --
+    the same `TrakeGroupMetrics` a single-λ run already produces, tagged
+    with which λ produced it."""
+
+    lambda_penalty: float
+    metrics: TrakeGroupMetrics
+
+
+async def run_trake_lambda_ablation(
+    searcher: TrakeSearcher,
+    ground_truth: Sequence[GroundTruthSegment],
+    sequence_lengths: Sequence[int],
+    lambda_values: Sequence[float],
+    top_k: int,
+) -> list[TrakeAblationCell]:
+    """Full λ × N ablation sweep (plan §P2.4, PRD §6.4's mandatory ablation
+    table) -- paper proposes two λ values with no ablation ever run to
+    justify either.
+
+    Each N's ground-truth sequences are extracted ONCE (`extract_trake_
+    sequences` is independent of λ -- only DANTE's DP inside `searcher.
+    search()` changes across λ), then re-run against every λ in
+    `lambda_values`. Same fail-fast contract as `run_trake_eval` (P2.3
+    regression): every N is validated extractable BEFORE any
+    `searcher.search()` call runs for ANY λ, so a data gap (e.g. N=7 not
+    yet in the frozen eval set) is caught in milliseconds, not after
+    several λ×N cells' worth of real DANTE search.
+    """
+    sequences_by_n: dict[int, list[Sequence[GroundTruthSegment]]] = {}
+    for n in sequence_lengths:
+        sequences = extract_trake_sequences(ground_truth, n)
+        if not sequences:
+            raise ValueError(
+                f"run_trake_lambda_ablation: N={n} has no extractable TRAKE sequence in "
+                "ground_truth -- nothing to evaluate for this sequence length"
+            )
+        sequences_by_n[n] = sequences
+
+    cells: list[TrakeAblationCell] = []
+    for lam in lambda_values:
+        for n in sequence_lengths:
+            sequences = sequences_by_n[n]
+            start = time.perf_counter()
+            results = await run_trake_queries(searcher, sequences, top_k, lam)
+            wall_clock_sec = time.perf_counter() - start
+            group = aggregate_trake_group(n, results, top_k, wall_clock_sec)
+            cells.append(TrakeAblationCell(lambda_penalty=lam, metrics=group))
+            logger.info(
+                "trake_ablation: lambda=%s, N=%d, Sequence Exact-Match=%.4f, "
+                "Kendall's tau=%s, wall_clock=%.2fs",
+                lam,
+                n,
+                group.sequence_exact_match,
+                "n/a" if group.mean_kendall_tau is None else f"{group.mean_kendall_tau:.4f}",
+                wall_clock_sec,
+            )
+    return cells
+
+
+def render_trake_ablation_report_md(cells: Sequence[TrakeAblationCell]) -> str:
+    """λ × N grid (plan §P2.4, PRD §6.4) -- two tables (Sequence Exact-Match,
+    Kendall's tau) since a single cell number can't show both headline
+    metrics PRD §6.4 requires at once."""
+    sequence_lengths = sorted({c.metrics.sequence_length for c in cells})
+    lambda_values = sorted({c.lambda_penalty for c in cells})
+    by_key = {(c.lambda_penalty, c.metrics.sequence_length): c.metrics for c in cells}
+
+    header = "| λ | " + " | ".join(f"N={n}" for n in sequence_lengths) + " |"
+    sep = "|---|" + "---|" * len(sequence_lengths)
+
+    def _grid(value_of) -> list[str]:
+        rows = [header, sep]
+        for lam in lambda_values:
+            row = [f"{lam:g}"]
+            for n in sequence_lengths:
+                metrics = by_key.get((lam, n))
+                value = None if metrics is None else value_of(metrics)
+                row.append("n/a" if value is None else f"{value:.4f}")
+            rows.append("| " + " | ".join(row) + " |")
+        return rows
+
+    lines = ["## DANTE λ ablation (PRD §6.4, plan §P2.4)", ""]
+    lines += ["Sequence Exact-Match", ""] + _grid(lambda m: m.sequence_exact_match)
+    lines += ["", "Kendall's tau", ""] + _grid(lambda m: m.mean_kendall_tau)
+    lines += [
+        "",
+        "λ=0 is the pure order-constraint case (no time-distance penalty) -- compare its "
+        "row to λ>0 rows to see whether DANTE's distance penalty contributes anything "
+        "beyond the ordering constraint alone. Paper-proposed values: λ=0.001 (index "
+        "distance 3-15), λ=0.01 (distance 1-3).",
+    ]
+    return "\n".join(lines) + "\n"
+
+
 def render_trake_report_md(groups: Sequence[TrakeGroupMetrics]) -> str:
     lines = [
         "## TRAKE metrics (DANTE)",
