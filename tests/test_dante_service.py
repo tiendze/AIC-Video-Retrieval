@@ -49,7 +49,7 @@ class TestDanteNeverReturnsOutOfOrderSequence:
 
     def test_never_returns_out_of_order_across_many_random_matrices(self) -> None:
         rng = np.random.default_rng(42)
-        for seed in range(20):
+        for _seed in range(20):
             similarity = rng.standard_normal((4, 12))
             result = dante_search(similarity, s_v=0, lambda_penalty=0.005)
             indices = result.global_indices
@@ -157,6 +157,17 @@ class TestDanteSearchErrors:
         similarity = np.array([0.1, 0.2, 0.3])
 
         with pytest.raises(DanteServiceError, match="2D"):
+            dante_search(similarity, s_v=0, lambda_penalty=0.001)
+
+    def test_raises_when_every_forced_path_is_non_finite(self) -> None:
+        # T == N leaves exactly one possible index assignment (0, 1, ..., N-1).
+        # If a caller's similarity matrix has -inf along that forced
+        # diagonal (e.g. an upstream NaN/-inf leaking from a buggy encoder),
+        # no finite ordered sequence exists at all -- this must fail loudly
+        # rather than return a DanteResult with a -inf score.
+        similarity = _similarity([[float("-inf"), 0.5], [0.5, float("-inf")]])
+
+        with pytest.raises(DanteServiceError, match="no valid strictly-ordered sequence"):
             dante_search(similarity, s_v=0, lambda_penalty=0.001)
 
 
