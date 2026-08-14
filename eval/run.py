@@ -950,55 +950,63 @@ async def _main() -> int:
 
     encoder = _build_encoder(args.device)
     mongo, milvus, es, search_service = _build_stores(settings, encoder)
-    live_translated_search_service = (
-        _build_live_translated_search_service(encoder, milvus, es, mongo)
-        if config.translate_semantic_live
-        else None
-    )
-    clip_search_service = (
-        _build_clip_search_service(settings, es, mongo) if config.score_clip_baseline else None
-    )
-
-    accumulator = _ResultAccumulator(
-        ground_truth, top_k, config.top_ks, author_map, _AUTHOR_BATCH_BREAKDOWN_K
-    )
-    await _run_all_channels(
-        accumulator,
-        config,
-        mongo,
-        es,
-        search_service,
-        ground_truth,
-        live_translated_search_service,
-        clip_search_service,
-    )
-
-    leakage_report = await _build_leakage_report_or_none(
-        ground_truth,
-        mongo,
-        es,
-        frozenset(config.vietnamese_stopwords),
-        config.leakage_jaccard_threshold,
-    )
-
-    trake_groups = None
-    if config.score_trake:
-        trake_service = _build_trake_service(encoder, milvus, mongo)
-        trake_groups = await run_trake_eval(
-            trake_service,
-            ground_truth,
-            config.trake_sequence_lengths,
-            config.trake_top_k,
-            config.trake_lambda_penalty,
+    try:
+        live_translated_search_service = (
+            _build_live_translated_search_service(encoder, milvus, es, mongo)
+            if config.translate_semantic_live
+            else None
+        )
+        clip_search_service = (
+            _build_clip_search_service(settings, es, mongo) if config.score_clip_baseline else None
         )
 
-    output_dir = _write_final_report(
-        config, ground_truth, available, accumulator, leakage_report, trake_groups
-    )
-    logger.info("Wrote report to %s", output_dir)
+        accumulator = _ResultAccumulator(
+            ground_truth, top_k, config.top_ks, author_map, _AUTHOR_BATCH_BREAKDOWN_K
+        )
+        await _run_all_channels(
+            accumulator,
+            config,
+            mongo,
+            es,
+            search_service,
+            ground_truth,
+            live_translated_search_service,
+            clip_search_service,
+        )
 
-    await mongo.close()
-    await es.close()
+        leakage_report = await _build_leakage_report_or_none(
+            ground_truth,
+            mongo,
+            es,
+            frozenset(config.vietnamese_stopwords),
+            config.leakage_jaccard_threshold,
+        )
+
+        trake_groups = None
+        if config.score_trake:
+            # Every sequence_length is validated before any expensive
+            # search runs (run_trake_eval's own fail-fast check), but this
+            # try/finally is the second line of defense: ANY exception past
+            # this point (not just an unextractable N) must still close
+            # mongo/es (regression 2026-08-14 -- a real run left both
+            # connections open after an uncaught ValueError propagated
+            # straight out of _main()).
+            trake_service = _build_trake_service(encoder, milvus, mongo)
+            trake_groups = await run_trake_eval(
+                trake_service,
+                ground_truth,
+                config.trake_sequence_lengths,
+                config.trake_top_k,
+                config.trake_lambda_penalty,
+            )
+
+        output_dir = _write_final_report(
+            config, ground_truth, available, accumulator, leakage_report, trake_groups
+        )
+        logger.info("Wrote report to %s", output_dir)
+    finally:
+        await mongo.close()
+        await es.close()
     return 0
 
 

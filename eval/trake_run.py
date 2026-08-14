@@ -130,11 +130,18 @@ async def run_trake_eval(
 ) -> list[TrakeGroupMetrics]:
     """Full TRAKE eval pass: for each N in `sequence_lengths`, extract every
     valid N-consecutive-shot sequence from `ground_truth`, run + score them,
-    and aggregate. Raises `ValueError` (not a silently empty group) when an
-    N has zero extractable sequences -- CLAUDE.md §7: missing data must fail
+    and aggregate.
+
+    Every N is validated as extractable BEFORE any `searcher.search()` call
+    runs (regression, chủ dự án 2026-08-14: a real run hit N=7's
+    ValueError only AFTER N=3 and N=5 had already spent 5+ minutes of real
+    DANTE search, with nothing written to disk since `write_report` only
+    runs after this whole function returns -- all of that compute was
+    wasted). Raises `ValueError` (not a silently empty group) when an N has
+    zero extractable sequences -- CLAUDE.md §7: missing data must fail
     loudly, not print a metrics table that reads all-zero as if the system
     itself were broken."""
-    groups: list[TrakeGroupMetrics] = []
+    sequences_by_n: dict[int, list[Sequence[GroundTruthSegment]]] = {}
     for n in sequence_lengths:
         sequences = extract_trake_sequences(ground_truth, n)
         if not sequences:
@@ -142,6 +149,11 @@ async def run_trake_eval(
                 f"run_trake_eval: N={n} has no extractable TRAKE sequence in ground_truth -- "
                 "nothing to evaluate for this sequence length"
             )
+        sequences_by_n[n] = sequences
+
+    groups: list[TrakeGroupMetrics] = []
+    for n in sequence_lengths:
+        sequences = sequences_by_n[n]
         start = time.perf_counter()
         results = await run_trake_queries(searcher, sequences, top_k, lambda_penalty)
         wall_clock_sec = time.perf_counter() - start
