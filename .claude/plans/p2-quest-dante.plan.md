@@ -11,7 +11,7 @@
 
 ---
 
-## P2.1 — `dante_service.py`
+## P2.1 — `dante_service.py` ✅ hoàn thành (2026-08-14)
 
 **Làm gì:** quy hoạch động tìm chuỗi N sự kiện đúng thứ tự trong một video.
 
@@ -37,6 +37,13 @@ Yêu cầu triển khai:
 - `test_dante_returns_exactly_n_keyframes` — backtracking đủ N
 - `test_dante_runtime_is_linear_in_t` — nhân đôi T ⇒ thời gian tăng ~2×, **không** ~4×. Đây là kiểm chứng thực nghiệm tuyên bố `O(NT)` mà paper không chứng minh bằng số
 - `test_lambda_zero_reduces_to_pure_order_constraint`
+
+**Kết quả thực tế:**
+- Files: `app/services/dante_service.py` (`dante_search()`, `compute_similarity_matrix()`, `DanteResult` frozen dataclass), `configs/search/dante.yaml` (`lambda_penalty: 0.001`), `tests/test_dante_service.py`
+- `.venv/Scripts/python.exe -m pytest tests/test_dante_service.py -v --cov=app.services.dante_service --cov-report=term-missing` → **18/18 passed**, coverage module **100%** (59/59 statements)
+- Running-max DP (Eq 3–4) đạt O(NT), có backtracking, giữ bất biến `τ < t`; `λ` đọc từ config, không hard-code
+- Bug N=0 (IndexError) phát hiện lúc code review đã fix ở commit `870434c` — nay có test riêng `test_raises_on_zero_events_instead_of_crashing`, raise `DanteServiceError` thay vì crash
+- Regression toàn repo trước đó: 514 passed, 4 skipped, không có test nào đỏ
 
 ---
 
