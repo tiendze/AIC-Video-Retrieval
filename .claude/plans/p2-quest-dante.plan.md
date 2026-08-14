@@ -69,12 +69,12 @@ Yêu cầu triển khai:
 
 **Còn thiếu / rủi ro đã biết:**
 - Chưa đo latency thật của `TrakeService.search()` khi duyệt toàn bộ corpus (873 video) — thiết kế "duyệt từng video" đúng theo paper nhưng chưa benchmark; TRAKE không bị ràng buộc latency chặt như KIS/QA (PRD §1.2) nên chấp nhận được ở P2.2, sẽ đo lại nếu P2.3/P2.4 cho thấy chậm.
-- Chưa test integration thật với Milvus/MongoDB sống (chỉ Fake) — theo CLAUDE.md §10, việc chạy thật cần Docker do chủ dự án tự thực hiện.
+- ~~Chưa test integration thật với Milvus/MongoDB sống~~ **Đã chạy 2026-08-14** (`docker compose up -d` + `pytest -m integration tests/integration/test_milvus_client.py`) — phát hiện bug thật: `get_vectors_for_video()` thiếu `consistency_level="Strong"`, `query()` trả rỗng ngay sau `upsert()` do Milvus mặc định "Bounded" consistency. Đã sửa (`dd4d80e`), chạy lại pass. Đúng giá trị của integration test: bug này unit test với Fake không bao giờ bắt được.
 - `eval/metrics/trake.py` (Sequence Exact-Match, Kendall's tau) là phạm vi P2.3, chưa làm.
 
 ---
 
-## P2.3 — `eval/metrics/trake.py`
+## P2.3 — `eval/metrics/trake.py` ✅ hoàn thành (2026-08-14)
 
 **Làm gì:** đo chất lượng TRAKE (PRD §6.4). Chạy qua **cùng một entry point** `eval/run.py`.
 
@@ -88,6 +88,23 @@ Yêu cầu triển khai:
 | Thời gian chạy theo T | Kiểm chứng `O(NT)` |
 
 **Verify:** `python -m eval.run --config configs/eval/trake_val.yaml` ra bảng đầy đủ, kèm git SHA / checkpoint / mẫu số / seed.
+
+**Kết quả thực tế:**
+- Files mới: `eval/metrics/trake.py` (hàm tính điểm thuần: `score_query`, `sequence_exact_match_rate`, `video_level_recall_at_k`, `per_event_recall_at_k`, `kendall_tau`, `sequence_kendall_tau`, `mean_kendall_tau`, `mean_temporal_offset_sec`, `mean_offset_sec`), `eval/trake_run.py` (orchestration: `run_trake_queries`, `run_trake_eval`, `aggregate_trake_group`, `render_trake_report_md`), `configs/eval/trake_val.yaml`. Sửa: `eval/run.py` (+`score_trake`/`trake_sequence_lengths`/`trake_top_k`/`trake_lambda_penalty` trong `EvalRunConfig`, `_build_trake_service()`, wiring trong `_main()`, `write_report()` nhận `trake_groups` optional).
+- **Quyết định thiết kế đã hỏi lại chủ dự án:** định nghĩa `Kendall's tau` trong PRD §6.4 mơ hồ giữa 2 cách hiểu — so khớp theo VỊ TRÍ (`k_i` vs `g_i`) sẽ **luôn luôn = 1.0** vì cả chuỗi trả về (bất biến `τ<t` của DANTE) lẫn ground-truth (N shot liên tiếp) đều đã sắp tăng dần theo thiết kế, khiến metric vô dụng và không phản ứng gì với `λ` — mâu thuẫn với vai trò PRD giao ("đây chính là thứ λ điều khiển"). Đã chọn **Cách B**: gán mỗi keyframe trả về vào ground-truth segment có TÂM thời gian gần nhất (không cần đúng vị trí `i`), rồi tính tau giữa vị trí trả về và đoạn được gán — cách này thực sự phân biệt được hệ thống tốt/xấu.
+- **Quyết định cấu trúc code đã hỏi lại:** `eval/run.py` đã 963 dòng (vượt giới hạn 800 dòng CLAUDE.md §6) trước khi đụng vào — chọn tách toàn bộ orchestration TRAKE ra `eval/trake_run.py` riêng thay vì nhồi thêm, giữ `eval/run.py` chỉ thêm ~50 dòng (import + field config + 1 helper + 1 khối `if`). `eval/run.py` vẫn là entry point CLI duy nhất (`--config` trỏ `trake_val.yaml` thì chạy kênh TRAKE), nhưng đã lên **1013 dòng** — vi phạm cũ (963) chưa được dọn, chỉ không làm nặng thêm; cần refactor riêng ngoài phạm vi P2.3.
+- Sequence Exact-Match = video đúng được tìm thấy **và** cả N keyframe đều rơi đúng cửa sổ `[start_sec, end_sec]` của sự kiện tương ứng theo vị trí (do các cửa sổ ground-truth không chồng nhau và đã sắp theo thời gian, "hit đủ N theo vị trí" tự động kéo theo "đúng thứ tự" — không cần kiểm tra riêng).
+- `configs/eval/trake_val.yaml`: `score_trake: true`, `trake_sequence_lengths: [3,5,7]` (đúng N ∈ {3,5,7} bắt buộc của PRD §6.4), tắt các kênh KIS phụ (VI→EN sidecar, CLIP baseline) để chạy TRAKE không phải trả phí GPU không liên quan.
+- `.venv/Scripts/python.exe -m pytest tests/test_trake_metrics.py tests/test_trake_run.py tests/test_eval_run.py --cov=eval.metrics.trake --cov=eval.trake_run --cov-report=term-missing` → **61/61 passed** (33 metrics + 10 trake_run + 18 eval_run, trong đó 2 test mới cho tham số `trake_groups` của `write_report`), coverage **100%** trên cả `eval/metrics/trake.py` và `eval/trake_run.py`
+- `python -c "from eval.run import _load_config; _load_config(Path('configs/eval/trake_val.yaml'))"` → load thành công, `score_trake=True`, `trake_sequence_lengths=(3,5,7)` — xác nhận wiring config đúng, KHÔNG chạy được `python -m eval.run` thật (cần Docker + GPU, để chủ dự án tự chạy theo CLAUDE.md §10)
+- Toàn bộ suite: `579 passed, 3 skipped` (không regression), `ruff check` + `black --check` sạch
+- Git checkpoint theo TDD: `a4352d9`/`4634442` (metrics.py RED/GREEN), `17635e8`/`557e9d8` (trake_run.py RED/GREEN), `276a3e9`/`ba3b899` (wiring vào eval/run.py RED/GREEN)
+
+**Còn thiếu / rủi ro đã biết:**
+- **Chưa chạy `python -m eval.run --config configs/eval/trake_val.yaml` thật** — cần Docker (Milvus/MongoDB/ES) + GPU load BEiT-3, để bạn tự chạy. Đây là bước verify cuối cùng chứng minh cả pipeline hoạt động đúng với dữ liệu thật.
+- "Thời gian chạy theo T" trong bảng PRD §6.4 mới có wall-clock TỔNG mỗi nhóm N (không phải sweep T tăng dần) — phần kiểm chứng `O(NT)` bằng số đã có sẵn ở `test_dante_service.py::test_dante_runtime_is_linear_in_t` (P2.1); nếu cần đồ thị T-sweep riêng cho báo cáo thì đó là bổ sung sau, chưa làm ở P2.3.
+- `eval/run.py` đã vượt 800 dòng (1013 dòng) — vi phạm có từ trước P2.3, chưa refactor, cần một task riêng.
+- Bảng ablation `λ` (P2.4) chưa làm — `trake_lambda_penalty` trong config hiện chỉ nhận 1 giá trị/lần chạy.
 
 ---
 
