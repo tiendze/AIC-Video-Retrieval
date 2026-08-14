@@ -13,7 +13,9 @@ import pytest
 
 from datasets.base import GroundTruthSegment
 from eval.run import (
+    EvalRunConfig,
     PerQueryResult,
+    _load_config,
     aggregate_channel,
     build_keyframe_pool,
     build_leakage_records,
@@ -409,3 +411,111 @@ def test_write_report_omits_trake_section_when_trake_groups_not_given(tmp_path):
 
     report_md = (tmp_path / "report.md").read_text(encoding="utf-8")
     assert "TRAKE metrics" not in report_md
+
+
+def test_write_report_appends_trake_ablation_section_when_cells_given(tmp_path):
+    # plan §P2.4: score_trake_ablation: true adds a λ-ablation section to the
+    # SAME report.md/metrics.json, same pattern as trake_groups (P2.3).
+    from eval.trake_run import TrakeAblationCell, TrakeGroupMetrics
+
+    video_metrics = compute_channel_metrics("semantic", "video", [1], top_ks=(1, 5, 20, 50, 100))
+    segment_metrics = compute_channel_metrics(
+        "semantic", "segment", [1], top_ks=(1, 5, 20, 50, 100)
+    )
+    ablation_cells = [
+        TrakeAblationCell(
+            lambda_penalty=0.0,
+            metrics=TrakeGroupMetrics(
+                sequence_length=3,
+                num_queries=1,
+                num_found=1,
+                sequence_exact_match=1.0,
+                video_level_recall_at_k=1.0,
+                per_event_recall_at_k=(1.0, 1.0, 1.0),
+                mean_kendall_tau=1.0,
+                mean_offset_sec=0.0,
+                wall_clock_sec=0.1,
+            ),
+        )
+    ]
+
+    write_report(
+        tmp_path,
+        git_sha="abc123",
+        eval_set_version="v1",
+        eval_set_hash="deadbeef",
+        num_video_ids=1,
+        num_queries=1,
+        seed=42,
+        channel_metrics=[video_metrics, segment_metrics],
+        author_breakdown={},
+        batch_breakdown={},
+        leakage_report=None,
+        per_query=[],
+        trake_ablation_cells=ablation_cells,
+    )
+
+    report_md = (tmp_path / "report.md").read_text(encoding="utf-8")
+    assert "DANTE λ ablation" in report_md
+    metrics_doc = (tmp_path / "metrics.json").read_text(encoding="utf-8")
+    assert "lambda_penalty" in metrics_doc
+
+
+def test_write_report_omits_trake_ablation_section_when_cells_not_given(tmp_path):
+    video_metrics = compute_channel_metrics("semantic", "video", [1], top_ks=(1, 5, 20, 50, 100))
+    segment_metrics = compute_channel_metrics(
+        "semantic", "segment", [1], top_ks=(1, 5, 20, 50, 100)
+    )
+
+    write_report(
+        tmp_path,
+        git_sha="abc123",
+        eval_set_version="v1",
+        eval_set_hash="deadbeef",
+        num_video_ids=1,
+        num_queries=1,
+        seed=42,
+        channel_metrics=[video_metrics, segment_metrics],
+        author_breakdown={},
+        batch_breakdown={},
+        leakage_report=None,
+        per_query=[],
+    )
+
+    report_md = (tmp_path / "report.md").read_text(encoding="utf-8")
+    assert "DANTE λ ablation" not in report_md
+
+
+# --------------------------------------------------------------------------
+# _load_config -- P2.4 fields
+# --------------------------------------------------------------------------
+
+
+def test_load_config_reads_trake_ablation_fields(tmp_path):
+    config_path = tmp_path / "trake_ablation.yaml"
+    config_path.write_text(
+        "eval_set_path: configs/eval/aic_eval_v1.json\n"
+        "pilot_available_path: configs/eval/pilot_available_v1.txt\n"
+        "score_trake_ablation: true\n"
+        "trake_ablation_lambda_values: [0.0, 0.001, 0.01]\n",
+        encoding="utf-8",
+    )
+
+    config = _load_config(config_path)
+
+    assert config.score_trake_ablation is True
+    assert config.trake_ablation_lambda_values == (0.0, 0.001, 0.01)
+
+
+def test_load_config_defaults_trake_ablation_fields_when_absent(tmp_path):
+    config_path = tmp_path / "aic_pilot.yaml"
+    config_path.write_text(
+        "eval_set_path: configs/eval/aic_eval_v1.json\n"
+        "pilot_available_path: configs/eval/pilot_available_v1.txt\n",
+        encoding="utf-8",
+    )
+
+    config = _load_config(config_path)
+
+    assert config.score_trake_ablation is False
+    assert config.trake_ablation_lambda_values == EvalRunConfig().trake_ablation_lambda_values
