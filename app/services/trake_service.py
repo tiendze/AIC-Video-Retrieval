@@ -11,6 +11,14 @@ not the latency-critical task (PRD §1.2 -- ranking, not speed, is what's
 scored); a narrower candidate-restriction strategy is a future optimization,
 not a correctness requirement.
 
+Each event is translated VI->EN before encoding when a `QueryTranslator` is
+injected -- same reasoning as `SearchService._search_semantic` (module
+docstring there): BEiT-3's text tower is trained on English pairs, so raw
+Vietnamese captions are off-distribution for it. Confirmed 2026-08-14 by a
+real `eval/run.py` run: `video_level_recall_at_k` was 0.0000 across every
+TRAKE query before this was wired in -- TrakeService (P2.2) had no
+translation path at all, unlike SearchService.
+
 A video with fewer keyframes than events, or no finite-scoring ordered
 sequence, is skipped and logged -- one video's structural mismatch must not
 fail the whole search (CLAUDE.md §7), mirroring
@@ -33,6 +41,7 @@ from app.services.dante_service import (
     compute_similarity_matrix,
     dante_search,
 )
+from app.services.query_translator import QueryTranslator
 from app.stores.milvus_client import MilvusStore
 from app.stores.mongo_client import MongoStore
 
@@ -74,21 +83,31 @@ def _is_dense_global_index_range(rows: list[dict], s_v: int) -> bool:
 
 class TrakeService:
     def __init__(
-        self, encoder: MultimodalEncoder, milvus_store: MilvusStore, mongo_store: MongoStore
+        self,
+        encoder: MultimodalEncoder,
+        milvus_store: MilvusStore,
+        mongo_store: MongoStore,
+        query_translator: QueryTranslator | None = None,
     ) -> None:
         self._encoder = encoder
         self._milvus_store = milvus_store
         self._mongo_store = mongo_store
+        self._query_translator = query_translator
 
     async def search(
         self, events: list[str], top_k: int, lambda_penalty: float | None = None
     ) -> list[TrakeVideoResult]:
+        if self._query_translator is not None:
+            events = await asyncio.to_thread(self._translate_events, events)
         vectors = await asyncio.to_thread(self._encoder.encode_text, events)
         videos = await self._complete_videos()
         effective_lambda = DEFAULT_LAMBDA_PENALTY if lambda_penalty is None else lambda_penalty
         results = await asyncio.to_thread(self._score_videos, vectors, videos, effective_lambda)
         results.sort(key=lambda r: r.score, reverse=True)
         return results[:top_k]
+
+    def _translate_events(self, events: list[str]) -> list[str]:
+        return [self._query_translator.translate(event) for event in events]
 
     async def _complete_videos(self) -> list[_VideoRange]:
         videos: list[_VideoRange] = []

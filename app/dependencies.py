@@ -56,8 +56,14 @@ def get_trake_service(
     encoder: MultimodalEncoder = Depends(get_encoder),
     milvus_store: MilvusStore = Depends(get_milvus_store),
     mongo_store: MongoStore = Depends(get_mongo_store),
+    query_translator: QueryTranslator = Depends(get_query_translator),
 ) -> TrakeService:
-    return TrakeService(encoder=encoder, milvus_store=milvus_store, mongo_store=mongo_store)
+    return TrakeService(
+        encoder=encoder,
+        milvus_store=milvus_store,
+        mongo_store=mongo_store,
+        query_translator=query_translator,
+    )
 
 
 def get_search_service(

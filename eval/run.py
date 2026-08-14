@@ -902,8 +902,19 @@ def _build_trake_service(
 ) -> TrakeService:
     """P2.3 (PRD §6.4): reuses the SAME encoder/Milvus/Mongo instances the
     KIS/OCR channels above already built -- TRAKE's per-video DP needs the
-    identical vector space (CLAUDE.md §3), not a second encoder."""
-    return TrakeService(encoder=encoder, milvus_store=milvus, mongo_store=mongo)
+    identical vector space (CLAUDE.md §3), not a second encoder.
+
+    ALWAYS wired with a QueryTranslator, independent of
+    `translate_semantic_live` (that flag only controls an EXTRA diagnostic
+    KIS channel) -- an untranslated TRAKE run just re-measures the known
+    VI/EN mismatch (chủ dự án 2026-08-14: video_level_recall_at_k=0.0000
+    across every query before this was wired in), not a useful baseline."""
+    return TrakeService(
+        encoder=encoder,
+        milvus_store=milvus,
+        mongo_store=mongo,
+        query_translator=_build_query_translator(),
+    )
 
 
 def _write_final_report(
