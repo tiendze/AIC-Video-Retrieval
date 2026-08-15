@@ -1,9 +1,9 @@
-import type { SearchMode } from '../api/types'
+import type { AppMode } from '../api/types'
 import styles from './ModeSelector.module.css'
 
 export interface ModeSelectorProps {
-  mode: SearchMode
-  onChange: (mode: SearchMode) => void
+  mode: AppMode
+  onChange: (mode: AppMode) => void
   // plan §P1.8, PRD T5: true when GET /health reports elasticsearch_ok=false
   // -- OCR would just 503 (app/services/search_service.py's
   // "ocr_unavailable"), so disable picking it rather than let someone find
@@ -11,13 +11,14 @@ export interface ModeSelectorProps {
   ocrDisabled?: boolean
 }
 
-// PRD §F9 mode list: Semantic / OCR / DANTE. Semantic+OCR are live (P1);
-// DANTE needs P2's sequence-search backend, so it's shown per plan §P1.5's
-// decision ("hiện nhưng disabled + badge") rather than hidden -- the
-// layout is settled once, P2 only has to wire the handler in.
-const MODES: { value: SearchMode; label: string; shortcutKey: string }[] = [
+// PRD §F9 mode list: Semantic / OCR / DANTE. All three are live as of
+// 2026-08-15 -- DANTE was the P2 disabled placeholder (plan §P1.5's
+// decision: "hiện nhưng disabled + badge") until POST /api/trake existed
+// to wire it to.
+const MODES: { value: AppMode; label: string; shortcutKey: string }[] = [
   { value: 'semantic', label: 'Semantic', shortcutKey: '1' },
   { value: 'ocr', label: 'OCR', shortcutKey: '2' },
+  { value: 'dante', label: 'DANTE', shortcutKey: '3' },
 ]
 
 export function ModeSelector({ mode, onChange, ocrDisabled = false }: ModeSelectorProps) {
@@ -42,9 +43,6 @@ export function ModeSelector({ mode, onChange, ocrDisabled = false }: ModeSelect
           </button>
         )
       })}
-      <button type="button" className={styles.disabled} disabled title="Sắp có ở P2">
-        DANTE <span className={styles.badge}>P2</span>
-      </button>
     </div>
   )
 }

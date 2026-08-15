@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
-import { findImageCandidates, rewriteQuery } from './api/client'
+import { findImageCandidates, rewriteQuery, trakeSearch } from './api/client'
 import App from './App'
 
 // RED reproducer for the plan §P1.6 invariant that survived from paper's
@@ -25,6 +25,9 @@ vi.mock('./api/client', () => ({
   rewriteQuery: vi.fn().mockReturnValue(new Promise(() => {})),
   findImageCandidates: vi.fn().mockReturnValue(new Promise(() => {})),
   searchByCandidate: vi.fn().mockReturnValue(new Promise(() => {})),
+  // DANTE/TRAKE (plan §P2.2) -- never resolves by default; the
+  // DANTE-specific test below overrides it with a real resolved value.
+  trakeSearch: vi.fn().mockReturnValue(new Promise(() => {})),
   ApiError: class ApiError extends Error {},
 }))
 
@@ -114,5 +117,48 @@ describe('App', () => {
     await user.click(screen.getByRole('button', { name: /tìm ảnh mẫu/i }))
 
     await waitFor(() => expect(screen.getByText('Web image search failed')).toBeInTheDocument())
+  })
+
+  // DANTE/TRAKE (plan §P2.2, PRD §F6/US-4): selecting the DANTE mode swaps
+  // the single-query flow for the N-ordered-events flow -- these are
+  // fundamentally different request shapes, not just a filter on the same
+  // query box.
+  it('shows the event-sequence input after selecting DANTE mode', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+
+    await user.click(screen.getByRole('radio', { name: /DANTE/i }))
+
+    expect(screen.getByLabelText('event 1')).toBeInTheDocument()
+    expect(screen.queryByLabelText('query')).not.toBeInTheDocument()
+  })
+
+  it('shows TRAKE results after searching in DANTE mode', async () => {
+    const user = userEvent.setup()
+    vi.mocked(trakeSearch).mockResolvedValue({
+      results: [
+        {
+          video_id: 'L21_V001',
+          score: 0.8,
+          keyframes: [
+            {
+              keyframe_id: 'L21_V001_f10',
+              frame_idx: 10,
+              timestamp: 1.0,
+              thumbnail_url: '/api/keyframes/L21_V001_f10/thumbnail',
+              image_url: '/api/keyframes/L21_V001_f10/image',
+            },
+          ],
+        },
+      ],
+    })
+    render(<App />)
+    await user.click(screen.getByRole('radio', { name: /DANTE/i }))
+    await user.type(screen.getByLabelText('event 1'), 'người đàn ông mở cửa')
+    await user.type(screen.getByLabelText('event 2'), 'xe máy chạy qua')
+
+    await user.click(screen.getByRole('button', { name: /tìm chuỗi/i }))
+
+    await waitFor(() => expect(screen.getByText('L21_V001')).toBeInTheDocument())
   })
 })

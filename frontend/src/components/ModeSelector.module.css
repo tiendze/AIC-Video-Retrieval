@@ -29,11 +29,3 @@
   opacity: 0.6;
   font-size: 10px;
 }
-
-.badge {
-  margin-left: 4px;
-  padding: 0 4px;
-  font-size: 9px;
-  background: #555;
-  border-radius: 3px;
-}
