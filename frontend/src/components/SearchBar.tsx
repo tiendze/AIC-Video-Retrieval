@@ -5,14 +5,16 @@ export interface SearchBarProps {
   query: string
   onQueryChange: (query: string) => void
   onSubmit: () => void
+  // QUEST branch 1 (plan §P2.5, PRD §F5) -- calls POST
+  // /api/quest/rewrite-query with the current query; wired in App.tsx via
+  // useQueryRewrite. Live since 2026-08-15 (was a disabled P2 placeholder).
+  onEnhance: (query: string) => void
+  enhanceLoading?: boolean
 }
 
-// PRD §F9 (A): "ô nhập + nút AI enhancer". The enhancer is QUEST's query
-// rewrite (P2 backend, plan §P1.5 decision: shown disabled with a badge
-// rather than omitted, so the layout doesn't get rearranged when P2 wires
-// the real handler in).
+// PRD §F9 (A): "ô nhập + nút AI enhancer".
 export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function SearchBar(
-  { query, onQueryChange, onSubmit },
+  { query, onQueryChange, onSubmit, onEnhance, enhanceLoading = false },
   ref,
 ) {
   return (
@@ -35,8 +37,14 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
       <button type="submit" className={styles.submit}>
         Search
       </button>
-      <button type="button" className={styles.enhancer} disabled title="AI enhancer -- sắp có ở P2">
-        ✨ AI enhancer <span className={styles.badge}>P2</span>
+      <button
+        type="button"
+        className={styles.enhancer}
+        disabled={!query.trim() || enhanceLoading}
+        title="Viết lại truy vấn bằng AI (QUEST nhánh 1)"
+        onClick={() => onEnhance(query)}
+      >
+        ✨ AI enhancer{enhanceLoading ? '…' : ''}
       </button>
     </form>
   )
