@@ -1,8 +1,9 @@
 """TRAKE evaluation orchestration for `eval/run.py` (plan §P2.3, PRD §6.4).
 
-Kept as its own module -- eval/run.py is already past CLAUDE.md §6's
-800-line file ceiling (chủ dự án 2026-08-14: split rather than grow it
-further). `eval/run.py` stays the single CLI entry point (CLAUDE.md §6);
+Kept as its own module -- eval/run.py is already past the 800-line file
+ceiling in .claude/rules/ecc/common/coding-style.md (chủ dự án 2026-08-14:
+split rather than grow it further). `eval/run.py` stays the single CLI
+entry point (CLAUDE.md §6);
 this module supplies the functions it calls when `score_trake: true`, the
 same separation `eval/baselines/*.py` and `eval/metrics/*.py` already use.
 
