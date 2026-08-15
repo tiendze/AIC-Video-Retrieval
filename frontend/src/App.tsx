@@ -2,15 +2,20 @@ import { useRef, useState } from 'react'
 import { fetchImageBlob } from './api/client'
 import type { SearchHit, SearchMode } from './api/types'
 import { FilterPanel } from './components/FilterPanel'
+import { ImageCandidatePicker } from './components/ImageCandidatePicker'
 import { ImageUpload } from './components/ImageUpload'
 import { KeyframeDetail } from './components/KeyframeDetail'
 import { ModeSelector } from './components/ModeSelector'
+import { QueryRewritePanel } from './components/QueryRewritePanel'
 import { ResultGrid } from './components/ResultGrid'
 import { SearchBar } from './components/SearchBar'
 import { StatusBar } from './components/StatusBar'
 import { TopKControl } from './components/TopKControl'
+import { WebImageSearch } from './components/WebImageSearch'
 import { useHealth } from './hooks/useHealth'
+import { useImageCandidates } from './hooks/useImageCandidates'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
+import { useQueryRewrite } from './hooks/useQueryRewrite'
 import { useSearch } from './hooks/useSearch'
 import './App.css'
 
@@ -31,9 +36,11 @@ function App() {
     topK,
     setTopK,
     results,
+    setResults,
     isLoading,
     error,
     latencyMs,
+    setLatencyMs,
     runSearch,
     runImageSearch,
   } = useSearch()
@@ -41,6 +48,17 @@ function App() {
   const queryInputRef = useRef<HTMLInputElement>(null)
   const health = useHealth()
   const esDown = health?.elasticsearch_ok === false
+
+  // QUEST (plan §P2.5, PRD §F5). Both branches push hits into the exact
+  // same grid a regular search populates -- latencyMs resets to null
+  // because P1.7's measurement is specific to POST /api/search, not these
+  // endpoints (useSearch.ts's own comment on setLatencyMs).
+  function applyQuestHits(hits: SearchHit[]): void {
+    setResults(hits)
+    setLatencyMs(null)
+  }
+  const queryRewrite = useQueryRewrite()
+  const imageCandidates = useImageCandidates(topK, applyQuestHits)
 
   // Shared by ImageUpload's manual upload and every "Find Similar Images"
   // trigger (result card + detail panel) -- fetches the target's own
@@ -57,19 +75,46 @@ function App() {
       const next = MODE_ORDER[index]
       if (next) setMode(next)
     },
-    onClose: () => setSelectedHit(null),
+    onClose: () => {
+      setSelectedHit(null)
+      queryRewrite.dismiss()
+      imageCandidates.dismiss()
+    },
   })
 
   return (
     <div className="app">
       <header className="app-header">
-        <SearchBar ref={queryInputRef} query={query} onQueryChange={setQuery} onSubmit={runSearch} />
+        <SearchBar
+          ref={queryInputRef}
+          query={query}
+          onQueryChange={setQuery}
+          onSubmit={runSearch}
+          onEnhance={queryRewrite.rewrite}
+          enhanceLoading={queryRewrite.isLoading}
+        />
+        {queryRewrite.result && (
+          <QueryRewritePanel
+            result={queryRewrite.result}
+            onSearch={(text) => {
+              setQuery(text)
+              runSearch(text)
+              queryRewrite.dismiss()
+            }}
+            onDismiss={queryRewrite.dismiss}
+          />
+        )}
         <div className="app-toolbar">
           <ModeSelector mode={mode} onChange={setMode} ocrDisabled={esDown} />
           <TopKControl topK={topK} onChange={setTopK} />
           <FilterPanel />
         </div>
         <ImageUpload onUpload={runImageSearch} />
+        <WebImageSearch
+          query={query}
+          onSearch={imageCandidates.findCandidates}
+          disabled={imageCandidates.isLoading}
+        />
         <StatusBar
           resultCount={results.length}
           latencyMs={latencyMs}
@@ -86,6 +131,13 @@ function App() {
           hit={selectedHit}
           onClose={() => setSelectedHit(null)}
           onFindSimilar={findSimilar}
+        />
+      )}
+      {imageCandidates.result?.status === 'candidates' && (
+        <ImageCandidatePicker
+          candidates={imageCandidates.result.candidates}
+          onPick={imageCandidates.pickCandidate}
+          onDismiss={imageCandidates.dismiss}
         />
       )}
     </div>
