@@ -1,6 +1,8 @@
 import type {
   ApiErrorBody,
   HealthStatus,
+  ImageCandidatesResult,
+  ImageSearchResult,
   QueryRewriteResult,
   SearchMode,
   SearchResponse,
@@ -73,6 +75,44 @@ export function rewriteQuery(query: string, signal?: AbortSignal): Promise<Query
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ query }),
+    signal,
+  })
+}
+
+// POST /api/quest/image-candidates (app/api/quest.py) -- QUEST branch 2
+// (PRD §F5). thumbnail_url in the response is the real external web
+// thumbnail; the server never hands out the full-res image URL (SSRF
+// guard).
+export function findImageCandidates(
+  query: string,
+  topK: number,
+  signal?: AbortSignal,
+): Promise<ImageCandidatesResult> {
+  return request<ImageCandidatesResult>('/api/quest/image-candidates', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, top_k: topK }),
+    signal,
+  })
+}
+
+// POST /api/quest/image-search (app/api/quest.py) -- runs image-to-image
+// search on the operator's picked candidate_id (never auto-picked, PRD
+// §F5 acceptance criteria).
+export function searchByCandidate(
+  candidateSetId: string,
+  candidateId: string,
+  topK: number,
+  signal?: AbortSignal,
+): Promise<ImageSearchResult> {
+  return request<ImageSearchResult>('/api/quest/image-search', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      candidate_set_id: candidateSetId,
+      candidate_id: candidateId,
+      top_k: topK,
+    }),
     signal,
   })
 }

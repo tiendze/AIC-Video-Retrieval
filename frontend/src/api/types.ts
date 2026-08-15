@@ -34,6 +34,35 @@ export interface QueryRewriteResult {
   rewritten_query: string | null
 }
 
+// app/schemas/response/quest.py: ImageCandidateResponse -- QUEST branch 2
+// (PRD §F5). thumbnail_url is the real external web URL (safe to render
+// directly in <img>); the server keeps the full-res image_url private and
+// only downloads it itself once the operator picks a candidate_id (SSRF
+// guard, app/services/quest_service.py).
+export interface ImageCandidate {
+  candidate_id: string
+  thumbnail_url: string
+  title: string
+}
+
+// app/schemas/response/quest.py: ImageCandidatesResponse. status="fallback"
+// means the web image search itself failed/timed out -- fallback_hits are
+// regular semantic-search results for the same query, ready to render
+// immediately with no candidate to pick (candidates is always []).
+export interface ImageCandidatesResult {
+  status: 'candidates' | 'fallback'
+  candidate_set_id: string | null
+  candidates: ImageCandidate[]
+  fallback_hits: SearchHit[]
+}
+
+// app/schemas/response/quest.py: ImageSearchResponse -- result of searching
+// by the operator's picked candidate_id.
+export interface ImageSearchResult {
+  status: 'ok' | 'fallback'
+  hits: SearchHit[]
+}
+
 // app/schemas/response/error.py: ErrorResponse -- every API error takes
 // this shape (CLAUDE.md §7).
 export interface ApiErrorBody {
