@@ -16,12 +16,13 @@ from fastapi.testclient import TestClient
 
 from app.api import quest as quest_api
 from app.api.errors import register_error_handling
-from app.dependencies import get_quest_service
+from app.dependencies import get_query_rewrite_service, get_quest_service
 from app.schemas.request.search import DEFAULT_TOP_K, MAX_TOP_K
 from app.services.quest_service import (
     ImageCandidate,
     ImageCandidatesResult,
     ImageSearchResult,
+    QueryRewriteResult,
     QuestServiceError,
 )
 from app.services.search_service import SearchHit
@@ -58,6 +59,24 @@ def _client(fake_service: _FakeQuestService) -> TestClient:
     register_error_handling(app)
     app.include_router(quest_api.router)
     app.dependency_overrides[get_quest_service] = lambda: fake_service
+    return TestClient(app, raise_server_exceptions=False)
+
+
+class _FakeQueryRewriteService:
+    def __init__(self, result: QueryRewriteResult | None = None) -> None:
+        self._result = result
+        self.rewrite_query_calls: list[str] = []
+
+    async def rewrite_query(self, query: str) -> QueryRewriteResult:
+        self.rewrite_query_calls.append(query)
+        return self._result
+
+
+def _client_for_rewrite(fake_service: _FakeQueryRewriteService) -> TestClient:
+    app = FastAPI()
+    register_error_handling(app)
+    app.include_router(quest_api.router)
+    app.dependency_overrides[get_query_rewrite_service] = lambda: fake_service
     return TestClient(app, raise_server_exceptions=False)
 
 
@@ -256,3 +275,48 @@ def test_image_search_candidate_not_found_maps_to_unified_404_error_schema():
 
     assert response.status_code == 404
     assert response.json()["error_code"] == "candidate_not_found"
+
+
+def test_rewrite_query_returns_200_with_status_rewritten():
+    result = QueryRewriteResult(
+        status="rewritten",
+        original_query="Labubu",
+        rewritten_query="một con búp bê đồ chơi tai thỏ màu hồng",
+    )
+    service = _FakeQueryRewriteService(result=result)
+    client = _client_for_rewrite(service)
+
+    response = client.post("/api/quest/rewrite-query", json={"query": "Labubu"})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "rewritten",
+        "original_query": "Labubu",
+        "rewritten_query": "một con búp bê đồ chơi tai thỏ màu hồng",
+    }
+    assert service.rewrite_query_calls == ["Labubu"]
+
+
+def test_rewrite_query_returns_200_with_status_fallback():
+    result = QueryRewriteResult(status="fallback", original_query="Labubu", rewritten_query=None)
+    service = _FakeQueryRewriteService(result=result)
+    client = _client_for_rewrite(service)
+
+    response = client.post("/api/quest/rewrite-query", json={"query": "Labubu"})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "fallback",
+        "original_query": "Labubu",
+        "rewritten_query": None,
+    }
+
+
+def test_rewrite_query_rejects_empty_query():
+    service = _FakeQueryRewriteService()
+    client = _client_for_rewrite(service)
+
+    response = client.post("/api/quest/rewrite-query", json={"query": ""})
+
+    assert response.status_code == 422
+    assert not service.rewrite_query_calls

@@ -14,15 +14,20 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 
 from app.api.errors import APIError
-from app.dependencies import get_quest_service
-from app.schemas.request.quest import ImageCandidatesRequest, ImageSearchRequest
+from app.dependencies import get_query_rewrite_service, get_quest_service
+from app.schemas.request.quest import (
+    ImageCandidatesRequest,
+    ImageSearchRequest,
+    QueryRewriteRequest,
+)
 from app.schemas.response.quest import (
     ImageCandidateResponse,
     ImageCandidatesResponse,
     ImageSearchResponse,
+    QueryRewriteResponse,
 )
 from app.schemas.response.search import SearchHitResponse
-from app.services.quest_service import QuestService, QuestServiceError
+from app.services.quest_service import QueryRewriteService, QuestService, QuestServiceError
 from app.services.search_service import SearchHit
 
 router = APIRouter()
@@ -74,4 +79,17 @@ async def image_search(
 
     return ImageSearchResponse(
         status=result.status, hits=[_to_hit_response(hit) for hit in result.hits]
+    )
+
+
+@router.post("/api/quest/rewrite-query", response_model=QueryRewriteResponse)
+async def rewrite_query(
+    body: QueryRewriteRequest,
+    service: QueryRewriteService = Depends(get_query_rewrite_service),
+) -> QueryRewriteResponse:
+    result = await service.rewrite_query(body.query)
+    return QueryRewriteResponse(
+        status=result.status,
+        original_query=result.original_query,
+        rewritten_query=result.rewritten_query,
     )

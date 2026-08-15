@@ -30,3 +30,9 @@ class ImageCandidatesResponse(BaseModel):
 class ImageSearchResponse(BaseModel):
     status: Literal["ok", "fallback"]
     hits: list[SearchHitResponse]
+
+
+class QueryRewriteResponse(BaseModel):
+    status: Literal["rewritten", "fallback"]
+    original_query: str
+    rewritten_query: str | None

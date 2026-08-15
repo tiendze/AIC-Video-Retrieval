@@ -1,6 +1,11 @@
-"""QuestService -- QUEST branch 2 (plan §P2.5, PRD §F5): resolves an
-Out-of-Knowledge query by letting the operator pick a web sample image, then
-running image-to-image search on it.
+"""QUEST -- two independent branches for an Out-of-Knowledge query, a query
+containing an entity the embedding model has never seen (plan §P2.5, PRD
+§F5). Both branches share this module because they share one config domain
+(`configs/search/quest.yaml`), but they are unrelated classes: neither calls
+the other.
+
+**Branch 2 -- `QuestService`:** resolves the query by letting the operator
+pick a web sample image, then running image-to-image search on it.
 
 Flow: `find_image_candidates(q0)` calls `ddgs` (sync-only, no async client --
 docs/references.md §5.5) inside `asyncio.to_thread` to fetch image
@@ -12,9 +17,22 @@ downloads exactly that URL itself, never one supplied by the client
 (SSRF guard, CLAUDE.md §7). The chosen image is then run through
 `SearchService.search_by_image()`, the same vector space P1.1 already wired.
 
-Both steps require timeout + fallback to `SearchService.search(q0,
-mode="semantic")` on error (CLAUDE.md §4: QUEST must never hang the UI) --
-`ddgs` has no SLA and this is a third-party scraper, not an official API.
+**Branch 1 -- `QueryRewriteService`/`GeminiQueryRewriter`:** rewrites `q0`
+into a more visually descriptive `q_r` via Gemini (chủ dự án 2026-08-15:
+free-tier Gemini for now, degrade is acceptable -- swap later behind
+`_QueryRewriterLike` without touching the service or the API layer).
+`QueryRewriteService.rewrite_query()` deliberately never calls
+`SearchService` itself -- per chủ dự án's decision, the operator picks which
+of `q0`/`q_r` to actually search with (CLAUDE.md §3: interactive system,
+don't automate the step the paper left for a human to decide). It only
+returns both strings for the UI to display side by side (PRD §F5 acceptance
+criteria).
+
+Both branches require timeout + fallback -- branch 2 falls back to
+`SearchService.search(q0, mode="semantic")`; branch 1 falls back to
+`rewritten_query=None` (the operator still has `q0` to search with, already
+in the search box) -- neither may ever hang the UI (CLAUDE.md §4). Neither
+ddgs nor a Gemini free-tier key has an SLA.
 """
 
 from __future__ import annotations
@@ -30,6 +48,7 @@ from typing import Any, Literal, Protocol
 import httpx
 from ddgs.exceptions import DDGSException
 from PIL import Image
+from pydantic import BaseModel, Field
 
 from app.services.search_service import SearchHit
 
@@ -240,3 +259,103 @@ class QuestService:
 
         hits = await self._search_service.search_by_image(image, top_k=top_k)
         return ImageSearchResult(status="ok", hits=hits)
+
+
+# --------------------------------------------------------------------------
+# Branch 1 -- query rewrite (see module docstring)
+# --------------------------------------------------------------------------
+
+_QUERY_REWRITE_PROMPT_TEMPLATE = (
+    "Đây là một truy vấn tìm kiếm keyframe video tiếng Việt, có thể chứa thực thể "
+    "lạ (tên riêng, sản phẩm, nhân vật) mà một mô hình thị giác chưa từng học. Hãy "
+    "viết lại truy vấn thành MỘT câu tiếng Việt mô tả TRỰC QUAN, chi tiết hơn: nếu "
+    "có thực thể lạ, hãy mô tả nó bằng đặc điểm nhìn thấy được (hình dáng, màu sắc, "
+    "chất liệu, bối cảnh) thay vì chỉ lặp lại tên riêng. Giữ nguyên các chi tiết "
+    'khác của truy vấn gốc.\n\nTruy vấn gốc: "{query}"'
+)
+
+
+class QueryRewrite(BaseModel):
+    rewritten_query: str = Field(
+        description=(
+            "A single Vietnamese sentence: the original query rewritten to be more "
+            "visually descriptive, expanding any unfamiliar named entity into "
+            "visible attributes (shape, color, material, setting) a viewer would "
+            "recognize even without knowing the entity's name."
+        )
+    )
+
+
+class GeminiQueryRewriter:
+    """Wraps `client.interactions.create(...)` -- the current Gemini
+    Interactions API (references.md §5.1), never `generate_content`. Mirrors
+    `pipelines/ocr.py:GeminiOcrClient` exactly (retry policy, lazy import,
+    structured-output schema pattern) -- text-only input this time, no image."""
+
+    def __init__(
+        self, api_key: str, model: str, max_retries: int, retry_base_delay_seconds: float
+    ) -> None:
+        from google import genai  # lazy: only needed when this class is used
+
+        self._client = genai.Client(api_key=api_key)
+        self._model = model
+        self._max_retries = max_retries
+        self._retry_base_delay_seconds = retry_base_delay_seconds
+
+    def rewrite(self, query: str) -> str:
+        last_exc: Exception | None = None
+        for attempt in range(self._max_retries):
+            try:
+                return self._call_once(query)
+            except (TimeoutError, ConnectionError, OSError) as exc:
+                last_exc = exc
+                time.sleep(self._retry_base_delay_seconds * (2**attempt))
+        raise RuntimeError(
+            f"Gemini query rewrite failed after {self._max_retries} attempts"
+        ) from last_exc
+
+    def _call_once(self, query: str) -> str:
+        interaction = self._client.interactions.create(
+            model=self._model,
+            input=_QUERY_REWRITE_PROMPT_TEMPLATE.format(query=query),
+            response_format={
+                "type": "text",
+                "mime_type": "application/json",
+                "schema": QueryRewrite.model_json_schema(),
+            },
+        )
+        return QueryRewrite.model_validate_json(interaction.output_text).rewritten_query
+
+
+class _QueryRewriterLike(Protocol):
+    def rewrite(self, query: str) -> str: ...
+
+
+@dataclass(frozen=True)
+class QueryRewriteResult:
+    status: Literal["rewritten", "fallback"]
+    original_query: str
+    rewritten_query: str | None
+
+
+class QueryRewriteService:
+    """QUEST branch 1 (see module docstring): produces `q_r` for the UI to
+    show next to `q0`. Never calls `SearchService` itself -- the operator
+    decides which of the two to actually search with."""
+
+    def __init__(self, query_rewriter: _QueryRewriterLike, timeout_sec: float) -> None:
+        self._query_rewriter = query_rewriter
+        self._timeout_sec = timeout_sec
+
+    async def rewrite_query(self, query: str) -> QueryRewriteResult:
+        try:
+            rewritten = await asyncio.wait_for(
+                asyncio.to_thread(self._query_rewriter.rewrite, query),
+                timeout=self._timeout_sec,
+            )
+        except (RuntimeError, ValueError, asyncio.TimeoutError) as exc:
+            logger.warning("quest query-rewrite fallback: query=%r reason=%r", query, exc)
+            return QueryRewriteResult(status="fallback", original_query=query, rewritten_query=None)
+        return QueryRewriteResult(
+            status="rewritten", original_query=query, rewritten_query=rewritten
+        )

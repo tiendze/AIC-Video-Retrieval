@@ -21,3 +21,7 @@ class ImageSearchRequest(BaseModel):
     candidate_set_id: str = Field(min_length=1)
     candidate_id: str = Field(min_length=1)
     top_k: int = Field(default=DEFAULT_TOP_K, ge=1, le=MAX_TOP_K)
+
+
+class QueryRewriteRequest(BaseModel):
+    query: str = Field(min_length=1)

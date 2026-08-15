@@ -22,7 +22,7 @@ from app.config import CorsSettings, Settings
 from app.encoders.base import MultimodalEncoder
 from app.encoders.beit3 import BEiT3Encoder
 from app.services.query_translator import LocalNmtTranslator
-from app.services.quest_service import QuestService
+from app.services.quest_service import GeminiQueryRewriter, QueryRewriteService, QuestService
 from app.services.search_service import SearchService
 from app.services.thumbnail_service import ThumbnailService
 from app.stores.es_client import EsStore
@@ -109,6 +109,19 @@ def _build_quest_service(
     )
 
 
+def _build_query_rewrite_service(settings: Settings) -> QueryRewriteService:
+    config = _load_yaml(_QUEST_CONFIG_PATH)
+    rewriter = GeminiQueryRewriter(
+        api_key=settings.gemini_api_key.get_secret_value(),
+        model=config["query_rewrite_model"],
+        max_retries=config["query_rewrite_max_retries"],
+        retry_base_delay_seconds=config["query_rewrite_retry_base_delay_sec"],
+    )
+    return QueryRewriteService(
+        query_rewriter=rewriter, timeout_sec=config["query_rewrite_timeout_sec"]
+    )
+
+
 def _build_query_translator() -> LocalNmtTranslator:
     config = _load_yaml(_QUERY_TRANSLATOR_CONFIG_PATH)
     return LocalNmtTranslator(
@@ -141,6 +154,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         ),
         app.state.quest_http_client,
     )
+    app.state.query_rewrite_service = _build_query_rewrite_service(settings)
     await app.state.mongo_store.ensure_indexes()
     try:
         await app.state.es_store.ensure_index()

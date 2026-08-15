@@ -12,7 +12,7 @@ from fastapi import Depends, Request
 from app.encoders.base import MultimodalEncoder
 from app.services.health_service import HealthService
 from app.services.query_translator import QueryTranslator
-from app.services.quest_service import QuestService
+from app.services.quest_service import QueryRewriteService, QuestService
 from app.services.search_service import SearchService
 from app.services.thumbnail_service import ThumbnailService
 from app.services.trake_service import TrakeService
@@ -47,6 +47,10 @@ def get_thumbnail_service(request: Request) -> ThumbnailService:
 
 def get_quest_service(request: Request) -> QuestService:
     return request.app.state.quest_service
+
+
+def get_query_rewrite_service(request: Request) -> QueryRewriteService:
+    return request.app.state.query_rewrite_service
 
 
 def get_health_service(
