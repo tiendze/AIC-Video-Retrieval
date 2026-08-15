@@ -1,0 +1,66 @@
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.index {
+  width: 18px;
+  flex-shrink: 0;
+  color: #999;
+  font-size: 12px;
+  text-align: right;
+}
+
+.input {
+  flex: 1;
+  padding: 8px 10px;
+  font-size: 14px;
+  background: #1a1a1a;
+  color: #eee;
+  border: 1px solid #444;
+}
+
+.remove {
+  flex-shrink: 0;
+  padding: 4px 8px;
+  background: none;
+  color: #999;
+  border: 1px solid #444;
+  cursor: pointer;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.addButton {
+  padding: 8px 10px;
+  font-size: 13px;
+  background: #1a1a1a;
+  color: #ddd;
+  border: 1px solid #444;
+  cursor: pointer;
+}
+
+.submit {
+  padding: 8px 14px;
+  font-size: 13px;
+  background: #2f6fed;
+  color: #fff;
+  border: none;
+  cursor: pointer;
+}
+
+.submit:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
