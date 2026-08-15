@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from 'react'
-import { ApiError, rewriteQuery as rewriteQueryApi } from '../api/client'
+import { rewriteQuery as rewriteQueryApi } from '../api/client'
+import { isAbortError, messageFor } from '../api/requestHelpers'
 import type { QueryRewriteResult } from '../api/types'
 
 export interface UseQueryRewriteResult {
@@ -8,15 +9,6 @@ export interface UseQueryRewriteResult {
   error: string | null
   rewrite: (query: string) => void
   dismiss: () => void
-}
-
-function isAbortError(err: unknown): boolean {
-  return err instanceof DOMException && err.name === 'AbortError'
-}
-
-function messageFor(err: unknown, fallback: string): string {
-  if (err instanceof ApiError) return err.message
-  return fallback
 }
 
 // QUEST branch 1 (plan §P2.5, PRD §F5). Deliberately never triggers a

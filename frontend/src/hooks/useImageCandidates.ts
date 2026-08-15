@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from 'react'
-import { ApiError, findImageCandidates, searchByCandidate } from '../api/client'
+import { findImageCandidates, searchByCandidate } from '../api/client'
+import { isAbortError, messageFor } from '../api/requestHelpers'
 import type { ImageCandidatesResult, SearchHit } from '../api/types'
 
 export interface UseImageCandidatesResult {
@@ -9,15 +10,6 @@ export interface UseImageCandidatesResult {
   findCandidates: (query: string) => void
   pickCandidate: (candidateId: string) => void
   dismiss: () => void
-}
-
-function isAbortError(err: unknown): boolean {
-  return err instanceof DOMException && err.name === 'AbortError'
-}
-
-function messageFor(err: unknown, fallback: string): string {
-  if (err instanceof ApiError) return err.message
-  return fallback
 }
 
 // QUEST branch 2 (plan §P2.5, PRD §F5): web sample-image search for an

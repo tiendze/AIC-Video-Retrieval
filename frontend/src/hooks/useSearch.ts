@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from 'react'
 import { DEFAULT_TOP_K } from '../api/constants'
-import { ApiError, search as searchApi, searchByImage as searchByImageApi } from '../api/client'
+import { search as searchApi, searchByImage as searchByImageApi } from '../api/client'
+import { isAbortError, messageFor } from '../api/requestHelpers'
 import type { SearchHit, SearchMode } from '../api/types'
 
 export interface UseSearchResult {
@@ -36,15 +37,6 @@ export interface UseSearchResult {
   // before `setQuery` was called.
   runSearch: (overrideQuery?: string) => void
   runImageSearch: (file: Blob) => void
-}
-
-function isAbortError(err: unknown): boolean {
-  return err instanceof DOMException && err.name === 'AbortError'
-}
-
-function messageFor(err: unknown, fallback: string): string {
-  if (err instanceof ApiError) return err.message
-  return fallback
 }
 
 // `query` and `mode` are independent state -- switching mode can never
