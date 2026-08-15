@@ -1,0 +1,23 @@
+# QUEST branch 2 -- web sample-image search for Out-of-Knowledge queries
+# (plan §P2.5, PRD §F5). `ddgs` is not an official API, no SLA
+# (docs/references.md §5.5) -- every parameter below exists to guarantee
+# timeout + fallback to regular search always happens, never hangs the UI
+# (CLAUDE.md §4).
+
+# Max image candidates fetched from DDGS().images() per query.
+max_candidates: 10
+
+# Timeout for the DDGS().images() call (runs inside asyncio.to_thread since
+# ddgs has no async client). Timeout or error -> immediate fallback to
+# SearchService.search(q0, mode="semantic"), no candidates to show.
+image_candidates_timeout_sec: 8.0
+
+# Timeout for downloading the chosen full-res image (candidate_id) before
+# encoding with BEiT-3. Timeout or download error -> fallback to
+# SearchService.search(q0, mode="semantic").
+image_download_timeout_sec: 5.0
+
+# TTL of the in-memory ID -> real-URL cache (SSRF guard -- the client never
+# sends a URL, only the server-generated candidate_id). Once expired, the
+# user must call /api/quest/image-candidates again.
+candidate_cache_ttl_sec: 300

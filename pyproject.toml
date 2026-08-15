@@ -14,6 +14,16 @@ dependencies = [
     # POST /api/search/image (plan §P1.1) accepts multipart/form-data --
     # FastAPI's File()/Form() raise at import time without this installed.
     "python-multipart==0.0.20",
+    # QUEST nhánh 2 (plan §P2.5): tìm ảnh mẫu web khi truy vấn nhắc thực
+    # thể Out-of-Knowledge. Google CSE (đóng cửa khách mới) và Bing Image
+    # Search (khai tử 11/08/2025) đều không dùng được -- xem
+    # docs/references.md §5.5 + docs/research-quest-llm-options.md.
+    "ddgs==9.14.4",
+    # QUEST nhánh 2: tải chính ảnh full-res mà DDGS().images() vừa trả về
+    # (không bao giờ URL client tự gửi lên -- SSRF guard, CLAUDE.md §7) để
+    # mã hoá bằng BEiT-3. Async client -- chạy trực tiếp trong route
+    # `async def`, không cần asyncio.to_thread như ddgs (sync-only).
+    "httpx==0.28.1",
 ]
 
 [project.optional-dependencies]
@@ -21,7 +31,9 @@ dev = [
     "pytest==9.1.1",
     "pytest-cov==7.1.0",
     "pytest-asyncio==1.4.0",
-    "httpx==0.28.1",
+    # httpx is a main dependency now (QUEST nhánh 2 image download) -- kept
+    # implicitly available here via `pip install -e ".[dev]"` pulling both
+    # dependencies and this extras group.
     "pyyaml==6.0.3",
     "black==26.5.1",
     "isort==8.0.1",
