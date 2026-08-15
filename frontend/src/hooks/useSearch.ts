@@ -14,13 +14,27 @@ export interface UseSearchResult {
   topK: number
   setTopK: (topK: number) => void
   results: SearchHit[]
+  // QUEST (plan §P2.5) pushes hits into this same grid via its own
+  // hooks/panels -- rather than duplicating ResultGrid rendering for a
+  // "QUEST results" case, useQueryRewrite/useImageCandidates just call this
+  // setter directly once the operator picks q_r or a candidate image.
+  setResults: (hits: SearchHit[]) => void
   isLoading: boolean
   error: string | null
   // Measured client-side (request start -> response parsed) -- prep for
   // P1.7's p50/p95 latency table (plan §P1.6: "useSearch.ts đã đo latency
-  // sẵn để P1.7 chỉ việc thu thập").
+  // sẵn để P1.7 chỉ việc thu thập"). QUEST-populated results reset this to
+  // null (via setLatencyMs) -- P1.7's measurement is specific to
+  // POST /api/search, so a stale number here would misrepresent a result
+  // set that came from a different endpoint entirely.
   latencyMs: number | null
-  runSearch: () => void
+  setLatencyMs: (latencyMs: number | null) => void
+  // `overrideQuery` lets a caller search by exact text without first
+  // waiting for `setQuery` to re-render -- needed by QueryRewritePanel's
+  // "use q_r" action, which must search by the just-fetched rewritten text
+  // in the same click, not whatever `query` still held from the render
+  // before `setQuery` was called.
+  runSearch: (overrideQuery?: string) => void
   runImageSearch: (file: Blob) => void
 }
 
@@ -47,8 +61,9 @@ export function useSearch(): UseSearchResult {
   const [latencyMs, setLatencyMs] = useState<number | null>(null)
   const abortRef = useRef<AbortController | null>(null)
 
-  const runSearch = useCallback(() => {
-    if (!query.trim()) return
+  const runSearch = useCallback((overrideQuery?: string) => {
+    const q = overrideQuery ?? query
+    if (!q.trim()) return
     abortRef.current?.abort()
     const controller = new AbortController()
     abortRef.current = controller
@@ -56,7 +71,7 @@ export function useSearch(): UseSearchResult {
     setError(null)
     const start = performance.now()
 
-    searchApi(query, mode, topK, controller.signal)
+    searchApi(q, mode, topK, controller.signal)
       .then((response) => {
         setResults(response.results)
         setLatencyMs(performance.now() - start)
@@ -100,9 +115,11 @@ export function useSearch(): UseSearchResult {
     topK,
     setTopK,
     results,
+    setResults,
     isLoading,
     error,
     latencyMs,
+    setLatencyMs,
     runSearch,
     runImageSearch,
   }
