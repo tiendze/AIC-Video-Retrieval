@@ -104,6 +104,7 @@ function App() {
             onDismiss={queryRewrite.dismiss}
           />
         )}
+        {queryRewrite.error && <span className="quest-error">{queryRewrite.error}</span>}
         <div className="app-toolbar">
           <ModeSelector mode={mode} onChange={setMode} ocrDisabled={esDown} />
           <TopKControl topK={topK} onChange={setTopK} />
@@ -115,6 +116,7 @@ function App() {
           onSearch={imageCandidates.findCandidates}
           disabled={imageCandidates.isLoading}
         />
+        {imageCandidates.error && <span className="quest-error">{imageCandidates.error}</span>}
         <StatusBar
           resultCount={results.length}
           latencyMs={latencyMs}

@@ -24,3 +24,13 @@
   flex: 1;
   min-height: 0;
 }
+
+/* QUEST (plan §P2.5): the request itself failing (network down, 5xx) is
+   distinct from a backend fallback (which is a normal 200 response handled
+   inside QueryRewritePanel/WebImageSearch's own disabled state) -- this is
+   the only visible feedback for that rarer path, so it must never be
+   silent (.claude/docs/error-handling.md). */
+.quest-error {
+  color: #e05555;
+  font-size: 12px;
+}

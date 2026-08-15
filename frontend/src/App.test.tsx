@@ -87,4 +87,32 @@ describe('App', () => {
     await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument())
     expect(screen.getByAltText('Labubu doll')).toBeInTheDocument()
   })
+
+  // Found via manual browser check (2026-08-15): clicking AI enhancer while
+  // the request itself fails (not a backend fallback -- see
+  // useQueryRewrite.test.tsx for that path) left no visible feedback at
+  // all, violating .claude/docs/error-handling.md ("Lỗi hiện ra UI phải
+  // đọc được"). error-handling.md's own wording is for backend-side
+  // handling, but the same rule obviously governs the UI that surfaces it.
+  it('shows a readable error message when the query rewrite request itself fails', async () => {
+    const user = userEvent.setup()
+    vi.mocked(rewriteQuery).mockRejectedValue(new Error('network down'))
+    render(<App />)
+
+    await user.type(screen.getByLabelText('query'), 'Labubu')
+    await user.click(screen.getByRole('button', { name: /AI enhancer/i }))
+
+    await waitFor(() => expect(screen.getByText('Query rewrite failed')).toBeInTheDocument())
+  })
+
+  it('shows a readable error message when the web image search request itself fails', async () => {
+    const user = userEvent.setup()
+    vi.mocked(findImageCandidates).mockRejectedValue(new Error('network down'))
+    render(<App />)
+
+    await user.type(screen.getByLabelText('query'), 'Labubu')
+    await user.click(screen.getByRole('button', { name: /tìm ảnh mẫu/i }))
+
+    await waitFor(() => expect(screen.getByText('Web image search failed')).toBeInTheDocument())
+  })
 })
