@@ -4,3 +4,9 @@
 export const DEFAULT_TOP_K = 20
 export const MIN_TOP_K = 1
 export const MAX_TOP_K = 100
+
+// Mirrors configs/search/trake.yaml -- POST /api/trake ranks VIDEOS (each
+// holding an N-keyframe sequence), a different unit than /api/search's
+// per-keyframe top_k, so it gets its own default even though MAX_TOP_K is
+// currently the same submission-cap ceiling for both.
+export const TRAKE_DEFAULT_TOP_K = 10

@@ -6,6 +6,7 @@ import type {
   QueryRewriteResult,
   SearchMode,
   SearchResponse,
+  TrakeResult,
   VideoInfo,
   VideoKeyframesResponse,
 } from './types'
@@ -113,6 +114,24 @@ export function searchByCandidate(
       candidate_id: candidateId,
       top_k: topK,
     }),
+    signal,
+  })
+}
+
+// POST /api/trake (app/api/trake.py) -- DANTE-backed TRAKE search.
+// `events` must already be in time order; the response's keyframes come
+// back in that same order, never re-sorted (CLAUDE.md §3). `lambdaPenalty`
+// null means "use configs/search/dante.yaml's configured default".
+export function trakeSearch(
+  events: string[],
+  topK: number,
+  lambdaPenalty: number | null,
+  signal?: AbortSignal,
+): Promise<TrakeResult> {
+  return request<TrakeResult>('/api/trake', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ events, top_k: topK, lambda_penalty: lambdaPenalty }),
     signal,
   })
 }

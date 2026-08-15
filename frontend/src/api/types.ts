@@ -5,6 +5,13 @@
 // app/schemas/request/search.py: SearchRequest
 export type SearchMode = 'semantic' | 'ocr'
 
+// UI-only: which panel ModeSelector/App.tsx show. Distinct from SearchMode
+// because DANTE isn't a POST /api/search mode at all -- it's a wholly
+// different endpoint (POST /api/trake) with a wholly different request
+// shape (N ordered events, not one query string), so it can never be a
+// valid value for useSearch's `mode` state.
+export type AppMode = SearchMode | 'dante'
+
 // app/schemas/response/search.py: SearchHitResponse
 export interface SearchHit {
   keyframe_id: string
@@ -61,6 +68,31 @@ export interface ImageCandidatesResult {
 export interface ImageSearchResult {
   status: 'ok' | 'fallback'
   hits: SearchHit[]
+}
+
+// app/schemas/response/trake.py: TrakeKeyframeResponse
+export interface TrakeKeyframe {
+  keyframe_id: string
+  frame_idx: number
+  timestamp: number
+  thumbnail_url: string
+  image_url: string
+}
+
+// app/schemas/response/trake.py: TrakeVideoResultResponse. `keyframes` has
+// exactly N entries (N = number of events submitted) in strict time order
+// -- never re-sort this array (CLAUDE.md §3: DANTE's ordering invariant,
+// τ < t). This is also the exact AIC submission shape for TRAKE:
+// `<video_id>, <frame_id₁>, …, <frame_idₙ>` (references.md §1.2).
+export interface TrakeVideoResultItem {
+  video_id: string
+  score: number
+  keyframes: TrakeKeyframe[]
+}
+
+// app/schemas/response/trake.py: TrakeResponse
+export interface TrakeResult {
+  results: TrakeVideoResultItem[]
 }
 
 // app/schemas/response/error.py: ErrorResponse -- every API error takes
