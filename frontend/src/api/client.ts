@@ -1,6 +1,7 @@
 import type {
   ApiErrorBody,
   HealthStatus,
+  QueryRewriteResult,
   SearchMode,
   SearchResponse,
   VideoInfo,
@@ -60,6 +61,18 @@ export function searchByImage(
   return request<SearchResponse>('/api/search/image', {
     method: 'POST',
     body: formData,
+    signal,
+  })
+}
+
+// POST /api/quest/rewrite-query (app/api/quest.py) -- QUEST branch 1 (PRD
+// §F5). Never triggers a search itself; the caller decides which of
+// original_query/rewritten_query to search with (see QueryRewriteResult).
+export function rewriteQuery(query: string, signal?: AbortSignal): Promise<QueryRewriteResult> {
+  return request<QueryRewriteResult>('/api/quest/rewrite-query', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query }),
     signal,
   })
 }

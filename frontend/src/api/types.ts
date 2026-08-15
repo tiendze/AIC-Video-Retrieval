@@ -22,6 +22,18 @@ export interface SearchResponse {
   results: SearchHit[]
 }
 
+// app/schemas/response/quest.py: QueryRewriteResponse -- QUEST branch 1
+// (PRD §F5). The operator picks which of original_query/rewritten_query to
+// actually search with; this endpoint never searches by itself.
+// rewritten_query is null exactly when status is "fallback" (Gemini
+// error/timeout/quota) -- never treated as an error, the operator still has
+// original_query to search with.
+export interface QueryRewriteResult {
+  status: 'rewritten' | 'fallback'
+  original_query: string
+  rewritten_query: string | null
+}
+
 // app/schemas/response/error.py: ErrorResponse -- every API error takes
 // this shape (CLAUDE.md §7).
 export interface ApiErrorBody {
