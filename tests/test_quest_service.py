@@ -306,7 +306,9 @@ class TestSearchByCandidate:
         service, _, _, candidates = await self._seeded_service()
 
         with pytest.raises(QuestServiceError) as exc_info:
-            await service.search_by_candidate(candidates.candidate_set_id, "not-a-real-id", top_k=10)
+            await service.search_by_candidate(
+                candidates.candidate_set_id, "not-a-real-id", top_k=10
+            )
 
         assert exc_info.value.error_code == "candidate_not_found"
         assert exc_info.value.status_code == 404
@@ -325,7 +327,9 @@ class TestSearchByCandidate:
         current_time[0] = 61.0  # past the 60s TTL
 
         with pytest.raises(QuestServiceError) as exc_info:
-            await service.search_by_candidate(candidates.candidate_set_id, chosen.candidate_id, top_k=10)
+            await service.search_by_candidate(
+                candidates.candidate_set_id, chosen.candidate_id, top_k=10
+            )
 
         assert exc_info.value.error_code == "candidate_set_not_found"
 
@@ -335,7 +339,9 @@ class TestSearchByCandidate:
         service, search_service, _, candidates = await self._seeded_service(http_client=http_client)
         chosen = candidates.candidates[0]
 
-        result = await service.search_by_candidate(candidates.candidate_set_id, chosen.candidate_id, top_k=12)
+        result = await service.search_by_candidate(
+            candidates.candidate_set_id, chosen.candidate_id, top_k=12
+        )
 
         assert result.status == "fallback"
         assert result.hits == [_HIT]
@@ -349,7 +355,9 @@ class TestSearchByCandidate:
         service, search_service, _, candidates = await self._seeded_service(http_client=http_client)
         chosen = candidates.candidates[0]
 
-        result = await service.search_by_candidate(candidates.candidate_set_id, chosen.candidate_id, top_k=10)
+        result = await service.search_by_candidate(
+            candidates.candidate_set_id, chosen.candidate_id, top_k=10
+        )
 
         assert result.status == "fallback"
         assert search_service.search_calls == [("Labubu", "semantic", 10)]
@@ -360,7 +368,9 @@ class TestSearchByCandidate:
         service, search_service, _, candidates = await self._seeded_service(http_client=http_client)
         chosen = candidates.candidates[0]
 
-        result = await service.search_by_candidate(candidates.candidate_set_id, chosen.candidate_id, top_k=10)
+        result = await service.search_by_candidate(
+            candidates.candidate_set_id, chosen.candidate_id, top_k=10
+        )
 
         assert result.status == "fallback"
         assert search_service.search_calls == [("Labubu", "semantic", 10)]
@@ -370,6 +380,8 @@ class TestSearchByCandidate:
         service, _, http_client, candidates = await self._seeded_service()
         second_candidate = candidates.candidates[1]
 
-        await service.search_by_candidate(candidates.candidate_set_id, second_candidate.candidate_id, top_k=5)
+        await service.search_by_candidate(
+            candidates.candidate_set_id, second_candidate.candidate_id, top_k=5
+        )
 
         assert http_client.get_calls == [("https://example.com/full/labubu2.jpg", 5.0)]
