@@ -12,6 +12,7 @@ from fastapi import Depends, Request
 from app.encoders.base import MultimodalEncoder
 from app.services.health_service import HealthService
 from app.services.query_translator import QueryTranslator
+from app.services.quest_service import QuestService
 from app.services.search_service import SearchService
 from app.services.thumbnail_service import ThumbnailService
 from app.services.trake_service import TrakeService
@@ -42,6 +43,10 @@ def get_mongo_store(request: Request) -> MongoStore:
 
 def get_thumbnail_service(request: Request) -> ThumbnailService:
     return request.app.state.thumbnail_service
+
+
+def get_quest_service(request: Request) -> QuestService:
+    return request.app.state.quest_service
 
 
 def get_health_service(

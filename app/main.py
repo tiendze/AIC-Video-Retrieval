@@ -3,7 +3,9 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import httpx
 import yaml
+from ddgs import DDGS
 from elasticsearch import ConnectionError as EsConnectionError
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.errors import register_error_handling
 from app.api.health import router as health_router
 from app.api.keyframes import router as keyframes_router
+from app.api.quest import router as quest_router
 from app.api.search import register_upload_guard
 from app.api.search import router as search_router
 from app.api.trake import router as trake_router
@@ -19,6 +22,8 @@ from app.config import CorsSettings, Settings
 from app.encoders.base import MultimodalEncoder
 from app.encoders.beit3 import BEiT3Encoder
 from app.services.query_translator import LocalNmtTranslator
+from app.services.quest_service import QuestService
+from app.services.search_service import SearchService
 from app.services.thumbnail_service import ThumbnailService
 from app.stores.es_client import EsStore
 from app.stores.milvus_client import MilvusStore
@@ -29,6 +34,7 @@ _BEIT3_CONFIG_PATH = _REPO_ROOT / "configs" / "model" / "beit3.yaml"
 _QUERY_TRANSLATOR_CONFIG_PATH = _REPO_ROOT / "configs" / "model" / "query_translator.yaml"
 _MILVUS_CONFIG_PATH = _REPO_ROOT / "configs" / "stores" / "milvus.yaml"
 _SEARCH_CONFIG_PATH = _REPO_ROOT / "configs" / "search" / "search.yaml"
+_QUEST_CONFIG_PATH = _REPO_ROOT / "configs" / "search" / "quest.yaml"
 # Mirrors scripts/run_ingest.py's _ES_OCR_INDEX_NAME -- the OCR branch writes
 # to this same index name, so the API must read from it, not a new default.
 _ES_OCR_INDEX_NAME = "ocr_keyframes"
@@ -88,6 +94,21 @@ def _build_thumbnail_service(mongo_store: MongoStore) -> ThumbnailService:
     )
 
 
+def _build_quest_service(
+    search_service: SearchService, http_client: httpx.AsyncClient
+) -> QuestService:
+    config = _load_yaml(_QUEST_CONFIG_PATH)
+    return QuestService(
+        search_service=search_service,
+        image_search_client=DDGS(),
+        http_client=http_client,
+        max_candidates=config["max_candidates"],
+        image_candidates_timeout_sec=config["image_candidates_timeout_sec"],
+        image_download_timeout_sec=config["image_download_timeout_sec"],
+        candidate_cache_ttl_sec=config["candidate_cache_ttl_sec"],
+    )
+
+
 def _build_query_translator() -> LocalNmtTranslator:
     config = _load_yaml(_QUERY_TRANSLATOR_CONFIG_PATH)
     return LocalNmtTranslator(
@@ -109,6 +130,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.mongo_store = _build_mongo_store(settings)
     app.state.query_translator = _build_query_translator()
     app.state.thumbnail_service = _build_thumbnail_service(app.state.mongo_store)
+    app.state.quest_http_client = httpx.AsyncClient()
+    app.state.quest_service = _build_quest_service(
+        SearchService(
+            encoder=app.state.encoder,
+            milvus_store=app.state.milvus_store,
+            es_store=app.state.es_store,
+            mongo_store=app.state.mongo_store,
+            query_translator=app.state.query_translator,
+        ),
+        app.state.quest_http_client,
+    )
     await app.state.mongo_store.ensure_indexes()
     try:
         await app.state.es_store.ensure_index()
@@ -122,6 +154,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             "degraded mode (OCR search will return a clear error until it recovers)"
         )
     yield
+    await app.state.quest_http_client.aclose()
     await app.state.es_store.close()
     await app.state.mongo_store.close()
 
@@ -147,6 +180,7 @@ def create_app() -> FastAPI:
     app.include_router(trake_router)
     app.include_router(keyframes_router)
     app.include_router(videos_router)
+    app.include_router(quest_router)
     return app
 
 
