@@ -32,7 +32,9 @@ from eval.build_qa_eval_set import (
     _load_config,
     _run_freeze,
     _write_qa_candidates_doc,
+    apply_review_decision,
     assert_generator_differs_from_vqa_model,
+    build_image_path_lookup,
     compute_qa_quality_report,
     freeze_qa_records,
     load_approved_source_records,
@@ -660,3 +662,43 @@ class TestRunFreezeCli:
 
         assert exit_code == 1
         assert not out_path.exists()
+
+
+class TestBuildImagePathLookup:
+    def test_maps_keyframe_id_to_image_path(self):
+        source_records = [
+            {"keyframe_id": "L21_V001_f1", "image_path": "/data/keyframe/L21_V001_1.jpg"},
+            {"keyframe_id": "L21_V001_f2", "image_path": "/data/keyframe/L21_V001_2.jpg"},
+        ]
+
+        lookup = build_image_path_lookup(source_records)
+
+        assert lookup == {
+            "L21_V001_f1": "/data/keyframe/L21_V001_1.jpg",
+            "L21_V001_f2": "/data/keyframe/L21_V001_2.jpg",
+        }
+
+
+class TestApplyReviewDecision:
+    def test_returns_a_new_record_with_approval_and_ocr_flag_set(self):
+        original = {
+            "video_id": "L21_V001",
+            "shot_id": 1,
+            "question": "q",
+            "approved": None,
+            "answerable_by_ocr": None,
+        }
+
+        updated = apply_review_decision(original, approved=True, answerable_by_ocr=False)
+
+        assert updated["approved"] is True
+        assert updated["answerable_by_ocr"] is False
+        assert original["approved"] is None  # original untouched (immutability)
+
+    def test_rejected_record_can_carry_a_none_ocr_flag(self):
+        original = {"video_id": "v", "shot_id": 1, "approved": None, "answerable_by_ocr": None}
+
+        updated = apply_review_decision(original, approved=False, answerable_by_ocr=None)
+
+        assert updated["approved"] is False
+        assert updated["answerable_by_ocr"] is None

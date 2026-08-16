@@ -33,6 +33,12 @@ cuối"):
               reference answers per shot -> configs/eval/aic_qa_v1.
               candidates.json for manual review (reviewer fills "approved"
               AND "answerable_by_ocr")
+    review    interactive terminal loop over unreviewed candidates -- opens
+              each keyframe image, prompts y/n/skip/quit, writes back to
+              the same candidates.json after EVERY decision (interruptible,
+              resumable). Only needs >=100 REVIEWED, not every candidate
+              (plan §P3.3: "bộ chưa review chỉ dùng để dò lỗi") -- pass
+              `--limit N` to stop after N this session.
     freeze    read reviewed candidates -> quality gate (>=100 reviewed
               samples per plan §P3.3, self-grading guard) -> configs/eval/
               aic_qa_v1.json + .sha256 + .quality_report.md
@@ -46,7 +52,7 @@ shot so a mid-run failure does not discard prior generations.
 Usage:
   python -m eval.build_qa_eval_set generate --limit-shots 5
   python -m eval.build_qa_eval_set generate
-  # ... người review điền "approved": true/false VÀ "answerable_by_ocr" ...
+  python -m eval.build_qa_eval_set review --limit 100
   python -m eval.build_qa_eval_set freeze
 """
 
@@ -56,6 +62,7 @@ import argparse
 import hashlib
 import json
 import logging
+import os
 import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -291,6 +298,116 @@ def _generate_qa_candidates(
 
 
 # --------------------------------------------------------------------------
+# Review -- interactive terminal loop for the human decision the plan
+# requires ("người chốt đáp án cuối", CLAUDE.md §3). Only `build_image_
+# path_lookup`/`apply_review_decision` are pure and tested directly; the
+# `input()`-driven loop itself is exercised only by manual use, same
+# category of gap as `_run_generate` (needs a live terminal, not a live
+# service, but equally not meaningfully unit-testable).
+# --------------------------------------------------------------------------
+
+
+def build_image_path_lookup(source_records: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+    """`keyframe_id -> image_path`, so the reviewer can actually SEE the
+    shot -- QA candidate records only carry `keyframe_id`
+    (`_QA_GROUND_TRUTH_FIELDS` deliberately excludes `image_path`, a
+    provenance/display detail, from the frozen ground truth), so this joins
+    back to `aic_eval_v1.candidates.json`, which still has it."""
+    return {r["keyframe_id"]: r["image_path"] for r in source_records}
+
+
+def apply_review_decision(
+    record: Mapping[str, Any], *, approved: bool, answerable_by_ocr: bool | None
+) -> dict[str, Any]:
+    """Returns a NEW record with the reviewer's decision applied (CLAUDE.md
+    coding-style: no in-place mutation). `answerable_by_ocr` is meaningful
+    only when `approved` -- `compute_qa_quality_report` only requires it on
+    approved records, so a rejected record may pass `None` here."""
+    return {**record, "approved": approved, "answerable_by_ocr": answerable_by_ocr}
+
+
+def _prompt_review_decision() -> tuple[str, bool | None, bool | None]:
+    """Blocks on `input()`. Returns `(action, approved, answerable_by_ocr)`
+    where `action` is `"decided" | "skip" | "quit"`."""
+    while True:
+        raw = input("Approve? [y/n/s=skip/q=quit]: ").strip().lower()
+        if raw == "q":
+            return ("quit", None, None)
+        if raw == "s":
+            return ("skip", None, None)
+        if raw == "y":
+            ocr_raw = input("  Answerable by OCR (chữ trên màn hình)? [y/n]: ").strip().lower()
+            return ("decided", True, ocr_raw == "y")
+        if raw == "n":
+            return ("decided", False, None)
+        print("  (không hợp lệ -- gõ y/n/s/q)")
+
+
+def _run_review(args: argparse.Namespace) -> int:
+    candidates_doc = json.loads(args.candidates.read_text(encoding="utf-8"))
+    source_records = json.loads(args.source.read_text(encoding="utf-8"))["records"]
+    image_by_keyframe = build_image_path_lookup(source_records)
+
+    records: list[dict[str, Any]] = candidates_doc["records"]
+    pending_indices = [i for i, r in enumerate(records) if r.get("approved") is None]
+    already_reviewed = len(records) - len(pending_indices)
+    if args.limit > 0:
+        pending_indices = pending_indices[: args.limit]
+
+    logger.info(
+        "%d/%d already reviewed -- reviewing up to %d more this session",
+        already_reviewed,
+        len(records),
+        len(pending_indices),
+    )
+
+    reviewed_this_session = 0
+    for position, idx in enumerate(pending_indices, start=1):
+        record = records[idx]
+        print(
+            f"\n--- {position}/{len(pending_indices)} "
+            f"(đã xong {already_reviewed + reviewed_this_session}/{len(records)}) ---"
+        )
+        print(f"Video: {record['video_id']}  Shot: {record['shot_id']}")
+        print(f"Caption gốc: {record['source_caption']}")
+        print(f"Câu hỏi: {record['question']}")
+        print(f"Đáp án tham chiếu: {record['reference_answer']}")
+
+        image_path = image_by_keyframe.get(record["keyframe_id"])
+        if image_path and Path(image_path).exists():
+            try:
+                os.startfile(
+                    image_path
+                )  # noqa: S606 -- local file the operator's own pipeline wrote, not user input
+            except OSError as exc:
+                logger.warning("Không mở được ảnh %s: %s", image_path, exc)
+        else:
+            print(f"(không tìm thấy ảnh cho keyframe_id={record['keyframe_id']!r})")
+
+        action, approved, answerable_by_ocr = _prompt_review_decision()
+        if action == "quit":
+            break
+        if action == "skip":
+            continue
+
+        records[idx] = apply_review_decision(
+            record, approved=approved, answerable_by_ocr=answerable_by_ocr
+        )
+        reviewed_this_session += 1
+        args.candidates.write_text(
+            json.dumps(candidates_doc, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+    logger.info(
+        "Reviewed %d record(s) this session -- total reviewed now %d/%d",
+        reviewed_this_session,
+        already_reviewed + reviewed_this_session,
+        len(records),
+    )
+    return 0
+
+
+# --------------------------------------------------------------------------
 # Freeze -- candidates (with human "approved"/"answerable_by_ocr" decisions)
 # -> frozen artifact.
 # --------------------------------------------------------------------------
@@ -436,6 +553,18 @@ def _parse_args() -> argparse.Namespace:
         "--limit-shots", type=int, default=0, help="0 = no limit; >0 to eyeball a few first"
     )
 
+    review = subparsers.add_parser(
+        "review", help="Interactive terminal loop: approve/reject + flag answerable_by_ocr"
+    )
+    review.add_argument("--candidates", type=Path, default=_DEFAULT_CANDIDATES_PATH)
+    review.add_argument("--source", type=Path, default=_DEFAULT_SOURCE_PATH)
+    review.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="0 = review all pending; >0 to stop after N this session",
+    )
+
     freeze = subparsers.add_parser(
         "freeze", help="Read reviewed QA candidates -> freeze aic_qa_v1.json + hash"
     )
@@ -506,6 +635,8 @@ def main() -> None:
     args = _parse_args()
     if args.command == "generate":
         sys.exit(_run_generate(args))
+    if args.command == "review":
+        sys.exit(_run_review(args))
     sys.exit(_run_freeze(args))
 
 
