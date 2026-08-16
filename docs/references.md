@@ -771,6 +771,36 @@ class TranscriptionInfo:
 - **Exception (`ddgs.exceptions`):** `DDGSException` (base) · `RatelimitException` (vượt giới hạn tần suất) · `TimeoutException` (hết thời gian chờ) — bắt cụ thể từng loại, không `except Exception: pass` (CLAUDE.md §7).
 - **SSRF:** kết quả trả về `image`/`thumbnail` là URL của bên thứ ba (không phải do dự án host) — không bao giờ để backend tự động tải các URL này về theo yêu cầu của người dùng cuối; nếu cần hiển thị ảnh, hiển thị trực tiếp URL cho frontend load (giống ảnh ứng viên, không phải ảnh do server fetch), hoặc nếu backend cần tải để mã hoá bằng BEiT-3 thì phải giới hạn: chỉ tải chính các URL mà `DDGS().images()` vừa trả về trong cùng request, không nhận URL tuỳ ý từ client.
 
+### 5.6 Ollama (local LLM) — sinh câu hỏi QA (P3.3)
+
+🔧 Dự án (P3.3, `.claude/plans/p3-vqa-submission.plan.md`). Máy chủ dự án không có ngân sách gọi API trả phí (OpenAI) — chọn LLM chạy local qua Ollama để sinh câu hỏi, **cố ý khác Gemini** (model đang trả lời VQA, `configs/qa/vqa.yaml`) để tránh tự chấm chính mình (CLAUDE.md §3). Đã fetch kiểm chứng 2026-08-16 (`github.com/ollama/ollama-python` + `ollama.com/blog/structured-outputs`) — README của package KHÔNG document structured output, chỉ blog post có.
+
+- Cài đặt: `pip install ollama` (package `ollama`, không phải REST tự gọi tay). Yêu cầu **Ollama server đang chạy local** (mặc định `http://localhost:11434`) và model đã `ollama pull` trước — script KHÔNG tự tải model (CLAUDE.md §10: lệnh tốn tài nguyên chuẩn bị sẵn cho chủ dự án tự chạy).
+- Model đã chọn cho P3.3: `qwen2.5:7b-instruct` (đa ngôn ngữ tốt, ~4.7GB ở q4_K_M — vừa VRAM RTX 3070 8GB, chạy tuần tự không cạnh tranh với BEiT-3, CLAUDE.md §1.4).
+- **Structured output qua `format=<model_json_schema()>`** — cùng tinh thần `model_json_schema()` của Gemini/OpenAI (CLAUDE.md §5: không parse text tự do bằng regex), KHÔNG cần tool-calling hay JSON-mode kiểu cũ:
+
+  ```python
+  from ollama import Client
+  from pydantic import BaseModel
+
+  class Country(BaseModel):
+      name: str
+      capital: str
+      languages: list[str]
+
+  client = Client(host="http://localhost:11434")
+  response = client.chat(
+      model="qwen2.5:7b-instruct",
+      messages=[{"role": "user", "content": "Tell me about Canada."}],
+      format=Country.model_json_schema(),
+  )
+  country = Country.model_validate_json(response.message.content)
+  ```
+
+- Đọc kết quả qua `response.message.content` (chuỗi JSON) rồi `Model.model_validate_json(...)` — khác Gemini (`interaction.output_text`) và OpenAI (`item.parsed`), không dùng nhầm accessor của SDK khác.
+- Không có refusal branch riêng như OpenAI — model local không tự chối; vẫn phải bọc `model_validate_json` trong try/except vì model có thể trả JSON không khớp schema (đặc biệt model nhỏ, ép schema qua grammar constraint không đảm bảo 100% nội dung hợp lý).
+- Lỗi kết nối (server Ollama chưa chạy, model chưa pull) là `httpx`-based exception hoặc `ollama.ResponseError`/`ConnectionError` tuỳ nguyên nhân — bắt cụ thể, không `except Exception: pass` (CLAUDE.md §7).
+
 ---
 
 ## 6. Backend

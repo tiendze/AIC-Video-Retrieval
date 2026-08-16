@@ -67,6 +67,16 @@ eval = [
     # Reuses the extra instead of duplicating its pins (P0.4', .claude/plans/
     # p0-4-build-eval-set.plan.md).
     "aic-video-retrieval[ocr]",
+    # eval/build_qa_eval_set.py (P3.3, .claude/plans/p3-vqa-submission.plan.md):
+    # QA-question generation deliberately uses a DIFFERENT model than the
+    # VQA answering model (GeminiVqaClient, gemini-3.6-flash, P3.1/P3.2),
+    # otherwise Grounded Accuracy would measure Gemini grading itself
+    # (CLAUDE.md §3). Chủ dự án has no budget for a paid LLM API (2026-08-16)
+    # -- runs locally via Ollama instead (references.md §5.6), structured
+    # output via `format=<model_json_schema()>`. Requires a local Ollama
+    # server + `ollama pull qwen2.5:7b-instruct` done by the operator first
+    # (CLAUDE.md §10) -- this dependency alone does not download any model.
+    "ollama==0.6.2",
 ]
 asr = [
     "aic-video-retrieval[ingest]",
