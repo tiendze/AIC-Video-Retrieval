@@ -12,7 +12,23 @@ max_retries: 3
 retry_base_delay_seconds: 1.0
 
 # VqaService's asyncio.wait_for timeout around the whole Gemini call (plan
-# §P3.1: "Timeout 10s"). Exceeding this raises VqaServiceError -- P3.2's
-# grounding-gate layer decides the degraded response (keyframe grid +
-# notice) from there.
+# §P3.1: "Timeout 10s"). Exceeding this raises VqaServiceError, which
+# QaService turns into status="unavailable" + keyframe grid + notice.
 timeout_seconds: 10.0
+
+# How many of the retrieved keyframes are actually sent to Gemini (P3.2).
+# The plan says "prompt chỉ chứa top-k keyframe đã truy hồi", but top_k is a
+# request parameter bounded by MAX_TOP_K=100 -- sending 100 images for one
+# question is never right, so the prompt gets its own cap while the UI grid
+# still shows all top_k.
+#
+# This is the VQA branch's equivalent of configs/ingest/ocr.yaml's
+# max_ocr_side/tokens_per_image_at_max_side cost control (PRD risk R2). The
+# images themselves are already bounded by thumbnail_max_px=320
+# (configs/search/search.yaml) because QaService reads thumbnails, not
+# full-res sources.
+#
+# Raising this trades quota for the chance the correct evidence frame is in
+# context at all -- measure with Grounded Accuracy (P3.4) before changing
+# it, don't guess.
+max_keyframes_to_model: 8

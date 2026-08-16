@@ -13,18 +13,25 @@ empty `evidence_keyframe_ids` -- this is the anti-hallucination mechanism the
 plan's `Hallucination Rate` metric measures; nothing in this module
 penalizes or filters that answer out.
 
-Grounding-gate verification (checking every `evidence_keyframe_ids` entry is
-actually inside the retrieved set) and the Gemini-down -> keyframe-grid
-fallback are P3.2, not this module's job yet -- `VqaService.answer()` raises
-`VqaServiceError` on any Gemini failure so a later caller decides what
-degraded response to show (mirrors `QuestServiceError`/`SearchServiceError`:
-an expected, caller-facing failure with its own error_code, not a bare
-exception the caller has to guess about).
-
 Retry policy and the lazy `google.genai` import mirror
 `pipelines/ocr.py:GeminiOcrClient` and
 `app/services/quest_service.py:GeminiQueryRewriter` exactly -- this time both
 text AND multiple images go into one `interactions.create` call.
+
+**Four layers, bottom to top** (architecture.md §6 puts "Gemini + kiểm tra
+grounding" in this one file; the orchestration sits here too rather than in
+a second module, the same way `quest_service.py` holds both of its
+independent branches):
+
+1. `GeminiVqaClient` -- one Gemini call, retry + backoff. Sync.
+2. `VqaService` -- async boundary + 10s timeout. Raises `VqaServiceError`.
+3. `apply_grounding_gate` -- P3.2's anti-fabrication checkpoint. Pure.
+4. `QaService` -- `POST /api/qa` end to end, and the layer that guarantees
+   the operator always gets a keyframe grid even when Gemini is down.
+
+The split matters: layers 1-2 know nothing about grounding, and layer 3 is
+a pure function over data, so the rule "evidence must be inside the set the
+model was shown" is testable without any of the I/O above it.
 """
 
 from __future__ import annotations
@@ -34,13 +41,27 @@ import base64
 import io
 import logging
 import time
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol
+from pathlib import Path
+from typing import Any, Literal, Protocol
 
 from PIL import Image
 from pydantic import BaseModel, Field
 
+from app.services.search_service import SearchHit
+from app.services.thumbnail_service import ThumbnailServiceError
+
 logger = logging.getLogger(__name__)
+
+# The exact string the model is told to answer with when the keyframes do
+# not support a confident answer, AND the string the gate substitutes when
+# it rejects an answer. One constant, because drift between the prompt's
+# wording and the gate's wording would make abstentions unrecognisable to
+# P3.4's Abstention Rate without any test failing.
+INSUFFICIENT_EVIDENCE_ANSWER = "Không đủ căn cứ"
+
+VQA_UNAVAILABLE_NOTICE = "VQA tạm không khả dụng — chỉ hiển thị lưới keyframe truy hồi được."
 
 _VQA_PROMPT_TEMPLATE = (
     "Bạn được cung cấp {count} khung hình (keyframe) trích từ video, là TOÀN "
@@ -48,7 +69,7 @@ _VQA_PROMPT_TEMPLATE = (
     "được trả lời dựa trên những gì nhìn thấy được TRONG các khung hình này "
     "-- tuyệt đối không dùng kiến thức nền bên ngoài, kể cả khi bạn biết câu "
     "trả lời từ nguồn khác. Nếu các khung hình không đủ căn cứ để trả lời "
-    'chắc chắn, hãy trả answer="Không đủ căn cứ" với confidence thấp và '
+    'chắc chắn, hãy trả answer="{insufficient}" với confidence thấp và '
     "evidence_keyframe_ids rỗng thay vì đoán.\n\n"
     "Mỗi khung hình được gắn nhãn keyframe_id ngay trước ảnh của nó -- khi "
     "trích dẫn bằng chứng trong evidence_keyframe_ids, chỉ được dùng đúng "
@@ -84,10 +105,9 @@ class VqaAnswer(BaseModel):
 
 @dataclass(frozen=True)
 class RetrievedKeyframe:
-    """One keyframe SearchService/TrakeService already retrieved, with its
-    image already loaded -- this module never resolves keyframe_id -> file
-    path itself (that stays in ThumbnailService/MongoStore; wiring the two
-    together is P3.2's job)."""
+    """One keyframe SearchService already retrieved, with its image loaded.
+    Resolving keyframe_id -> file path stays in ThumbnailService/MongoStore;
+    `ThumbnailImageLoader` below is the only place the two meet."""
 
     keyframe_id: str
     image: Image.Image
@@ -121,7 +141,11 @@ def _build_input_parts(question: str, keyframes: list[RetrievedKeyframe]) -> lis
     parts: list[dict[str, Any]] = [
         {
             "type": "text",
-            "text": _VQA_PROMPT_TEMPLATE.format(count=len(keyframes), question=question),
+            "text": _VQA_PROMPT_TEMPLATE.format(
+                count=len(keyframes),
+                question=question,
+                insufficient=INSUFFICIENT_EVIDENCE_ANSWER,
+            ),
         }
     ]
     for keyframe in keyframes:
@@ -145,6 +169,7 @@ class VqaConfig:
     max_retries: int = 3
     retry_base_delay_seconds: float = 1.0
     timeout_seconds: float = 10.0
+    max_keyframes_to_model: int = 8
 
 
 _DEFAULT_VQA_CONFIG = VqaConfig()
@@ -225,3 +250,257 @@ class VqaService:
             raise VqaServiceError(
                 f"VQA failed: {exc}", error_code="vqa_unavailable", status_code=502
             ) from exc
+
+
+# --------------------------------------------------------------------------
+# P3.2 -- grounding gate (see module docstring)
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class GroundedAnswer:
+    """The gate's verdict. `confidence` and `reasoning` are passed through
+    UNCHANGED even on rejection: they are facts about what the model actually
+    said, and P3.4's `Hallucination Rate` is defined as exactly "confident
+    AND ungrounded" -- overwriting them here would erase the very signal that
+    metric measures."""
+
+    status: Literal["answered", "insufficient_evidence"]
+    answer: str
+    confidence: float
+    evidence_keyframe_ids: tuple[str, ...]
+    reasoning: str
+
+
+def apply_grounding_gate(answer: VqaAnswer, keyframe_ids_shown: Collection[str]) -> GroundedAnswer:
+    """The anti-fabrication checkpoint (plan §P3.2, architecture.md §3.6).
+
+    `keyframe_ids_shown` must be the set of keyframes ACTUALLY handed to the
+    model, not the set retrieved -- a keyframe that was retrieved but whose
+    image failed to load was never visible to the model, so citing it is
+    fabrication just the same.
+
+    An answer survives only if it cites at least one keyframe AND every
+    citation is inside that set:
+
+    - **Any** fabricated id rejects the **whole** answer. A model that
+      invents one citation is fabricating; the remaining citations earn no
+      benefit of the doubt.
+    - **Zero** citations is also rejected, including for a confident answer.
+      The AIC QA submission line is `<video_id>, <frame_id>, <answer>`
+      (references.md §1.2) -- an answer with no evidence keyframe has no
+      `frame_id` and literally cannot be submitted, so it can never count
+      toward `Grounded Accuracy`.
+
+    No `confidence` threshold is applied here on purpose: thresholding is
+    P3.4's job (`configs/`-driven, per the plan), and a gate that silently
+    dropped low-confidence-but-correctly-grounded answers would corrupt
+    `Abstention Rate`.
+    """
+    allowed = set(keyframe_ids_shown)
+    cited = tuple(answer.evidence_keyframe_ids)
+    fabricated = [keyframe_id for keyframe_id in cited if keyframe_id not in allowed]
+
+    if fabricated:
+        logger.warning(
+            "grounding gate: rejecting answer -- cited keyframe_id(s) %s were never "
+            "shown to the model (shown: %d keyframe(s))",
+            fabricated,
+            len(allowed),
+        )
+    if not cited or fabricated:
+        return GroundedAnswer(
+            status="insufficient_evidence",
+            answer=INSUFFICIENT_EVIDENCE_ANSWER,
+            confidence=answer.confidence,
+            evidence_keyframe_ids=(),
+            reasoning=answer.reasoning,
+        )
+    return GroundedAnswer(
+        status="answered",
+        answer=answer.answer,
+        confidence=answer.confidence,
+        evidence_keyframe_ids=cited,
+        reasoning=answer.reasoning,
+    )
+
+
+# --------------------------------------------------------------------------
+# P3.2 -- keyframe images
+# --------------------------------------------------------------------------
+
+
+class KeyframeImageUnavailable(Exception):
+    """One keyframe's image could not be loaded. Deliberately its own type so
+    `QaService` can skip exactly this case (log + drop that keyframe) without
+    catching anything broader (CLAUDE.md §7)."""
+
+
+class KeyframeImageLoader(Protocol):
+    async def load_image(self, keyframe_id: str) -> Image.Image: ...
+
+
+class _ThumbnailPathResolver(Protocol):
+    async def get_thumbnail_path(self, keyframe_id: str) -> Path: ...
+
+
+def _open_rgb(path: Path) -> Image.Image:
+    with Image.open(path) as image:
+        return image.convert("RGB")
+
+
+class ThumbnailImageLoader:
+    """Adapts `ThumbnailService` to `KeyframeImageLoader`.
+
+    Reading the THUMBNAIL rather than the full-res source is a cost decision,
+    not an accident: the live corpus is 221,903 full-res JPEGs (~40 GB,
+    `thumbnail_service.py`), and VQA sends several images per single
+    question. `configs/search/search.yaml`'s `thumbnail_max_px` already
+    bounds them, so the resize that `pipelines/ocr.py` does inline
+    (`max_ocr_side`) is here obtained for free from a cache the search grid
+    is warming anyway.
+
+    Translating every failure into `KeyframeImageUnavailable` is the point of
+    this class -- `QaService` must not have to know ThumbnailService's
+    exception vocabulary.
+    """
+
+    def __init__(self, thumbnail_service: _ThumbnailPathResolver) -> None:
+        self._thumbnail_service = thumbnail_service
+
+    async def load_image(self, keyframe_id: str) -> Image.Image:
+        try:
+            path = await self._thumbnail_service.get_thumbnail_path(keyframe_id)
+            return await asyncio.to_thread(_open_rgb, path)
+        except (ThumbnailServiceError, OSError, Image.DecompressionBombError) as exc:
+            raise KeyframeImageUnavailable(
+                f"No usable image for keyframe_id={keyframe_id!r}: {exc}"
+            ) from exc
+
+
+# --------------------------------------------------------------------------
+# P3.2 -- QaService (POST /api/qa orchestration)
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class QaResult:
+    """`keyframes` is the retrieved grid and is populated in EVERY status,
+    including `unavailable` -- that is this type's whole reason for existing
+    (plan §P3.2: a Gemini outage must not kill the main request; US-5 stays
+    partially usable). `answer`/`confidence`/`reasoning` are None only when
+    no model verdict exists at all."""
+
+    status: Literal["answered", "insufficient_evidence", "unavailable"]
+    answer: str | None
+    confidence: float | None
+    evidence_keyframe_ids: tuple[str, ...]
+    reasoning: str | None
+    keyframes: tuple[SearchHit, ...]
+    notice: str | None
+
+
+class _SearchServiceLike(Protocol):
+    async def search(self, query: str, mode: str, top_k: int) -> list[SearchHit]: ...
+
+
+class _VqaServiceLike(Protocol):
+    async def answer(self, question: str, keyframes: list[RetrievedKeyframe]) -> VqaAnswer: ...
+
+
+class QaService:
+    """`POST /api/qa` end to end (architecture.md §3.6): retrieve keyframes
+    for the question, load their images, ask the VLM, then run the grounding
+    gate over what comes back.
+
+    Two failure modes are treated very differently on purpose:
+
+    - **VQA branch fails** (Gemini down/timeout/malformed) -> degraded
+      result: the keyframe grid plus a readable notice, never an exception.
+    - **Retrieval fails** -> propagates. A broken Milvus is not a partial
+      answer; returning an empty grid there would look identical to "nothing
+      matched" and quietly mislead an operator being timed (CLAUDE.md §7:
+      thiếu dữ liệu phải fail rõ ràng, không trả rỗng).
+
+    The model is never asked a question with zero visual context -- with no
+    images it could only answer from background knowledge, which is exactly
+    what this phase exists to prevent.
+    """
+
+    def __init__(
+        self,
+        search_service: _SearchServiceLike,
+        image_loader: KeyframeImageLoader,
+        vqa_service: _VqaServiceLike,
+        max_keyframes_to_model: int = _DEFAULT_VQA_CONFIG.max_keyframes_to_model,
+    ) -> None:
+        self._search_service = search_service
+        self._image_loader = image_loader
+        self._vqa_service = vqa_service
+        self._max_keyframes_to_model = max_keyframes_to_model
+
+    async def answer_question(self, question: str, top_k: int) -> QaResult:
+        hits = await self._search_service.search(question, mode="semantic", top_k=top_k)
+        grid = tuple(hits)
+        if not hits:
+            logger.info(
+                "qa: no keyframe retrieved for question=%r -- not calling the model", question
+            )
+            return self._no_context(grid)
+
+        keyframes = await self._load_keyframes(hits[: self._max_keyframes_to_model])
+        if not keyframes:
+            logger.warning(
+                "qa: every candidate keyframe image failed to load -- not calling the model"
+            )
+            return self._no_context(grid)
+
+        try:
+            answer = await self._vqa_service.answer(question, keyframes)
+        except VqaServiceError as exc:
+            logger.warning("qa: degraded -- returning keyframe grid only: %r", exc)
+            return QaResult(
+                status="unavailable",
+                answer=None,
+                confidence=None,
+                evidence_keyframe_ids=(),
+                reasoning=None,
+                keyframes=grid,
+                notice=VQA_UNAVAILABLE_NOTICE,
+            )
+
+        grounded = apply_grounding_gate(answer, {kf.keyframe_id for kf in keyframes})
+        return QaResult(
+            status=grounded.status,
+            answer=grounded.answer,
+            confidence=grounded.confidence,
+            evidence_keyframe_ids=grounded.evidence_keyframe_ids,
+            reasoning=grounded.reasoning,
+            keyframes=grid,
+            notice=None,
+        )
+
+    async def _load_keyframes(self, hits: Sequence[SearchHit]) -> list[RetrievedKeyframe]:
+        keyframes: list[RetrievedKeyframe] = []
+        for hit in hits:
+            try:
+                image = await self._image_loader.load_image(hit.keyframe_id)
+            except KeyframeImageUnavailable as exc:
+                # One missing image must not fail the question -- mirrors
+                # SearchService._search_ocr dropping a frame_idx-less hit.
+                logger.warning("qa: skipping keyframe_id=%s -- %s", hit.keyframe_id, exc)
+                continue
+            keyframes.append(RetrievedKeyframe(keyframe_id=hit.keyframe_id, image=image))
+        return keyframes
+
+    @staticmethod
+    def _no_context(grid: tuple[SearchHit, ...]) -> QaResult:
+        return QaResult(
+            status="insufficient_evidence",
+            answer=INSUFFICIENT_EVIDENCE_ANSWER,
+            confidence=None,
+            evidence_keyframe_ids=(),
+            reasoning=None,
+            keyframes=grid,
+            notice=None,
+        )
