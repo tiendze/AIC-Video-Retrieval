@@ -42,7 +42,21 @@
 
 ---
 
-## P3.3 — Sinh bộ eval QA (R6)
+## P3.3 — Sinh bộ eval QA (R6) ✅ code hoàn thành (2026-08-16), CHƯA chạy thật
+
+**Trạng thái thật:** `eval/build_qa_eval_set.py` đã viết + test (31/31 pass,
+coverage 83%, xem `.claude/tdd/p3-3-build-qa-eval-set.tdd.md`). **Chưa có**
+`configs/eval/aic_qa_v1.candidates.json` hay `aic_qa_v1.json` — lệnh
+`generate`/`freeze` cần chủ dự án tự chạy (CLAUDE.md §10: cần server Ollama
+local đang chạy + `ollama pull qwen2.5:7b-instruct` trước).
+
+**Quyết định khác với mô tả gốc bên dưới** (chốt qua `AskUserQuestion`
+2026-08-16, không đoán):
+- **Model sinh câu hỏi = Ollama local (`qwen2.5:7b-instruct`), KHÔNG phải OpenAI** — chủ dự án không có ngân sách API trả phí. `openai_api_key` vẫn còn trong `Settings` nhưng chưa từng được dùng ở đâu.
+- **Chỉ đọc caption (text), KHÔNG nhìn ảnh keyframe** — giữ VRAM thấp, chạy tuần tự với BEiT-3 (CLAUDE.md §1.4). Đánh đổi: chất lượng câu hỏi phụ thuộc caption Gemini đã viết, có thể không đủ chi tiết cho câu hỏi kiểu "biển hiệu ghi gì".
+- **Không sample lại** — dùng thẳng các record `approved: true` sẵn có trong `configs/eval/aic_eval_v1.candidates.json` (P0.4') làm shot universe, đúng tinh thần "cùng cách lấy mẫu, cùng seed" nhưng bằng cách tái dùng thay vì gọi lại `sample_kis_shots`/`sample_trake_sequences`.
+
+
 
 **Làm gì:** dataset AIC **không có nhãn QA** — cũng như không có nhãn nào khác (PRD §1.4). Phải tự sinh (PRD §6.5).
 
