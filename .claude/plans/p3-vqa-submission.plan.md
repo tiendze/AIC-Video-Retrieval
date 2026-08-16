@@ -42,20 +42,33 @@
 
 ---
 
-## P3.3 — Sinh bộ eval QA (R6) ✅ code hoàn thành (2026-08-16), CHƯA chạy thật
+## P3.3 — Sinh bộ eval QA (R6) ✅ hoàn thành (2026-08-16)
 
-**Trạng thái thật:** `eval/build_qa_eval_set.py` đã viết + test (31/31 pass,
-coverage 83%, xem `.claude/tdd/p3-3-build-qa-eval-set.tdd.md`). **Chưa có**
-`aic_qa_v1.json` đóng băng — lệnh `generate`/`freeze` cần chủ dự án tự chạy
-(CLAUDE.md §10: cần server Ollama local đang chạy + `ollama pull qwen3:8b`
-trước).
+**Trạng thái thật, đã verify bằng file thật trên đĩa (không suy đoán):**
+`configs/eval/aic_qa_v1.json` (91 record) + `.json.sha256` +
+`.quality_report.md` đã tồn tại, hash tự tính khớp file `.sha256`
+(`df553d2...`). Số liệu từ `.quality_report.md`:
+
+| | |
+|---|---|
+| eval_set_version | v1 |
+| Tổng đã sinh (`generate`) | 346 |
+| Đã review | 100 |
+| Approved (đóng băng) | 91 |
+| Tỉ lệ loại khi review | 9.0% |
+| Tỉ lệ `answerable_by_ocr` (trong số approved) | 1.1% |
+
+`eval/build_qa_eval_set.py` đã viết + test (35/35 pass, xem
+`.claude/tdd/p3-3-build-qa-eval-set.tdd.md`).
 
 **Quyết định khác với mô tả gốc bên dưới** (chốt qua `AskUserQuestion`
 2026-08-16, không đoán):
 - **Model sinh câu hỏi = Ollama local, KHÔNG phải OpenAI** — chủ dự án không có ngân sách API trả phí. `openai_api_key` vẫn còn trong `Settings` nhưng chưa từng được dùng ở đâu.
 - **Chỉ đọc caption (text), KHÔNG nhìn ảnh keyframe** — giữ VRAM thấp, chạy tuần tự với BEiT-3 (CLAUDE.md §1.4). Đánh đổi: chất lượng câu hỏi phụ thuộc caption Gemini đã viết, có thể không đủ chi tiết cho câu hỏi kiểu "biển hiệu ghi gì".
 - **Không sample lại** — dùng thẳng các record `approved: true` sẵn có trong `configs/eval/aic_eval_v1.candidates.json` (P0.4') làm shot universe, đúng tinh thần "cùng cách lấy mẫu, cùng seed" nhưng bằng cách tái dùng thay vì gọi lại `sample_kis_shots`/`sample_trake_sequences`.
-- **ĐỔI model `qwen2.5:7b-instruct` → `qwen3:8b`** (2026-08-16, cùng ngày, sau khi chạy `--limit-shots 5` thật): model cũ sinh một câu hỏi mà chính `reference_answer` của nó thừa nhận không trả lời được từ caption — ép JSON schema không ép được model tuân thủ system prompt "chỉ hỏi điều trả lời được". `qwen3:8b` (5.2GB, vừa VRAM) là thế hệ mới hơn, tài liệu Ollama ghi mạnh hơn về instruction-following. **Chưa verify lại bằng chạy thật** — cần chủ dự án `ollama pull qwen3:8b` rồi chạy lại `--limit-shots 5` để xác nhận có đỡ hơn không.
+- **ĐỔI model `qwen2.5:7b-instruct` → `qwen3:8b`** (cùng ngày, sau khi chạy `--limit-shots 5` thật): model cũ sinh một câu hỏi mà chính `reference_answer` của nó thừa nhận không trả lời được từ caption — ép JSON schema không ép được model tuân thủ system prompt "chỉ hỏi điều trả lời được". `qwen3:8b` chạy lại 346 shot thật, **0 lỗi kiểu đó** — xác nhận bằng chạy thật, không chỉ suy đoán.
+- **Sửa lỗi gate đóng băng** (phát hiện khi chủ dự án chạy `freeze` thật lần đầu): code ban đầu bắt buộc review 100% số record đã sinh (346), trái với plan ("bộ chưa review chỉ dùng để dò lỗi"). Đã sửa để chỉ cần ≥100 record ĐÃ REVIEW, phần chưa review bị loại khỏi bộ đóng băng chứ không chặn `freeze` — commit `7dc4a71`.
+- **Thêm subcommand `review`** (`eval/build_qa_eval_set.py review --limit N`) — vòng lặp terminal tự mở ảnh keyframe, hỏi y/n/skip/quit, ghi lại sau mỗi câu — thay cho việc chủ dự án phải tự sửa tay JSON.
 
 
 
@@ -125,7 +138,7 @@ Ngưỡng `confidence` đặt trong `configs/`, không hard-code.
 
 - [ ] `Grounded Accuracy` đạt mục tiêu PRD §6.7
 - [ ] `Hallucination Rate` dưới ngưỡng §6.7
-- [ ] Bộ eval QA đã review ≥ 100 mẫu, đóng băng, có hash
+- [x] Bộ eval QA đã review ≥ 100 mẫu, đóng băng, có hash — `configs/eval/aic_qa_v1.json` (91 record đã duyệt/100 đã review/346 đã sinh), hash verify khớp `.sha256` (2026-08-16)
 - [ ] Grounding gate chặn được evidence bịa (có test)
 - [ ] Gemini chết → request chính vẫn sống (có test)
 - [ ] Exporter đủ 4 task, có validator

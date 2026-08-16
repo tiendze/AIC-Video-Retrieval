@@ -28,6 +28,48 @@ có tránh được lỗi này không. Nếu vẫn còn, vấn đề nằm ở p
 mẫu / thiếu chỉ dẫn rõ "không có câu trả lời thật thì tự bỏ câu, đừng viết
 lời từ chối vào answer"), không phải ở kích cỡ model.
 
+## Xác nhận bằng chạy thật toàn bộ (2026-08-16, cùng ngày)
+
+`qwen3:8b` được chạy lại `--limit-shots 5` (kết quả sạch, 0 lỗi tự-thừa-nhận-
+không-trả-lời-được) rồi chạy `generate` đầy đủ trên cả 173 shot đã duyệt:
+**346 QA candidate, 0 shot thất bại.** Quét tự động tất cả 346 record (regex
+tìm cụm "không thể trả lời"/"không rõ"/...) cho kết quả **0/346** — hết hẳn
+lớp lỗi mà `qwen2.5:7b-instruct` mắc phải.
+
+Chủ dự án chạy `review --limit 100` (subcommand mới, thêm sau khi tìm ra
+lỗi gate đóng băng dưới đây) rồi `freeze`. File thật trên đĩa, verify lại
+bằng cách tự tính sha256 và so khớp với `.sha256`:
+
+```
+configs/eval/aic_qa_v1.json           -- 91 record
+configs/eval/aic_qa_v1.json.sha256    -- df553d24532d9e08db6eba65b5904792c4e621b95f6504dce77de91129930a36 (khớp, tự tính lại xác nhận)
+configs/eval/aic_qa_v1.quality_report.md:
+  total generated: 346
+  total reviewed: 100
+  approved: 91
+  tỉ lệ loại khi review: 9.0%
+  tỉ lệ answerable_by_ocr: 1.1%
+```
+
+**Lỗi phát hiện giữa chừng, đã sửa bằng TDD riêng** (commit `7dc4a71`):
+`compute_qa_quality_report` bản đầu bắt buộc TOÀN BỘ 346 candidate phải có
+`approved` khác `null` mới cho freeze -- trái với chính plan P3.3 ("Bộ chưa
+review chỉ dùng để dò lỗi"). Sửa để chỉ cần ≥100 record ĐÃ REVIEW, phần còn
+lại bị loại khỏi bộ đóng băng thay vì chặn `freeze`. 3 test mới
+(`TestComputeQaQualityReport::test_ignores_extra_unreviewed_records_when_
+enough_are_reviewed`, `test_raises_when_a_larger_batch_still_has_too_few_
+reviewed`) khoá lại hành vi đúng.
+
+Subcommand `review` (commit `442f978`) được thêm SAU khi chủ dự án thử tự
+sửa tay JSON và thấy không khả thi ở quy mô 100-346 record -- vòng lặp
+terminal (mở ảnh, hỏi y/n/skip/quit, ghi lại sau mỗi câu) thay cho việc sửa
+tay, không thay đổi việc AI không được tự động hoá quyết định approve/reject
+(CLAUDE.md §3) -- quyết định thật vẫn do chủ dự án gõ trong lúc review.
+
+**P3.3 coi là hoàn thành** theo đúng "Verify" của plan: file bộ QA có
+version + hash ✓, số mẫu đã review ghi rõ (100/346) ✓, tỉ lệ
+`answerable_by_ocr` được báo cáo (1.1%) ✓.
+
 ## Design decisions made mid-implementation (not silently assumed)
 
 The plan says "dùng LLM sinh câu hỏi" without naming a model. Two decisions
