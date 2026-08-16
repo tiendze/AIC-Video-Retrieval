@@ -137,7 +137,8 @@ class QaGeneration(BaseModel):
 
 @dataclass(frozen=True)
 class QaQualityReport:
-    total_candidates: int
+    total_generated: int
+    total_reviewed: int
     approved_count: int
     rejection_rate: float
     answerable_by_ocr_rate: float  # among APPROVED records
@@ -298,27 +299,28 @@ def _generate_qa_candidates(
 def compute_qa_quality_report(
     candidates: Sequence[Mapping[str, Any]], min_reviewed_samples: int
 ) -> QaQualityReport:
-    """Raises `EvalSetBuildError` (not a silent skip) if any candidate is
-    still unreviewed, if fewer than `min_reviewed_samples` were reviewed
-    (plan §P3.3: "Review thủ công ít nhất 100 mẫu"), or if an approved
-    record is missing its `answerable_by_ocr` flag -- "thiếu dữ liệu phải
-    fail rõ ràng" (CLAUDE.md §7)."""
-    total = len(candidates)
-    unreviewed = [c for c in candidates if c.get("approved") is None]
-    if unreviewed:
-        sample_ids = [_shot_id_key(c["video_id"], c["shot_id"]) for c in unreviewed[:5]]
+    """Raises `EvalSetBuildError` (not a silent skip) if fewer than
+    `min_reviewed_samples` candidates have been reviewed (plan §P3.3:
+    "Review thủ công ít nhất 100 mẫu"), or if a REVIEWED+approved record is
+    missing its `answerable_by_ocr` flag -- "thiếu dữ liệu phải fail rõ
+    ràng" (CLAUDE.md §7).
+
+    Candidates still unreviewed (`approved is None`) are NOT an error by
+    themselves and do NOT need to cover the whole generated batch -- plan
+    §P3.3: "Đóng băng bộ đã review... Bộ chưa review chỉ dùng để dò lỗi."
+    A `generate` run can produce far more candidates than the 100-sample
+    floor; the unreviewed remainder is simply excluded here, not a reason
+    to refuse freezing."""
+    total_generated = len(candidates)
+    reviewed = [c for c in candidates if c.get("approved") is not None]
+    if len(reviewed) < min_reviewed_samples:
         raise EvalSetBuildError(
-            f"{len(unreviewed)}/{total} candidate(s) still unreviewed (approved=null), "
-            f'e.g. {sample_ids} -- review every record\'s "approved" field before freezing'
-        )
-    if total < min_reviewed_samples:
-        raise EvalSetBuildError(
-            f"only {total} reviewed sample(s), need >= {min_reviewed_samples} "
-            '(plan §P3.3: "Review thủ công ít nhất 100 mẫu") -- generate more '
-            "before freezing"
+            f"only {len(reviewed)}/{total_generated} candidate(s) reviewed, need >= "
+            f'{min_reviewed_samples} (plan §P3.3: "Review thủ công ít nhất 100 mẫu") '
+            "-- review more before freezing"
         )
 
-    approved = [c for c in candidates if c["approved"] is True]
+    approved = [c for c in reviewed if c["approved"] is True]
     missing_ocr_flag = [c for c in approved if c.get("answerable_by_ocr") is None]
     if missing_ocr_flag:
         sample_ids = [_shot_id_key(c["video_id"], c["shot_id"]) for c in missing_ocr_flag[:5]]
@@ -328,12 +330,13 @@ def compute_qa_quality_report(
             "khỏi công VLM khi báo cáo Grounded Accuracy)"
         )
 
-    rejected = total - len(approved)
+    rejected = len(reviewed) - len(approved)
     ocr_answerable = sum(1 for c in approved if c["answerable_by_ocr"] is True)
     return QaQualityReport(
-        total_candidates=total,
+        total_generated=total_generated,
+        total_reviewed=len(reviewed),
         approved_count=len(approved),
-        rejection_rate=rejected / total if total else 0.0,
+        rejection_rate=rejected / len(reviewed) if reviewed else 0.0,
         answerable_by_ocr_rate=ocr_answerable / len(approved) if approved else 0.0,
     )
 
@@ -370,7 +373,8 @@ def _render_quality_report(quality: QaQualityReport, candidates_doc: Mapping[str
         f"- eval_set_version: {candidates_doc['eval_set_version']}\n"
         f"- git_sha: {candidates_doc['git_sha']}\n"
         f"- generated_at: {candidates_doc['generated_at']}\n"
-        f"- total candidates: {quality.total_candidates}\n"
+        f"- total generated: {quality.total_generated}\n"
+        f"- total reviewed: {quality.total_reviewed}\n"
         f"- approved: {quality.approved_count}\n"
         f"- tỉ lệ loại khi review: {quality.rejection_rate:.1%}\n"
         f"- tỉ lệ trả lời được bằng OCR (answerable_by_ocr, trong số đã duyệt): "

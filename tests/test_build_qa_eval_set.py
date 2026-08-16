@@ -377,17 +377,38 @@ class TestComputeQaQualityReport:
             for i in range(n)
         ]
 
-    def test_raises_on_unreviewed_record(self):
+    def test_ignores_extra_unreviewed_records_when_enough_are_reviewed(self):
+        """Plan §P3.3: 'Đóng băng bộ đã review... Bộ chưa review chỉ dùng
+        để dò lỗi' -- reviewing 100 of a larger generated batch (e.g. 346)
+        must be enough; the un-reviewed remainder must NOT block freezing,
+        only get silently excluded from the frozen set and the report."""
         candidates = self._approved(100)
         candidates.append({"video_id": "v", "shot_id": 999, "question": "q", "approved": None})
 
-        with pytest.raises(EvalSetBuildError, match="unreviewed"):
-            compute_qa_quality_report(candidates, min_reviewed_samples=100)
+        report = compute_qa_quality_report(candidates, min_reviewed_samples=100)
+
+        assert report.total_generated == 101
+        assert report.total_reviewed == 100
+        assert report.approved_count == 100
 
     def test_raises_when_fewer_than_minimum_reviewed_samples(self):
         candidates = self._approved(50)
 
         with pytest.raises(EvalSetBuildError, match="50"):
+            compute_qa_quality_report(candidates, min_reviewed_samples=100)
+
+    def test_raises_when_a_larger_batch_still_has_too_few_reviewed(self):
+        """Same gate, but the batch is much bigger than the review floor
+        (mirrors a real 346-candidate `generate` run where only ~30 were
+        reviewed so far) -- must still cite the actual reviewed count, not
+        the total generated."""
+        candidates = self._approved(30)
+        candidates.extend(
+            {"video_id": "v", "shot_id": 2000 + i, "question": "q", "approved": None}
+            for i in range(316)
+        )
+
+        with pytest.raises(EvalSetBuildError, match="30"):
             compute_qa_quality_report(candidates, min_reviewed_samples=100)
 
     def test_raises_when_approved_record_missing_answerable_by_ocr_flag(self):
@@ -410,7 +431,8 @@ class TestComputeQaQualityReport:
 
         report = compute_qa_quality_report(candidates, min_reviewed_samples=100)
 
-        assert report.total_candidates == 100
+        assert report.total_generated == 100
+        assert report.total_reviewed == 100
         assert report.approved_count == 50
         assert report.rejection_rate == pytest.approx(0.5)
         assert report.answerable_by_ocr_rate == pytest.approx(20 / 50)
