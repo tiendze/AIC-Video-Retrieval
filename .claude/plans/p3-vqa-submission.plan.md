@@ -26,7 +26,7 @@
 
 ---
 
-## P3.2 — Grounding gate
+## P3.2 — Grounding gate ✅ hoàn thành (2026-08-16)
 
 **Làm gì:** chốt chặn giữa VLM và kết quả (architecture.md §3.6, bước "Kiểm tra evidence_ids").
 
