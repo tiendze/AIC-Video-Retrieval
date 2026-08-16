@@ -2,6 +2,32 @@
 
 **Source plan:** [`.claude/plans/p3-vqa-submission.plan.md`](../plans/p3-vqa-submission.plan.md) §P3.3.
 
+## Cập nhật sau khi chạy thật (2026-08-16, cùng ngày)
+
+Chủ dự án chạy `generate --limit-shots 5` với `qwen2.5:7b-instruct` (default
+lúc viết evidence report này) và phát hiện một câu hỏi mà chính
+`reference_answer` của nó là lời từ chối ("không thể trả lời bằng cách xem
+caption") thay vì một đáp án thật — model hỏi điều không có căn cứ trong
+caption, đúng thứ `_QA_SYSTEM_PROMPT` cấm, rồi thay vì tự bỏ câu đó thì
+nhét lời từ chối vào field `reference_answer`. Ollama's `format=<schema>`
+ép đúng CẤU TRÚC JSON (test #10 xác nhận điều này) nhưng không ép được NỘI
+DUNG tuân theo system prompt — đúng cảnh báo đã ghi sẵn ở `references.md`
+§5.6 ("ép schema qua grammar constraint không đảm bảo 100% nội dung hợp
+lý"), giờ có bằng chứng thực nghiệm cụ thể.
+
+**Đổi default sang `qwen3:8b`** (`configs/eval/build_qa_eval_set.yaml`,
+`BuildQaEvalSetConfig.ollama_model`) — thế hệ mới hơn, tài liệu Ollama ghi
+mạnh hơn về instruction-following, vẫn vừa VRAM 8GB (5.2GB). Không đổi test
+suite: mọi test dùng `"qwen2.5:7b-instruct"` như một giá trị fixture bất kỳ
+để kiểm tra luồng dữ liệu (config → generator → record), không assert đây
+PHẢI là default — đổi default không làm test nào sai.
+
+**Chưa verify lại bằng chạy thật** với `qwen3:8b` — chủ dự án cần
+`ollama pull qwen3:8b` rồi chạy lại `--limit-shots 5` để xác nhận model mới
+có tránh được lỗi này không. Nếu vẫn còn, vấn đề nằm ở prompt (thiếu ví dụ
+mẫu / thiếu chỉ dẫn rõ "không có câu trả lời thật thì tự bỏ câu, đừng viết
+lời từ chối vào answer"), không phải ở kích cỡ model.
+
 ## Design decisions made mid-implementation (not silently assumed)
 
 The plan says "dùng LLM sinh câu hỏi" without naming a model. Two decisions

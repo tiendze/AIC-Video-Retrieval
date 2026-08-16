@@ -74,7 +74,7 @@ eval = [
     # (CLAUDE.md §3). Chủ dự án has no budget for a paid LLM API (2026-08-16)
     # -- runs locally via Ollama instead (references.md §5.6), structured
     # output via `format=<model_json_schema()>`. Requires a local Ollama
-    # server + `ollama pull qwen2.5:7b-instruct` done by the operator first
+    # server + `ollama pull qwen3:8b` done by the operator first
     # (CLAUDE.md §10) -- this dependency alone does not download any model.
     "ollama==0.6.2",
 ]

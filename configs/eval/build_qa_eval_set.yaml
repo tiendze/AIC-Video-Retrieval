@@ -13,9 +13,19 @@ ollama_host: http://localhost:11434
 # đánh giá". Chọn 2026-08-16: chủ dự án không có ngân sách API trả phí
 # (loại OpenAI), và không muốn model vision local (giữ VRAM thấp, chạy tuần
 # tự với BEiT-3, CLAUDE.md §1.4) -- nên model text-only, đọc caption đã có
-# sẵn thay vì ảnh keyframe. Cần `ollama pull qwen2.5:7b-instruct` trước khi
-# chạy `generate` (CLAUDE.md §10 -- lệnh này không tự tải model).
-ollama_model: qwen2.5:7b-instruct
+# sẵn thay vì ảnh keyframe.
+#
+# ⚠️ ĐỔI từ qwen2.5:7b-instruct sang qwen3:8b (2026-08-16, cùng ngày) --
+# chạy thử --limit-shots 5 với qwen2.5:7b-instruct cho ra một câu hỏi mà
+# CHÍNH reference_answer của nó thừa nhận "không thể trả lời bằng cách xem
+# caption" (model hỏi một điều không có căn cứ rồi nhét lời từ chối vào
+# field answer, thay vì tự bỏ câu đó) -- vi phạm đúng invariant
+# "câu hỏi CHỈ trả lời được bằng cách xem chính cảnh đó" mà _QA_SYSTEM_
+# PROMPT yêu cầu. qwen3:8b (5.2GB, vừa VRAM RTX 3070 8GB) là thế hệ mới
+# hơn, trang ollama.com/library/qwen3 ghi rõ mạnh hơn về instruction-
+# following -- đúng năng lực đang thiếu. Cần `ollama pull qwen3:8b` trước
+# khi chạy `generate` (CLAUDE.md §10 -- lệnh này không tự tải model).
+ollama_model: qwen3:8b
 
 # Retry policy -- giống hệt configs/eval/build_eval_set.yaml (exponential
 # backoff, retry_base_delay_seconds * 2^attempt), chỉ áp dụng cho lỗi mạng

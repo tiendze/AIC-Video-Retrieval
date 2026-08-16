@@ -776,7 +776,8 @@ class TranscriptionInfo:
 🔧 Dự án (P3.3, `.claude/plans/p3-vqa-submission.plan.md`). Máy chủ dự án không có ngân sách gọi API trả phí (OpenAI) — chọn LLM chạy local qua Ollama để sinh câu hỏi, **cố ý khác Gemini** (model đang trả lời VQA, `configs/qa/vqa.yaml`) để tránh tự chấm chính mình (CLAUDE.md §3). Đã fetch kiểm chứng 2026-08-16 (`github.com/ollama/ollama-python` + `ollama.com/blog/structured-outputs`) — README của package KHÔNG document structured output, chỉ blog post có.
 
 - Cài đặt: `pip install ollama` (package `ollama`, không phải REST tự gọi tay). Yêu cầu **Ollama server đang chạy local** (mặc định `http://localhost:11434`) và model đã `ollama pull` trước — script KHÔNG tự tải model (CLAUDE.md §10: lệnh tốn tài nguyên chuẩn bị sẵn cho chủ dự án tự chạy).
-- Model đã chọn cho P3.3: `qwen2.5:7b-instruct` (đa ngôn ngữ tốt, ~4.7GB ở q4_K_M — vừa VRAM RTX 3070 8GB, chạy tuần tự không cạnh tranh với BEiT-3, CLAUDE.md §1.4).
+- Model đã chọn cho P3.3: `qwen3:8b` (5.2GB, vừa VRAM RTX 3070 8GB, chạy tuần tự không cạnh tranh với BEiT-3, CLAUDE.md §1.4).
+  - ⚠️ ĐỔI từ `qwen2.5:7b-instruct` (2026-08-16, cùng ngày thử nghiệm) — chạy thật với `--limit-shots 5` cho ra một câu hỏi mà chính `reference_answer` của nó thừa nhận "không thể trả lời bằng cách xem caption" (model hỏi điều không có căn cứ rồi nhét lời từ chối vào field answer thay vì tự bỏ câu, đúng rủi ro đã cảnh báo ở dòng dưới). `ollama.com/library/qwen3` ghi model thế hệ mới hơn, mạnh hơn về instruction-following — đúng năng lực đang thiếu.
 - **Structured output qua `format=<model_json_schema()>`** — cùng tinh thần `model_json_schema()` của Gemini/OpenAI (CLAUDE.md §5: không parse text tự do bằng regex), KHÔNG cần tool-calling hay JSON-mode kiểu cũ:
 
   ```python
@@ -790,7 +791,7 @@ class TranscriptionInfo:
 
   client = Client(host="http://localhost:11434")
   response = client.chat(
-      model="qwen2.5:7b-instruct",
+      model="qwen3:8b",
       messages=[{"role": "user", "content": "Tell me about Canada."}],
       format=Country.model_json_schema(),
   )
@@ -798,7 +799,7 @@ class TranscriptionInfo:
   ```
 
 - Đọc kết quả qua `response.message.content` (chuỗi JSON) rồi `Model.model_validate_json(...)` — khác Gemini (`interaction.output_text`) và OpenAI (`item.parsed`), không dùng nhầm accessor của SDK khác.
-- Không có refusal branch riêng như OpenAI — model local không tự chối; vẫn phải bọc `model_validate_json` trong try/except vì model có thể trả JSON không khớp schema (đặc biệt model nhỏ, ép schema qua grammar constraint không đảm bảo 100% nội dung hợp lý).
+- Không có refusal branch riêng như OpenAI — model local không tự chối; vẫn phải bọc `model_validate_json` trong try/except vì model có thể trả JSON không khớp schema (đặc biệt model nhỏ, ép schema qua grammar constraint không đảm bảo 100% nội dung hợp lý). **Xác nhận bằng thực nghiệm 2026-08-16** với `qwen2.5:7b-instruct`: schema (đúng cấu trúc JSON) được tuân thủ, nhưng NỘI DUNG field `reference_answer` lại là một câu từ chối thay vì một đáp án thật — ép schema không ép được ngữ nghĩa.
 - Lỗi kết nối (server Ollama chưa chạy, model chưa pull) là `httpx`-based exception hoặc `ollama.ResponseError`/`ConnectionError` tuỳ nguyên nhân — bắt cụ thể, không `except Exception: pass` (CLAUDE.md §7).
 
 ---

@@ -46,15 +46,16 @@
 
 **Trạng thái thật:** `eval/build_qa_eval_set.py` đã viết + test (31/31 pass,
 coverage 83%, xem `.claude/tdd/p3-3-build-qa-eval-set.tdd.md`). **Chưa có**
-`configs/eval/aic_qa_v1.candidates.json` hay `aic_qa_v1.json` — lệnh
-`generate`/`freeze` cần chủ dự án tự chạy (CLAUDE.md §10: cần server Ollama
-local đang chạy + `ollama pull qwen2.5:7b-instruct` trước).
+`aic_qa_v1.json` đóng băng — lệnh `generate`/`freeze` cần chủ dự án tự chạy
+(CLAUDE.md §10: cần server Ollama local đang chạy + `ollama pull qwen3:8b`
+trước).
 
 **Quyết định khác với mô tả gốc bên dưới** (chốt qua `AskUserQuestion`
 2026-08-16, không đoán):
-- **Model sinh câu hỏi = Ollama local (`qwen2.5:7b-instruct`), KHÔNG phải OpenAI** — chủ dự án không có ngân sách API trả phí. `openai_api_key` vẫn còn trong `Settings` nhưng chưa từng được dùng ở đâu.
+- **Model sinh câu hỏi = Ollama local, KHÔNG phải OpenAI** — chủ dự án không có ngân sách API trả phí. `openai_api_key` vẫn còn trong `Settings` nhưng chưa từng được dùng ở đâu.
 - **Chỉ đọc caption (text), KHÔNG nhìn ảnh keyframe** — giữ VRAM thấp, chạy tuần tự với BEiT-3 (CLAUDE.md §1.4). Đánh đổi: chất lượng câu hỏi phụ thuộc caption Gemini đã viết, có thể không đủ chi tiết cho câu hỏi kiểu "biển hiệu ghi gì".
 - **Không sample lại** — dùng thẳng các record `approved: true` sẵn có trong `configs/eval/aic_eval_v1.candidates.json` (P0.4') làm shot universe, đúng tinh thần "cùng cách lấy mẫu, cùng seed" nhưng bằng cách tái dùng thay vì gọi lại `sample_kis_shots`/`sample_trake_sequences`.
+- **ĐỔI model `qwen2.5:7b-instruct` → `qwen3:8b`** (2026-08-16, cùng ngày, sau khi chạy `--limit-shots 5` thật): model cũ sinh một câu hỏi mà chính `reference_answer` của nó thừa nhận không trả lời được từ caption — ép JSON schema không ép được model tuân thủ system prompt "chỉ hỏi điều trả lời được". `qwen3:8b` (5.2GB, vừa VRAM) là thế hệ mới hơn, tài liệu Ollama ghi mạnh hơn về instruction-following. **Chưa verify lại bằng chạy thật** — cần chủ dự án `ollama pull qwen3:8b` rồi chạy lại `--limit-shots 5` để xác nhận có đỡ hơn không.
 
 
 

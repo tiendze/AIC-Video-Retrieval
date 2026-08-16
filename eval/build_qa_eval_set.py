@@ -115,7 +115,7 @@ class BuildQaEvalSetConfig:
     the rationale behind each default."""
 
     ollama_host: str = "http://localhost:11434"
-    ollama_model: str = "qwen2.5:7b-instruct"
+    ollama_model: str = "qwen3:8b"
     max_retries: int = 3
     retry_base_delay_seconds: float = 1.0
     min_reviewed_samples: int = 100
