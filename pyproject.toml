@@ -130,6 +130,20 @@ encoder-candidates = [
     "torch==2.4.1",
     "transformers>=4.49,<5.0",
     "pillow==11.0.0",
+    #
+    # Added 2026-08-14 for candidate A2 (PeCoreEncoder, app/encoders/pe_core.py,
+    # plan §T3): timm/PE-Core-bigG-14-448's vision tower is timm-backed
+    # (verified via open_clip_config.json's vision_cfg.timm_model_name ==
+    # "vit_pe_core_gigantic_patch14_448"), unlike ClipEncoder's ViT-B/32
+    # (baseline-clip extra above) which never imports timm at all. This is
+    # exactly the conflict this extra's own docstring above already warns
+    # about: install in the SEPARATE .venv-candidate, never in the main env
+    # where beit3's timm==0.4.12 pin lives. open-clip-torch==3.3.0's own
+    # metadata hard-requires timm>=1.0.17; pinning >=1.0.19 matches what the
+    # encoder-swap plan's dependency spike (§T0) targeted specifically for
+    # this checkpoint.
+    "open-clip-torch==3.3.0",
+    "timm>=1.0.19",
 ]
 [build-system]
 requires = ["setuptools>=68.0"]

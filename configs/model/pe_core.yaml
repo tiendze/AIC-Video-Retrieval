@@ -1,0 +1,55 @@
+# PeCoreEncoder config (app/encoders/pe_core.py) -- encoder-swap plan
+# (.claude/plans/encoder-swap-siglip2-pecore.plan.md §T3). Weights load from
+# the HF hub via open_clip's "hf-hub:" convenience loader on first use
+# (cached under the HF cache dir), no manual checkpoint file needed, same as
+# siglip2.yaml.
+#
+# kind is NOT yet wired into app/encoders/factory.py -- factory.py's
+# _SUPPORTED_KINDS only lists ("beit3", "siglip2") as of this file's
+# creation (2026-08-14). Adding "pe_core" dispatch to the factory + a
+# --vectors-only import path (plan §T5) is a separate, not-yet-done change;
+# this config file exists to drive notebooks/kaggle_embed_pecore.ipynb only
+# for now.
+kind: pe_core
+
+hf_repo_id: timm/PE-Core-bigG-14-448
+
+# No hf_revision field here, unlike siglip2.yaml. Verified 2026-08-14 against
+# open_clip==3.3.0 source: create_model_and_transforms("hf-hub:...") never
+# forwards a revision to its internal hf_hub_download() call, so there is no
+# way to pin a commit at load time through this loader (full trace in
+# app/encoders/pe_core.py's module docstring). The Kaggle notebook records
+# whatever commit "main" actually resolved to at encode time into
+# manifest.json for provenance, not as an enforced pin.
+device: cuda
+# Deliberately more conservative than siglip2.yaml's batch_size=16: bigG is
+# the heaviest candidate in the encoder-swap plan (~1.8B vision params vs
+# so400m's ~400M) -- start low and raise only after a real smoke-test number
+# (plan §T7), same throughput-tuning order as siglip2.yaml/clip.yaml:
+# preprocess_workers first (CPU JPEG decode is the usual bottleneck, not
+# GPU), batch_size second.
+batch_size: 8
+preprocess_workers: 8
+
+# model_id is embedded in the Milvus collection name (CLAUDE.md §3: "đổi
+# model ⇒ collection mới"). If you ever swap hf_repo_id to a different
+# checkpoint, you MUST also change model_id -- otherwise the new checkpoint's
+# vectors get silently mixed into this collection.
+model_id: pe_core_bigg14_448
+
+# embedding_dim = 1280 (verified 2026-08-14 from
+# https://huggingface.co/timm/PE-Core-bigG-14-448/raw/main/open_clip_config.json :
+# model_cfg.embed_dim). Not read from this file -- PeCoreEncoder reports it
+# as a hardcoded module constant, same pattern as ClipEncoder (open_clip
+# models don't expose a simple runtime dim property the way transformers'
+# AutoModel config does for SigLip2Encoder).
+
+# Text tower is English-only (custom_text CLIP BPE tokenizer, vocab_size
+# 49408, context_length=72) -- NOT the multilingual Gemma tokenizer
+# SigLip2Encoder uses. Vietnamese queries MUST go through query_translator;
+# there is no "pecore_vi" semantic channel the way "siglip2_vi" exists for A1.
+max_text_tokens: 72
+
+# License: apache-2.0, verified 2026-08-14 via
+# https://huggingface.co/api/models/timm/PE-Core-bigG-14-448 -- no FAIR-NC/
+# research-only restriction (closes docs/research-encoder-vietnamese.md §9 Q1).

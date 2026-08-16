@@ -1,7 +1,14 @@
 # Plan: Đổi encoder semantic — SigLIP2 so400m-384 (A1) + PE-Core-bigG-448 (A2)
 
 **Ngày lập:** 2026-08-13 · **Branch đề xuất:** `feature/encoder-swap` · **Nguồn:** `docs/research-encoder-vietnamese.md`
-**Trạng thái:** ĐỀ XUẤT — chưa sửa dòng code nào, chưa đốt giờ GPU nào.
+**Trạng thái:** A1 (SigLIP 2) đã có `app/encoders/siglip2.py` + `configs/model/siglip2.yaml` +
+notebook + vectors-only import path (commit `04b50a0`/`9a75ce7`, người khác triển khai).
+**A2 (PE-Core) 2026-08-14**: `app/encoders/pe_core.py` + `configs/model/pe_core.yaml` +
+`tests/test_pe_core_encoder.py` + `notebooks/kaggle_embed_pecore.ipynb` đã tạo (tương đương
+T3+T7); **CHƯA làm** T0 (spike dependency chính thức — chưa cần vì T3/T7 không đụng BEiT-3
+process), T1 (dispatch `pe_core` trong `factory.py`), T4 (parity gate cho pe_core — xem ghi
+chú `hf_revision_pinned: false` trong notebook), T5 (`--encoder pe_core` cho
+`import_embed_out.py`), T8-T11. **Chưa đốt giờ GPU nào** — notebook chưa chạy trên Kaggle.
 
 ## Phạm vi — chủ dự án chốt 2026-08-13
 
