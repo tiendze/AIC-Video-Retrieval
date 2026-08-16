@@ -1,0 +1,31 @@
+# eval/build_qa_eval_set.py BuildQaEvalSetConfig -- QA eval-set generation
+# protocol (PRD §6.5, .claude/plans/p3-vqa-submission.plan.md §P3.3).
+# Field names match BuildQaEvalSetConfig exactly; a caller loads this file and
+# constructs BuildQaEvalSetConfig(**yaml.safe_load(...)) before calling
+# generate()/freeze().
+
+# Local Ollama server address (references.md §5.6). NOT a secret -- unlike
+# Gemini/OpenAI's api_key, a local server has no credential to leak.
+ollama_host: http://localhost:11434
+
+# Model SINH CÂU HỎI, khác model TRẢ LỜI (GeminiVqaClient, gemini-3.6-flash,
+# configs/qa/vqa.yaml) -- CLAUDE.md §3 bất biến "model sinh nhãn ≠ model bị
+# đánh giá". Chọn 2026-08-16: chủ dự án không có ngân sách API trả phí
+# (loại OpenAI), và không muốn model vision local (giữ VRAM thấp, chạy tuần
+# tự với BEiT-3, CLAUDE.md §1.4) -- nên model text-only, đọc caption đã có
+# sẵn thay vì ảnh keyframe. Cần `ollama pull qwen2.5:7b-instruct` trước khi
+# chạy `generate` (CLAUDE.md §10 -- lệnh này không tự tải model).
+ollama_model: qwen2.5:7b-instruct
+
+# Retry policy -- giống hệt configs/eval/build_eval_set.yaml (exponential
+# backoff, retry_base_delay_seconds * 2^attempt), chỉ áp dụng cho lỗi mạng
+# thật (httpx.ConnectError/TimeoutException), KHÔNG áp dụng cho
+# ollama.ResponseError (model chưa pull/request sai) hay JSON không khớp
+# schema -- những lỗi đó không phải tạm thời, retry chỉ tốn thời gian.
+max_retries: 3
+retry_base_delay_seconds: 1.0
+
+# PRD §6.5 / plan §P3.3: "Review thủ công ít nhất 100 mẫu" trước khi đóng
+# băng -- gate cứng ở compute_qa_quality_report(), không phải gợi ý cho
+# operator.
+min_reviewed_samples: 100

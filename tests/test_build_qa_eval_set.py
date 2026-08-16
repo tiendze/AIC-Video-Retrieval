@@ -16,6 +16,7 @@ this suite.
 
 from __future__ import annotations
 
+import argparse
 import json
 
 import pytest
@@ -26,7 +27,11 @@ from eval.build_qa_eval_set import (
     EvalSetBuildError,
     QaGeneration,
     QaItem,
+    _freeze_qa_candidates,
     _generate_qa_candidates,
+    _load_config,
+    _run_freeze,
+    _write_qa_candidates_doc,
     assert_generator_differs_from_vqa_model,
     compute_qa_quality_report,
     freeze_qa_records,
@@ -181,6 +186,21 @@ class TestOllamaQaGeneratorRetry:
         assert calls["count"] == 1
 
 
+class TestOllamaQaGeneratorInit:
+    def test_init_builds_a_client_for_the_configured_host_without_a_network_call(self):
+        """`ollama.Client(host=...)` only builds an httpx client -- it does
+        not connect until a method like `.chat()` is called, so this is
+        safe to construct without a live Ollama server."""
+        from eval.build_qa_eval_set import OllamaQaGenerator
+
+        config = BuildQaEvalSetConfig(ollama_host="http://localhost:11434")
+
+        generator = OllamaQaGenerator(config)
+
+        assert generator._config is config
+        assert generator._client is not None
+
+
 class TestOllamaQaGeneratorCallOnce:
     def test_call_once_sends_caption_and_schema_and_parses_response(self, monkeypatch):
         from eval.build_qa_eval_set import OllamaQaGenerator
@@ -267,6 +287,22 @@ class TestGenerateQaCandidates:
         assert result["failed"] == ["L21_V001_shot1"]
         assert result["records"] == []
 
+    def test_on_progress_checkpoints_on_failure_too(self):
+        source_records = [_source_record("L21_V001", 1), _source_record("L21_V001", 2)]
+        config = BuildQaEvalSetConfig()
+        checkpoints = []
+
+        _generate_qa_candidates(
+            config,
+            source_records=source_records,
+            qa_generator=_FakeQaGenerator(fail_first_n=1),
+            on_progress=lambda records, failed: checkpoints.append((len(records), len(failed))),
+        )
+
+        # shot 1 fails -> checkpoint fires with 0 records/1 failed; shot 2
+        # succeeds -> checkpoint fires with 1 record/1 failed.
+        assert checkpoints == [(0, 1), (1, 1)]
+
     def test_resume_skips_shots_already_in_existing_records(self):
         source_records = [_source_record("L21_V001", 1), _source_record("L21_V001", 2)]
         existing_records = [
@@ -343,9 +379,7 @@ class TestComputeQaQualityReport:
 
     def test_raises_on_unreviewed_record(self):
         candidates = self._approved(100)
-        candidates.append(
-            {"video_id": "v", "shot_id": 999, "question": "q", "approved": None}
-        )
+        candidates.append({"video_id": "v", "shot_id": 999, "question": "q", "approved": None})
 
         with pytest.raises(EvalSetBuildError, match="unreviewed"):
             compute_qa_quality_report(candidates, min_reviewed_samples=100)
@@ -426,4 +460,181 @@ class TestAssertGeneratorDiffersFromVqaModel:
     def test_passes_when_generator_differs_from_vqa_answering_model(self):
         records = [{"generator_model": "qwen2.5:7b-instruct"}]
 
-        assert_generator_differs_from_vqa_model(records, vqa_model="gemini-3.6-flash") is None
+        assert (
+            assert_generator_differs_from_vqa_model(records, vqa_model="gemini-3.6-flash") is None
+        )
+
+
+class TestFreezeQaCandidatesIntegration:
+    def _candidates_doc(self, generator_model="qwen2.5:7b-instruct"):
+        records = [
+            {
+                "video_id": "v",
+                "shot_id": i,
+                "start_sec": float(i),
+                "end_sec": float(i) + 2.0,
+                "keyframe_id": f"v_f{i}",
+                "question": f"q{i}",
+                "reference_answer": f"a{i}",
+                "source_caption": f"caption {i}",
+                "generator_model": generator_model,
+                "answerable_by_ocr": i % 2 == 0,
+                "approved": True,
+            }
+            for i in range(100)
+        ]
+        return {
+            "eval_set_version": "v1",
+            "git_sha": "abc123",
+            "generated_at": "2026-08-16T00:00:00+00:00",
+            "records": records,
+        }
+
+    def test_freezes_successfully_when_reviewed_and_generator_differs(self):
+        json_text, digest, report_md = _freeze_qa_candidates(
+            self._candidates_doc(), vqa_model="gemini-3.6-flash", min_reviewed_samples=100
+        )
+
+        frozen = json.loads(json_text)
+        assert len(frozen) == 100
+        assert len(digest) == 64  # sha256 hex digest
+        assert "approved: 100" in report_md
+        assert "tỉ lệ trả lời được bằng OCR" in report_md
+
+    def test_refuses_to_freeze_when_generator_matches_vqa_model(self):
+        doc = self._candidates_doc(generator_model="gemini-3.6-flash")
+
+        with pytest.raises(EvalSetBuildError, match="self"):
+            _freeze_qa_candidates(doc, vqa_model="gemini-3.6-flash", min_reviewed_samples=100)
+
+    def test_refuses_to_freeze_below_minimum_reviewed_samples(self):
+        doc = self._candidates_doc()
+        doc["records"] = doc["records"][:50]
+
+        with pytest.raises(EvalSetBuildError, match="50"):
+            _freeze_qa_candidates(doc, vqa_model="gemini-3.6-flash", min_reviewed_samples=100)
+
+
+class TestWriteQaCandidatesDoc:
+    def test_round_trips_through_resume(self, tmp_path):
+        out_path = tmp_path / "aic_qa_v1.candidates.json"
+        config = BuildQaEvalSetConfig(ollama_model="qwen2.5:7b-instruct")
+        records = [{"video_id": "L21_V001", "shot_id": 1, "question": "q", "approved": None}]
+
+        _write_qa_candidates_doc(out_path, config, records, failed=["x"])
+
+        doc = json.loads(out_path.read_text(encoding="utf-8"))
+        assert doc["records"] == records
+        assert doc["failed"] == ["x"]
+        assert doc["config"]["ollama_model"] == "qwen2.5:7b-instruct"
+
+
+class TestLoadConfig:
+    def test_reads_yaml_into_dataclass(self, tmp_path):
+        config_path = tmp_path / "build_qa_eval_set.yaml"
+        config_path.write_text(
+            "ollama_model: qwen2.5:14b-instruct\nmin_reviewed_samples: 200\n",
+            encoding="utf-8",
+        )
+
+        config = _load_config(config_path)
+
+        assert config.ollama_model == "qwen2.5:14b-instruct"
+        assert config.min_reviewed_samples == 200
+
+
+class TestRunFreezeCli:
+    def test_writes_frozen_json_sha256_and_quality_report(self, tmp_path):
+        config_path = tmp_path / "build_qa_eval_set.yaml"
+        config_path.write_text("min_reviewed_samples: 2\n", encoding="utf-8")
+
+        vqa_config_path = tmp_path / "vqa.yaml"
+        vqa_config_path.write_text("gemini_model: gemini-3.6-flash\n", encoding="utf-8")
+
+        candidates_path = tmp_path / "aic_qa_v1.candidates.json"
+        candidates_path.write_text(
+            json.dumps(
+                {
+                    "eval_set_version": "v1",
+                    "git_sha": "abc123",
+                    "generated_at": "2026-08-16T00:00:00+00:00",
+                    "records": [
+                        {
+                            "video_id": "v",
+                            "shot_id": i,
+                            "start_sec": float(i),
+                            "end_sec": float(i) + 2.0,
+                            "keyframe_id": f"v_f{i}",
+                            "question": f"q{i}",
+                            "reference_answer": f"a{i}",
+                            "source_caption": f"caption {i}",
+                            "generator_model": "qwen2.5:7b-instruct",
+                            "answerable_by_ocr": False,
+                            "approved": True,
+                        }
+                        for i in range(2)
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        out_path = tmp_path / "aic_qa_v1.json"
+        args = argparse.Namespace(
+            config=config_path,
+            candidates=candidates_path,
+            out=out_path,
+            vqa_config=vqa_config_path,
+        )
+
+        exit_code = _run_freeze(args)
+
+        assert exit_code == 0
+        assert out_path.exists()
+        assert out_path.with_name(out_path.name + ".sha256").exists()
+        assert out_path.with_name(out_path.stem + ".quality_report.md").exists()
+
+    def test_returns_nonzero_and_writes_nothing_when_quality_gate_fails(self, tmp_path):
+        config_path = tmp_path / "build_qa_eval_set.yaml"
+        config_path.write_text("min_reviewed_samples: 100\n", encoding="utf-8")
+
+        vqa_config_path = tmp_path / "vqa.yaml"
+        vqa_config_path.write_text("gemini_model: gemini-3.6-flash\n", encoding="utf-8")
+
+        candidates_path = tmp_path / "aic_qa_v1.candidates.json"
+        candidates_path.write_text(
+            json.dumps(
+                {
+                    "eval_set_version": "v1",
+                    "git_sha": "abc123",
+                    "generated_at": "2026-08-16T00:00:00+00:00",
+                    "records": [
+                        {
+                            "video_id": "v",
+                            "shot_id": 1,
+                            "start_sec": 1.0,
+                            "end_sec": 3.0,
+                            "keyframe_id": "v_f1",
+                            "question": "q",
+                            "reference_answer": "a",
+                            "source_caption": "caption",
+                            "generator_model": "qwen2.5:7b-instruct",
+                            "answerable_by_ocr": False,
+                            "approved": True,
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        out_path = tmp_path / "aic_qa_v1.json"
+        args = argparse.Namespace(
+            config=config_path,
+            candidates=candidates_path,
+            out=out_path,
+            vqa_config=vqa_config_path,
+        )
+
+        exit_code = _run_freeze(args)
+
+        assert exit_code == 1
+        assert not out_path.exists()
