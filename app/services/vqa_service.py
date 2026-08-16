@@ -64,7 +64,7 @@ class VqaAnswer(BaseModel):
 
     answer: str = Field(
         description=(
-            'Câu trả lời bằng tiếng Việt hoặc tiếng Anh, dựa hoàn toàn trên '
+            "Câu trả lời bằng tiếng Việt hoặc tiếng Anh, dựa hoàn toàn trên "
             'các khung hình đã cấp. "Không đủ căn cứ" nếu không thể trả lời '
             "chắc chắn từ các khung hình này."
         )
@@ -74,7 +74,7 @@ class VqaAnswer(BaseModel):
         default_factory=list,
         description=(
             "keyframe_id của các khung hình làm căn cứ cho câu trả lời -- "
-            "rỗng nếu answer là \"Không đủ căn cứ\"."
+            'rỗng nếu answer là "Không đủ căn cứ".'
         ),
     )
     reasoning: str = Field(

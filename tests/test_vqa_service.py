@@ -57,9 +57,7 @@ class TestBuildInputParts:
 
         parts = _build_input_parts("câu hỏi bất kỳ", retrieved)
 
-        assert not any(
-            not_retrieved_id in part["text"] for part in parts if part["type"] == "text"
-        )
+        assert not any(not_retrieved_id in part["text"] for part in parts if part["type"] == "text")
 
     def test_question_text_is_included(self) -> None:
         parts = _build_input_parts("Ai đang phát biểu?", [_keyframe("kf1")])
