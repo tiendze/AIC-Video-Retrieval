@@ -54,6 +54,19 @@ Thiếu `GEMINI_API_KEY` hoặc `OPENAI_API_KEY` trong `.env` → app báo `Vali
 
 `.venv-candidate/` đã có sẵn trong repo cho thử nghiệm encoder — không dùng chung venv với `.venv/`.
 
+### Checkpoint model
+
+`pip install` chỉ cài thư viện — vài encoder còn cần tải/convert checkpoint riêng vào `models/`:
+
+| Model | Cách lấy checkpoint | Bắt buộc khi nào |
+|---|---|---|
+| **BEiT-3** (encoder production) | `./scripts/setup_beit3.sh` — tải `beit3_base_itc_patch16_224.pth` (~850MB) + `beit3.spm` từ GitHub Releases vào `models/beit3/`, tự verify SHA256 | Luôn cần — encoder mặc định của `app/main.py`, `[beit3]`/`[ingest]`/eval production |
+| **TransNetV2** (shot detection) | `./scripts/setup_transnetv2.sh` — tự convert checkpoint TensorFlow gốc sang PyTorch (tạo venv tạm rồi tự dọn), ghi ra `models/transnetv2/transnetv2-pytorch-weights.pth` | Ingest — cắt shot trước khi trích keyframe |
+| **PhoWhisper-large** (ASR, `[asr]`) | Không có script sẵn. Tải bản CTranslate2 dựng sẵn từ HF Hub (vd. `kiendt/PhoWhisper-large-ct2`) vào `models/PhoWhisper-large-ct2/`, hoặc tự convert: `ct2-transformers-converter --model vinai/PhoWhisper-large --output_dir models/PhoWhisper-large-ct2 --copy_files tokenizer_config.json --quantization float16` | Chỉ khi chạy kênh ASR (`scripts/run_asr.py`) |
+| **SigLIP2** / **CLIP baseline** / **bge-m3** | Tự tải từ HuggingFace Hub lúc chạy lần đầu (cache mặc định HF/torch hub) — không có bước thủ công | Encoder ứng viên / baseline bắt buộc P1.4 / kênh embed transcript ASR |
+
+Hai script `setup_beit3.sh`/`setup_transnetv2.sh` là bash — chạy bằng **Git Bash** (`./scripts/setup_beit3.sh`), không chạy được thẳng trong PowerShell (`set -euo pipefail` không hợp cú pháp PowerShell). Chạy trực tiếp trên host, **không cần Docker** — docker-compose ở dưới chỉ dựng 3 store (Milvus/Elasticsearch/MongoDB), không dựng encoder. `configs/model/beit3.yaml` và `configs/model/transnetv2.yaml` đã trỏ sẵn tới `models/beit3/`/`models/transnetv2/` — chạy script với `install_dir` mặc định thì không cần sửa config.
+
 ## Hạ tầng lưu trữ (P0.2)
 
 ```powershell
