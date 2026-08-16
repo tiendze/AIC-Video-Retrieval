@@ -9,7 +9,7 @@
 
 ---
 
-## P3.1 — `vqa_service.py`
+## P3.1 — `vqa_service.py` ✅ hoàn thành (2026-08-16)
 
 **Làm gì:** trả lời câu hỏi dựa trên keyframe **thực sự truy hồi được** (PRD §F7 · architecture.md §3.6).
 
