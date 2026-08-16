@@ -748,6 +748,31 @@ class TranscriptionInfo:
 
 ---
 
+### 5.5 `ddgs` — tìm ảnh mẫu web (QUEST nhánh 2)
+
+🔧 Dự án (P2.5). Đã fetch kiểm chứng 2026-08-14 (PyPI + GitHub `deedy5/ddgs`) — thay cho phương án ban đầu, xem `docs/research-quest-llm-options.md` để biết lý do loại Google Custom Search JSON API (đóng cửa khách mới) và Bing Image Search API (Microsoft khai tử 11/08/2025).
+
+- PyPI: https://pypi.org/project/ddgs/ · GitHub: https://github.com/deedy5/ddgs
+- **Cài đặt:** `pip install ddgs` — package đổi tên từ `duckduckgo_search` cũ, **import mới là `from ddgs import DDGS`**, không phải `duckduckgo_search`.
+- ⚠️ **Không phải API chính thức** — scraper kết quả tìm kiếm, tự khai "for educational purposes only" trong README. Không có SLA, không công bố giới hạn tần suất chính thức (cộng đồng báo bot-detection kích hoạt quanh ~30 request/phút/IP). Chấp nhận được cho QUEST nhánh 2 CHỈ VÌ plan đã bắt buộc timeout + fallback về search thường khi nhánh này lỗi (CLAUDE.md §4/§7) — không dùng pattern này cho bất kỳ chỗ nào coi nó là nguồn dữ liệu bắt buộc phải có.
+- **Đồng bộ, KHÔNG có async client** (`AsyncDDGS` không tồn tại) — bắt buộc bọc `asyncio.to_thread(...)` khi gọi từ route `async def`, không được gọi trực tiếp (`.claude/rules/ecc/python/fastapi.md`: không gọi blocking I/O từ async route).
+- **API tìm ảnh:**
+  ```python
+  from ddgs import DDGS
+
+  results = DDGS().images(
+      query="Labubu",
+      max_results=10,
+      safesearch="moderate",
+  )
+  # -> list[dict]: mỗi dict có title, image (URL ảnh gốc), thumbnail (URL),
+  #    url (trang nguồn), height, width, source
+  ```
+- **Exception (`ddgs.exceptions`):** `DDGSException` (base) · `RatelimitException` (vượt giới hạn tần suất) · `TimeoutException` (hết thời gian chờ) — bắt cụ thể từng loại, không `except Exception: pass` (CLAUDE.md §7).
+- **SSRF:** kết quả trả về `image`/`thumbnail` là URL của bên thứ ba (không phải do dự án host) — không bao giờ để backend tự động tải các URL này về theo yêu cầu của người dùng cuối; nếu cần hiển thị ảnh, hiển thị trực tiếp URL cho frontend load (giống ảnh ứng viên, không phải ảnh do server fetch), hoặc nếu backend cần tải để mã hoá bằng BEiT-3 thì phải giới hạn: chỉ tải chính các URL mà `DDGS().images()` vừa trả về trong cùng request, không nhận URL tuỳ ý từ client.
+
+---
+
 ## 6. Backend
 
 ### 6.1 FastAPI

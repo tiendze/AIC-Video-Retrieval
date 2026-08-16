@@ -179,24 +179,33 @@ Paper đề xuất `λ = 0.001` (khoảng cách index 3–15) và `λ = 0.01` (k
 
 **Làm gì:** xử lý truy vấn Out-of-Knowledge — truy vấn chứa thực thể mà model embedding chưa từng thấy (PRD §F5 · architecture.md §3.4).
 
+> **Cập nhật 2026-08-15 (chủ dự án + khảo sát `docs/research-quest-llm-options.md`):** kế hoạch ban đầu ở dưới dùng OpenAI cho nhánh 1 — đã đổi sang **Gemini free tier tạm thời** (đơn giản trước, đổi sau nếu cần), vì OpenAI hiện không dùng ở bất kỳ đâu trong code còn Gemini đã có sẵn pattern (`pipelines/ocr.py:GeminiOcrClient`, `eval/build_eval_set.py:GeminiCaptionGenerator`). Đồng thời chốt thêm: **người vận hành tự chọn search bằng `q₀` hay `q_r`** — nhánh 1 không tự động search bằng `q_r` (khác nhánh 2, vốn bắt buộc phải tự search vì ảnh web không gõ lại thành text được). Xem "Đã làm" bên dưới.
+
 **Nhánh 1 — viết lại truy vấn:**
-- `q₀` → LLM sinh `q_r` mô tả trực quan, chi tiết hơn → search bằng encoder như bình thường.
-- OpenAI: `client.responses.parse(..., text_format=Model)`. **Bắt buộc xử lý nhánh `item.type == "refusal"`** trước khi đọc `item.parsed`.
-- **Hiển thị CẢ `q₀` LẪN `q_r`** — người vận hành phải thấy LLM đã làm gì (US-2).
+- `q₀` → Gemini (`client.interactions.create`, structured output `QueryRewrite{rewritten_query}`) sinh `q_r` mô tả trực quan, chi tiết hơn.
+- **Trả về CẢ `q₀` LẪN `q_r`, không tự search** — người vận hành đọc rồi tự bấm `/api/search` với chuỗi mình chọn (US-2 + CLAUDE.md §3 hệ thống interactive).
 
 **Nhánh 2 — tìm ảnh mẫu bên ngoài:**
 - Tìm ảnh của thực thể lạ trên web → hiện danh sách ứng viên → **người dùng TỰ CHỌN** ảnh mẫu `I*` → image-to-image search.
 - **Không auto-pick ảnh đầu tiên.** Người vận hành biết ngữ cảnh mà hệ thống không biết — ép tự động sẽ mất nhiều hơn được.
 
 **Cả hai nhánh:**
-- Timeout + retry exponential backoff → hết timeout thì **fallback về search thường bằng `q₀`**, **không treo UI**.
+- Timeout + retry exponential backoff. Nhánh 2 hết timeout → **fallback về search thường bằng `q₀`** (tự gọi `SearchService`). Nhánh 1 hết timeout/lỗi Gemini → `rewritten_query=None`, **không tự search** — người vận hành vẫn còn `q₀` sẵn trong ô tìm kiếm.
 - Lỗi mạng ở nhánh phụ **không được giết request chính**.
 
+**Đã làm (2026-08-15):**
+- Nhánh 2 — `QuestService` (`app/services/quest_service.py`) + `POST /api/quest/image-candidates`/`POST /api/quest/image-search` (`app/api/quest.py`), wire thật trong `app/main.py` (`DDGS()` + `httpx.AsyncClient`). Test: `tests/test_quest_service.py` (23 case), `tests/test_quest_api.py`.
+- Nhánh 1 — `GeminiQueryRewriter` + `QueryRewriteService` (`app/services/quest_service.py`) + `POST /api/quest/rewrite-query`, wire thật (`GeminiQueryRewriter` dùng `settings.gemini_api_key`). Test: `tests/test_query_rewrite_service.py`.
+- Coverage `app/services/quest_service.py`: 95% (hụt đúng `GeminiQueryRewriter.__init__`/`_call_once` — lazy-import + gọi API thật, cùng convention với `GeminiOcrClient`/`GeminiCaptionGenerator`, không unit-test network call thật). `app/api/quest.py` + schema: 100%.
+- **Còn thiếu:** nhánh 1 chưa có bộ eval nào chứa thực thể OOK để đo (xem `docs/research-quest-llm-options.md` §6) nên chưa gắn số.
+
+**UI (2026-08-15, sau "Đã làm" ở trên):** `SearchBar`'s nút "✨ AI enhancer" (nhánh 1) + nút "🌐 Tìm ảnh mẫu trên web" (nhánh 2) đều sống — `QueryRewritePanel`, `ImageCandidatePicker`, `useQueryRewrite`, `useImageCandidates` (`frontend/src/`). Verify **end-to-end với backend thật** qua Chrome DevTools MCP: nhánh 2 trả candidate thật từ web, chất lượng chưa cao (chủ dự án: "thử 5 lần chỉ được 1 kết quả ưng" — ghi nhận, để sau, nghi do `DDGS().images()` thiếu lọc liên quan tốt + `safesearch="moderate"` + gửi truy vấn tiếng Việt thẳng cho DDGS thay vì dịch trước). Đường lỗi mạng thật (không phải fallback) từng bị câm lặng — đã phát hiện qua kiểm tra browser và fix (`App.tsx` giờ hiện `queryRewrite.error`/`imageCandidates.error`).
+
 **Verify:**
-- `test_quest_falls_back_to_plain_search_on_timeout`
-- `test_quest_handles_openai_refusal_branch`
-- `test_quest_response_contains_both_original_and_rewritten_query`
-- Thực nghiệm: ngắt mạng → UI vẫn trả kết quả search thường trong ngân sách latency
+- `tests/test_query_rewrite_service.py::TestRewriteQuery` — fallback khi Gemini lỗi/hết retry (RuntimeError), structured output hỏng (ValueError), vượt timeout; `original_query` luôn đúng `q₀` kể cả khi fallback.
+- `tests/test_query_rewrite_service.py::TestGeminiQueryRewriterRetry` — retry exponential backoff, raise sau khi hết `max_retries` (mirror `tests/test_build_eval_set.py::TestGeminiCaptionGeneratorRetry`).
+- `tests/test_quest_api.py` — `POST /api/quest/rewrite-query` trả cả hai trạng thái `rewritten`/`fallback`, luôn kèm `original_query`.
+- Thực nghiệm còn treo: ngắt mạng/hết quota Gemini thật → UI vẫn cho search bằng `q₀` trong ngân sách latency (cần UI trước khi đo được).
 
 ---
 
@@ -206,6 +215,7 @@ Paper đề xuất `λ = 0.001` (khoảng cách index 3–15) và `λ = 0.01` (k
 - [x] `Kendall's tau` đạt mục tiêu §6.7 — **0.9089** (N=3) / **0.9897** (N=5) ≥ 0,90 (xuất sắc), 2026-08-14
 - [ ] **Bảng ablation `λ` đầy đủ 7 × 3** — **đã đo thật 7×2 (N∈{3,5}), 2026-08-14** (`reports/20260814T153744Z_8cf63ef.../`), kết luận rõ `λ=0` kém rõ rệt λ>0 (không tương đương), đã chọn `λ=0.001` làm default (`configs/search/dante.yaml`); còn thiếu đúng cột N=7 — cần sinh lại bộ eval trước (xem P2.4 "còn thiếu"), chủ dự án đã xác nhận tạm hoãn
 - [x] Chứng minh thực nghiệm `O(NT)` (đồ thị thời gian theo T) — `test_dante_service.py::test_dante_runtime_is_linear_in_t` (P2.1)
-- [ ] QUEST hai nhánh chạy được, có fallback, hiển thị `q₀` + `q_r`
+- [x] QUEST hai nhánh chạy được, có fallback, hiển thị `q₀` + `q_r` — backend + UI xong 2026-08-15, verify **end-to-end với backend thật** qua browser (xem P2.5 "UI"); nhánh 1 hiển thị đúng cả `q₀`+`q_r`, người vận hành tự chọn; nhánh 2 chạy được nhưng chất lượng ảnh mẫu web chưa tốt (chủ dự án ghi nhận, để sau)
 - [x] Coverage ≥ 80% — 100% trên toàn bộ module TRAKE mới (P2.1–P2.4)
 - [x] Báo cáo phase theo template CLAUDE.md §8 — mục P2.1/P2.2/P2.3/P2.4 trong file này
+- [x] DANTE/TRAKE UI (P2.2, không nằm trong checklist gốc nhưng chủ dự án yêu cầu bổ sung 2026-08-15) — `EventSequenceInput` + `TrakeResultList`, mode "DANTE" trong `ModeSelector` không còn disabled/badge. Verify end-to-end với backend thật: 2 sự kiện → 20 video kết quả thật, đúng thứ tự frame, đúng định dạng nộp `<video_id>, <frame_id₁>,...`
