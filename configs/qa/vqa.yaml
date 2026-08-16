@@ -1,0 +1,18 @@
+# app/services/vqa_service.py VqaConfig -- VQA answering (plan §P3.1, PRD
+# §F7). Field names match VqaConfig exactly; a caller loads this file and
+# constructs VqaConfig(**yaml.safe_load(...)) before building GeminiVqaClient.
+
+# Confirm this model id is still current before wiring a real endpoint --
+# CLAUDE.md §5: "Model ID xác nhận lại lúc implement."
+gemini_model: gemini-3.6-flash
+
+# GeminiVqaClient retry policy: exponential backoff,
+# retry_base_delay_seconds * 2^attempt.
+max_retries: 3
+retry_base_delay_seconds: 1.0
+
+# VqaService's asyncio.wait_for timeout around the whole Gemini call (plan
+# §P3.1: "Timeout 10s"). Exceeding this raises VqaServiceError -- P3.2's
+# grounding-gate layer decides the degraded response (keyframe grid +
+# notice) from there.
+timeout_seconds: 10.0
