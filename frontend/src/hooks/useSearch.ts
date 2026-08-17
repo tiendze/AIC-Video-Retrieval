@@ -4,11 +4,26 @@ import { search as searchApi, searchByImage as searchByImageApi } from '../api/c
 import { isAbortError, messageFor } from '../api/requestHelpers'
 import type { SearchHit, SearchMode } from '../api/types'
 
+export interface OcrQueryRow {
+  id: string
+  text: string
+}
+
 export interface UseSearchResult {
   query: string
   setQuery: (query: string) => void
   mode: SearchMode
   setMode: (mode: SearchMode) => void
+  // Semantic mode's supplementary OCR conditions (frontend UI + state only
+  // -- POST /api/search does not accept ocr_queries yet, so runSearch below
+  // does not read this). Rows are keyed by a stable `id`, not array index,
+  // because OcrQueryList needs a React key that survives removing a row
+  // from the middle of the list without reassigning a surviving row's
+  // focus/caret to the wrong input.
+  ocrQueries: OcrQueryRow[]
+  setOcrQuery: (id: string, text: string) => void
+  addOcrQuery: () => void
+  removeOcrQuery: (id: string) => void
   // Was hard-coded to DEFAULT_TOP_K with no UI control -- results always
   // capped at 20 regardless of how many the backend could return (up to
   // max_top_k=100). Now user-adjustable via TopKControl.
@@ -43,6 +58,12 @@ export interface UseSearchResult {
 // touch `query` (plan §P1.6 invariant: "Đổi mode không mất truy vấn đang
 // gõ"). AbortController cancels an in-flight request when a newer one
 // starts, so a slow first response can't overwrite a later one's results.
+let ocrRowIdCounter = 0
+function nextOcrRowId(): string {
+  ocrRowIdCounter += 1
+  return `ocr-${ocrRowIdCounter}`
+}
+
 export function useSearch(): UseSearchResult {
   const [query, setQuery] = useState('')
   const [mode, setMode] = useState<SearchMode>('semantic')
@@ -51,7 +72,22 @@ export function useSearch(): UseSearchResult {
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [latencyMs, setLatencyMs] = useState<number | null>(null)
+  const [ocrQueries, setOcrQueries] = useState<OcrQueryRow[]>(() => [
+    { id: nextOcrRowId(), text: '' },
+  ])
   const abortRef = useRef<AbortController | null>(null)
+
+  const setOcrQuery = useCallback((id: string, text: string) => {
+    setOcrQueries((prev) => prev.map((row) => (row.id === id ? { ...row, text } : row)))
+  }, [])
+
+  const addOcrQuery = useCallback(() => {
+    setOcrQueries((prev) => [...prev, { id: nextOcrRowId(), text: '' }])
+  }, [])
+
+  const removeOcrQuery = useCallback((id: string) => {
+    setOcrQueries((prev) => (prev.length <= 1 ? prev : prev.filter((row) => row.id !== id)))
+  }, [])
 
   const runSearch = useCallback((overrideQuery?: string) => {
     const q = overrideQuery ?? query
@@ -104,6 +140,10 @@ export function useSearch(): UseSearchResult {
     setQuery,
     mode,
     setMode,
+    ocrQueries,
+    setOcrQuery,
+    addOcrQuery,
+    removeOcrQuery,
     topK,
     setTopK,
     results,

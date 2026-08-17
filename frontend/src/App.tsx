@@ -35,6 +35,10 @@ function App() {
     query,
     setQuery,
     setMode,
+    ocrQueries,
+    setOcrQuery,
+    addOcrQuery,
+    removeOcrQuery,
     topK,
     setTopK,
     results,
@@ -119,6 +123,16 @@ function App() {
               onSubmit={runSearch}
               onEnhance={queryRewrite.rewrite}
               enhanceLoading={queryRewrite.isLoading}
+              ocr={
+                activeMode === 'semantic'
+                  ? {
+                      queries: ocrQueries,
+                      onChange: setOcrQuery,
+                      onAdd: addOcrQuery,
+                      onRemove: removeOcrQuery,
+                    }
+                  : undefined
+              }
             />
             {queryRewrite.result && (
               <QueryRewritePanel

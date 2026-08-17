@@ -68,4 +68,33 @@ describe('SearchBar', () => {
 
     expect(screen.getByRole('button', { name: /AI enhancer/i })).toBeDisabled()
   })
+
+  // Semantic mode's supplementary OCR conditions: the `ocr` prop is
+  // optional and only App.tsx passes it while activeMode === 'semantic'.
+  // OCR mode renders SearchBar without it, so these two tests double as
+  // the regression proof that OCR mode's existing behavior is untouched.
+  it('renders the OCR query rows when the ocr prop is provided', () => {
+    render(
+      <SearchBar
+        query=""
+        onQueryChange={vi.fn()}
+        onSubmit={vi.fn()}
+        onEnhance={vi.fn()}
+        ocr={{
+          queries: [{ id: 'ocr-1', text: '' }],
+          onChange: vi.fn(),
+          onAdd: vi.fn(),
+          onRemove: vi.fn(),
+        }}
+      />,
+    )
+
+    expect(screen.getByLabelText('ocr query 1')).toBeInTheDocument()
+  })
+
+  it('does not render OCR query rows when the ocr prop is omitted', () => {
+    render(<SearchBar query="" onQueryChange={vi.fn()} onSubmit={vi.fn()} onEnhance={vi.fn()} />)
+
+    expect(screen.queryByLabelText('ocr query 1')).not.toBeInTheDocument()
+  })
 })

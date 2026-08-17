@@ -1,5 +1,17 @@
 .form {
   display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.label {
+  color: #eee;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.queryRow {
+  display: flex;
   gap: 8px;
   align-items: center;
 }
