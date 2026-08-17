@@ -9,7 +9,7 @@
 
 ---
 
-## P3.1 — `vqa_service.py`
+## P3.1 — `vqa_service.py` ✅ hoàn thành (2026-08-16)
 
 **Làm gì:** trả lời câu hỏi dựa trên keyframe **thực sự truy hồi được** (PRD §F7 · architecture.md §3.6).
 
@@ -26,7 +26,7 @@
 
 ---
 
-## P3.2 — Grounding gate
+## P3.2 — Grounding gate ✅ hoàn thành (2026-08-16)
 
 **Làm gì:** chốt chặn giữa VLM và kết quả (architecture.md §3.6, bước "Kiểm tra evidence_ids").
 
@@ -42,7 +42,35 @@
 
 ---
 
-## P3.3 — Sinh bộ eval QA (R6)
+## P3.3 — Sinh bộ eval QA (R6) ✅ hoàn thành (2026-08-16)
+
+**Trạng thái thật, đã verify bằng file thật trên đĩa (không suy đoán):**
+`configs/eval/aic_qa_v1.json` (91 record) + `.json.sha256` +
+`.quality_report.md` đã tồn tại, hash tự tính khớp file `.sha256`
+(`df553d2...`). Số liệu từ `.quality_report.md`:
+
+| | |
+|---|---|
+| eval_set_version | v1 |
+| Tổng đã sinh (`generate`) | 346 |
+| Đã review | 100 |
+| Approved (đóng băng) | 91 |
+| Tỉ lệ loại khi review | 9.0% |
+| Tỉ lệ `answerable_by_ocr` (trong số approved) | 1.1% |
+
+`eval/build_qa_eval_set.py` đã viết + test (35/35 pass, xem
+`.claude/tdd/p3-3-build-qa-eval-set.tdd.md`).
+
+**Quyết định khác với mô tả gốc bên dưới** (chốt qua `AskUserQuestion`
+2026-08-16, không đoán):
+- **Model sinh câu hỏi = Ollama local, KHÔNG phải OpenAI** — chủ dự án không có ngân sách API trả phí. `openai_api_key` vẫn còn trong `Settings` nhưng chưa từng được dùng ở đâu.
+- **Chỉ đọc caption (text), KHÔNG nhìn ảnh keyframe** — giữ VRAM thấp, chạy tuần tự với BEiT-3 (CLAUDE.md §1.4). Đánh đổi: chất lượng câu hỏi phụ thuộc caption Gemini đã viết, có thể không đủ chi tiết cho câu hỏi kiểu "biển hiệu ghi gì".
+- **Không sample lại** — dùng thẳng các record `approved: true` sẵn có trong `configs/eval/aic_eval_v1.candidates.json` (P0.4') làm shot universe, đúng tinh thần "cùng cách lấy mẫu, cùng seed" nhưng bằng cách tái dùng thay vì gọi lại `sample_kis_shots`/`sample_trake_sequences`.
+- **ĐỔI model `qwen2.5:7b-instruct` → `qwen3:8b`** (cùng ngày, sau khi chạy `--limit-shots 5` thật): model cũ sinh một câu hỏi mà chính `reference_answer` của nó thừa nhận không trả lời được từ caption — ép JSON schema không ép được model tuân thủ system prompt "chỉ hỏi điều trả lời được". `qwen3:8b` chạy lại 346 shot thật, **0 lỗi kiểu đó** — xác nhận bằng chạy thật, không chỉ suy đoán.
+- **Sửa lỗi gate đóng băng** (phát hiện khi chủ dự án chạy `freeze` thật lần đầu): code ban đầu bắt buộc review 100% số record đã sinh (346), trái với plan ("bộ chưa review chỉ dùng để dò lỗi"). Đã sửa để chỉ cần ≥100 record ĐÃ REVIEW, phần chưa review bị loại khỏi bộ đóng băng chứ không chặn `freeze` — commit `7dc4a71`.
+- **Thêm subcommand `review`** (`eval/build_qa_eval_set.py review --limit N`) — vòng lặp terminal tự mở ảnh keyframe, hỏi y/n/skip/quit, ghi lại sau mỗi câu — thay cho việc chủ dự án phải tự sửa tay JSON.
+
+
 
 **Làm gì:** dataset AIC **không có nhãn QA** — cũng như không có nhãn nào khác (PRD §1.4). Phải tự sinh (PRD §6.5).
 
@@ -61,7 +89,34 @@
 
 ---
 
-## P3.4 — `eval/metrics/vqa.py`
+## P3.4 — `eval/metrics/vqa.py` 🟡 code xong, chưa có số thật (2026-08-17)
+
+**Trạng thái thật:** cả module scoring thuần LẪN wiring vào `eval/run.py` đã
+xong:
+- `eval/metrics/vqa.py` — scoring thuần (EM, Token-F1, Grounded Accuracy,
+  Retrieval-conditioned Accuracy, Hallucination Rate, Abstention Rate,
+  `mean_llm_judge_score`). Không gọi Gemini/Milvus/MongoDB, giống hệt cách
+  `eval/metrics/retrieval.py`/`trake.py` không tự gọi Milvus/TrakeService.
+- `eval/vqa_run.py` — orchestration (load `configs/eval/aic_qa_v1.json`,
+  chạy qua `QaService.answer_question`, gộp `answerable_by_ocr=true/false`
+  tách theo cờ per P3.3's OCR-leakage note, render báo cáo Markdown), theo
+  đúng pattern `eval/trake_run.py`.
+- `eval/run.py` — cờ `score_vqa` mới trong `EvalRunConfig` (+
+  `vqa_eval_set_path`, `vqa_top_k`, `vqa_confidence_threshold`),
+  `_build_qa_service`/`_build_thumbnail_service`, phần VQA nối vào CÙNG
+  `report.md`/`metrics.json` một lần chạy (giống cách `trake`/`trake_ablation`
+  đã nối). Config chạy thật: `configs/eval/qa_val.yaml`.
+
+67/67 test pass, coverage 100% trên `eval/metrics/vqa.py` +
+`eval/vqa_run.py`. Xem [`.claude/tdd/p3-4-vqa-metrics.tdd.md`](../tdd/p3-4-vqa-metrics.tdd.md).
+
+**Chưa làm — CHƯA chạy thật:** lệnh
+`python -m eval.run --config configs/eval/qa_val.yaml` tốn Gemini API thật
+trên 91 record đã đóng băng + cần Milvus/MongoDB/Elasticsearch sống + GPU
+cho BEiT-3 (CLAUDE.md §10 — chuẩn bị script, để chủ dự án tự chạy). Vì vậy
+**chưa có con số `Grounded Accuracy`/`Hallucination Rate` thật nào** — chỉ
+mới có logic đã verify bằng test giả lập (Fake `QaService`). Đây là điều
+kiện còn treo trước khi tick "xong" cho P3.4 (xem checklist cuối file).
 
 | Metric | Định nghĩa |
 |---|---|
@@ -77,7 +132,11 @@ Ngưỡng `confidence` đặt trong `configs/`, không hard-code.
 
 **Cách đọc:** cặp `Grounded Accuracy` ↑ / `Hallucination Rate` ↓ mới mô tả đúng chất lượng. Một mình Accuracy cao mà Hallucination cao là hệ thống đang đoán bừa.
 
-**Verify:** chạy qua `eval/run.py`, ra bảng đủ 7 metric.
+**Verify:** wiring qua `eval/run.py` đã có (`score_vqa: true` trong
+`configs/eval/qa_val.yaml`, viết `metrics.json`/`report.md` với section VQA
+đủ 6/7 metric có thể đo tự động — LLM-as-Judge cần thêm một Gemini-judge
+client riêng, chưa viết). **Chưa chạy thật** — lệnh cụ thể ở trên, chủ dự án
+tự chạy khi sẵn sàng chi Gemini API + có Milvus/Mongo/ES sống.
 
 ---
 
@@ -110,7 +169,7 @@ Ngưỡng `confidence` đặt trong `configs/`, không hard-code.
 
 - [ ] `Grounded Accuracy` đạt mục tiêu PRD §6.7
 - [ ] `Hallucination Rate` dưới ngưỡng §6.7
-- [ ] Bộ eval QA đã review ≥ 100 mẫu, đóng băng, có hash
+- [x] Bộ eval QA đã review ≥ 100 mẫu, đóng băng, có hash — `configs/eval/aic_qa_v1.json` (91 record đã duyệt/100 đã review/346 đã sinh), hash verify khớp `.sha256` (2026-08-16)
 - [ ] Grounding gate chặn được evidence bịa (có test)
 - [ ] Gemini chết → request chính vẫn sống (có test)
 - [ ] Exporter đủ 4 task, có validator

@@ -748,6 +748,62 @@ class TranscriptionInfo:
 
 ---
 
+### 5.5 `ddgs` — tìm ảnh mẫu web (QUEST nhánh 2)
+
+🔧 Dự án (P2.5). Đã fetch kiểm chứng 2026-08-14 (PyPI + GitHub `deedy5/ddgs`) — thay cho phương án ban đầu, xem `docs/research-quest-llm-options.md` để biết lý do loại Google Custom Search JSON API (đóng cửa khách mới) và Bing Image Search API (Microsoft khai tử 11/08/2025).
+
+- PyPI: https://pypi.org/project/ddgs/ · GitHub: https://github.com/deedy5/ddgs
+- **Cài đặt:** `pip install ddgs` — package đổi tên từ `duckduckgo_search` cũ, **import mới là `from ddgs import DDGS`**, không phải `duckduckgo_search`.
+- ⚠️ **Không phải API chính thức** — scraper kết quả tìm kiếm, tự khai "for educational purposes only" trong README. Không có SLA, không công bố giới hạn tần suất chính thức (cộng đồng báo bot-detection kích hoạt quanh ~30 request/phút/IP). Chấp nhận được cho QUEST nhánh 2 CHỈ VÌ plan đã bắt buộc timeout + fallback về search thường khi nhánh này lỗi (CLAUDE.md §4/§7) — không dùng pattern này cho bất kỳ chỗ nào coi nó là nguồn dữ liệu bắt buộc phải có.
+- **Đồng bộ, KHÔNG có async client** (`AsyncDDGS` không tồn tại) — bắt buộc bọc `asyncio.to_thread(...)` khi gọi từ route `async def`, không được gọi trực tiếp (`.claude/rules/ecc/python/fastapi.md`: không gọi blocking I/O từ async route).
+- **API tìm ảnh:**
+  ```python
+  from ddgs import DDGS
+
+  results = DDGS().images(
+      query="Labubu",
+      max_results=10,
+      safesearch="moderate",
+  )
+  # -> list[dict]: mỗi dict có title, image (URL ảnh gốc), thumbnail (URL),
+  #    url (trang nguồn), height, width, source
+  ```
+- **Exception (`ddgs.exceptions`):** `DDGSException` (base) · `RatelimitException` (vượt giới hạn tần suất) · `TimeoutException` (hết thời gian chờ) — bắt cụ thể từng loại, không `except Exception: pass` (CLAUDE.md §7).
+- **SSRF:** kết quả trả về `image`/`thumbnail` là URL của bên thứ ba (không phải do dự án host) — không bao giờ để backend tự động tải các URL này về theo yêu cầu của người dùng cuối; nếu cần hiển thị ảnh, hiển thị trực tiếp URL cho frontend load (giống ảnh ứng viên, không phải ảnh do server fetch), hoặc nếu backend cần tải để mã hoá bằng BEiT-3 thì phải giới hạn: chỉ tải chính các URL mà `DDGS().images()` vừa trả về trong cùng request, không nhận URL tuỳ ý từ client.
+
+### 5.6 Ollama (local LLM) — sinh câu hỏi QA (P3.3)
+
+🔧 Dự án (P3.3, `.claude/plans/p3-vqa-submission.plan.md`). Máy chủ dự án không có ngân sách gọi API trả phí (OpenAI) — chọn LLM chạy local qua Ollama để sinh câu hỏi, **cố ý khác Gemini** (model đang trả lời VQA, `configs/qa/vqa.yaml`) để tránh tự chấm chính mình (CLAUDE.md §3). Đã fetch kiểm chứng 2026-08-16 (`github.com/ollama/ollama-python` + `ollama.com/blog/structured-outputs`) — README của package KHÔNG document structured output, chỉ blog post có.
+
+- Cài đặt: `pip install ollama` (package `ollama`, không phải REST tự gọi tay). Yêu cầu **Ollama server đang chạy local** (mặc định `http://localhost:11434`) và model đã `ollama pull` trước — script KHÔNG tự tải model (CLAUDE.md §10: lệnh tốn tài nguyên chuẩn bị sẵn cho chủ dự án tự chạy).
+- Model đã chọn cho P3.3: `qwen3:8b` (5.2GB, vừa VRAM RTX 3070 8GB, chạy tuần tự không cạnh tranh với BEiT-3, CLAUDE.md §1.4).
+  - ⚠️ ĐỔI từ `qwen2.5:7b-instruct` (2026-08-16, cùng ngày thử nghiệm) — chạy thật với `--limit-shots 5` cho ra một câu hỏi mà chính `reference_answer` của nó thừa nhận "không thể trả lời bằng cách xem caption" (model hỏi điều không có căn cứ rồi nhét lời từ chối vào field answer thay vì tự bỏ câu, đúng rủi ro đã cảnh báo ở dòng dưới). `ollama.com/library/qwen3` ghi model thế hệ mới hơn, mạnh hơn về instruction-following — đúng năng lực đang thiếu.
+- **Structured output qua `format=<model_json_schema()>`** — cùng tinh thần `model_json_schema()` của Gemini/OpenAI (CLAUDE.md §5: không parse text tự do bằng regex), KHÔNG cần tool-calling hay JSON-mode kiểu cũ:
+
+  ```python
+  from ollama import Client
+  from pydantic import BaseModel
+
+  class Country(BaseModel):
+      name: str
+      capital: str
+      languages: list[str]
+
+  client = Client(host="http://localhost:11434")
+  response = client.chat(
+      model="qwen3:8b",
+      messages=[{"role": "user", "content": "Tell me about Canada."}],
+      format=Country.model_json_schema(),
+  )
+  country = Country.model_validate_json(response.message.content)
+  ```
+
+- Đọc kết quả qua `response.message.content` (chuỗi JSON) rồi `Model.model_validate_json(...)` — khác Gemini (`interaction.output_text`) và OpenAI (`item.parsed`), không dùng nhầm accessor của SDK khác.
+- Không có refusal branch riêng như OpenAI — model local không tự chối; vẫn phải bọc `model_validate_json` trong try/except vì model có thể trả JSON không khớp schema (đặc biệt model nhỏ, ép schema qua grammar constraint không đảm bảo 100% nội dung hợp lý). **Xác nhận bằng thực nghiệm 2026-08-16** với `qwen2.5:7b-instruct`: schema (đúng cấu trúc JSON) được tuân thủ, nhưng NỘI DUNG field `reference_answer` lại là một câu từ chối thay vì một đáp án thật — ép schema không ép được ngữ nghĩa.
+- Lỗi kết nối (server Ollama chưa chạy, model chưa pull) là `httpx`-based exception hoặc `ollama.ResponseError`/`ConnectionError` tuỳ nguyên nhân — bắt cụ thể, không `except Exception: pass` (CLAUDE.md §7).
+
+---
+
 ## 6. Backend
 
 ### 6.1 FastAPI

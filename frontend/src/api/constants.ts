@@ -10,3 +10,8 @@ export const MAX_TOP_K = 100
 // per-keyframe top_k, so it gets its own default even though MAX_TOP_K is
 // currently the same submission-cap ceiling for both.
 export const TRAKE_DEFAULT_TOP_K = 10
+
+// Semantic mode's supplementary OCR conditions (frontend-only for now --
+// POST /api/search does not accept ocr_queries yet). Frontend-chosen cap to
+// keep the row list usable, not a backend constraint.
+export const MAX_OCR_QUERIES = 10

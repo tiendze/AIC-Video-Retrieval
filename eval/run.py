@@ -54,7 +54,9 @@ from app.config import Settings
 from app.encoders.beit3 import BEiT3Encoder
 from app.services.query_translator import LocalNmtTranslator
 from app.services.search_service import SearchService
+from app.services.thumbnail_service import ThumbnailService
 from app.services.trake_service import TrakeService
+from app.services.vqa_service import GeminiVqaClient, QaService, ThumbnailImageLoader, VqaConfig, VqaService
 from app.stores.es_client import EsStore
 from app.stores.milvus_client import MilvusStore
 from app.stores.mongo_client import MongoStore
@@ -84,6 +86,7 @@ from eval.trake_run import (
     run_trake_eval,
     run_trake_lambda_ablation,
 )
+from eval.vqa_run import VqaReportMetrics, load_qa_eval_set, render_vqa_report_md, run_vqa_eval
 
 for _stream in (sys.stdout, sys.stderr):
     if hasattr(_stream, "reconfigure"):
@@ -96,6 +99,8 @@ _BEIT3_CONFIG_PATH = _REPO_ROOT / "configs" / "model" / "beit3.yaml"
 _CLIP_CONFIG_PATH = _REPO_ROOT / "configs" / "model" / "clip.yaml"
 _QUERY_TRANSLATOR_CONFIG_PATH = _REPO_ROOT / "configs" / "model" / "query_translator.yaml"
 _MILVUS_CONFIG_PATH = _REPO_ROOT / "configs" / "stores" / "milvus.yaml"
+_SEARCH_CONFIG_PATH = _REPO_ROOT / "configs" / "search" / "search.yaml"
+_QA_CONFIG_PATH = _REPO_ROOT / "configs" / "qa" / "vqa.yaml"
 _ES_OCR_INDEX_NAME = "ocr_keyframes"
 _NDCG_K = 10  # PRD §6.3: nDCG@10 specifically
 _AUTHOR_BATCH_BREAKDOWN_K = 20  # PRD §6.3: "Recall@20 tách theo author và batch"
@@ -168,6 +173,21 @@ class EvalRunConfig:
     # len(trake_ablation_lambda_values).
     score_trake_ablation: bool = False
     trake_ablation_lambda_values: tuple[float, ...] = (0.0, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1)
+    # P3.4 (PRD §6.7): scores an EXTRA VQA section appended to the SAME
+    # report -- every record in vqa_eval_set_path (P3.3's frozen
+    # configs/eval/aic_qa_v1.json) is one question run through the real
+    # QaService (Gemini + grounding gate, app/services/vqa_service.py) and
+    # scored with eval.metrics.vqa. False by default: it spends real Gemini
+    # API quota on every record in the eval set, once per run (CLAUDE.md §10
+    # -- resource-heavy, prepared for the project owner to run themselves).
+    score_vqa: bool = False
+    vqa_eval_set_path: str = "configs/eval/aic_qa_v1.json"
+    vqa_top_k: int = 10
+    # Confidence threshold for eval.metrics.vqa's "confident" signal
+    # (Hallucination Rate = confident AND NOT retrieval_hit). 0.5 is an
+    # unvalidated midpoint default -- ⚠️ [Cần đo]: tune against a real run's
+    # confidence distribution before trusting Hallucination Rate numbers.
+    vqa_confidence_threshold: float = 0.5
 
 
 @dataclass(frozen=True)
@@ -517,6 +537,7 @@ def write_report(
     per_query: Sequence[PerQueryResult],
     trake_groups: Sequence[TrakeGroupMetrics] | None = None,
     trake_ablation_cells: Sequence[TrakeAblationCell] | None = None,
+    vqa_metrics: VqaReportMetrics | None = None,
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -539,6 +560,8 @@ def write_report(
         "trake_ablation": (
             [asdict(c) for c in trake_ablation_cells] if trake_ablation_cells is not None else None
         ),
+        # P3.4: same "None = not run" distinction as "trake" above.
+        "vqa": asdict(vqa_metrics) if vqa_metrics is not None else None,
     }
     (output_dir / "metrics.json").write_text(
         json.dumps(metrics_doc, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -563,6 +586,8 @@ def write_report(
         report_md += "\n" + render_trake_report_md(trake_groups)
     if trake_ablation_cells is not None:
         report_md += "\n" + render_trake_ablation_report_md(trake_ablation_cells)
+    if vqa_metrics is not None:
+        report_md += "\n" + render_vqa_report_md(vqa_metrics)
     (output_dir / "report.md").write_text(report_md, encoding="utf-8")
     _write_per_query_csv(output_dir / "per_query.csv", per_query)
 
@@ -923,6 +948,42 @@ async def _run_all_channels(
     await accumulator.run_and_collect("bm25", BM25Baseline(es))
 
 
+def _build_thumbnail_service(mongo: MongoStore) -> ThumbnailService:
+    """Reads the SAME config app/main.py uses for the production
+    ThumbnailService -- QaService's images must be bounded the same way a
+    live request's are (app/services/vqa_service.py:ThumbnailImageLoader)."""
+    config = _load_yaml(_SEARCH_CONFIG_PATH)
+    return ThumbnailService(
+        mongo_store=mongo,
+        cache_dir=_REPO_ROOT / config["thumbnail_cache_dir"],
+        max_px=config["thumbnail_max_px"],
+        jpeg_quality=config["thumbnail_jpeg_quality"],
+        cache_max_age_seconds=config["thumbnail_cache_max_age_seconds"],
+    )
+
+
+def _build_qa_service(
+    settings: Settings, search_service: SearchService, thumbnail_service: ThumbnailService
+) -> QaService:
+    """P3.4 (PRD §6.7): reuses the SAME search_service the KIS/OCR channels
+    above already built -- VQA retrieval needs the identical vector space
+    (CLAUDE.md §3), not a second encoder. Mirrors app/main.py's
+    `_build_qa_service` exactly, since this is the same production wiring,
+    not a diagnostic variant."""
+    config = VqaConfig(**_load_yaml(_QA_CONFIG_PATH))
+    return QaService(
+        search_service=search_service,
+        image_loader=ThumbnailImageLoader(thumbnail_service),
+        vqa_service=VqaService(
+            vqa_client=GeminiVqaClient(
+                api_key=settings.gemini_api_key.get_secret_value(), config=config
+            ),
+            timeout_sec=config.timeout_seconds,
+        ),
+        max_keyframes_to_model=config.max_keyframes_to_model,
+    )
+
+
 def _build_trake_service(
     encoder: BEiT3Encoder, milvus: MilvusStore, mongo: MongoStore
 ) -> TrakeService:
@@ -951,6 +1012,7 @@ def _write_final_report(
     leakage_report: LeakageReport | None,
     trake_groups: Sequence[TrakeGroupMetrics] | None = None,
     trake_ablation_cells: Sequence[TrakeAblationCell] | None = None,
+    vqa_metrics: VqaReportMetrics | None = None,
 ) -> Path:
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     git_sha = _git_sha()
@@ -970,6 +1032,7 @@ def _write_final_report(
         per_query=accumulator.per_query,
         trake_groups=trake_groups,
         trake_ablation_cells=trake_ablation_cells,
+        vqa_metrics=vqa_metrics,
     )
     return output_dir
 
@@ -1054,6 +1117,23 @@ async def _main() -> int:
                     config.trake_top_k,
                 )
 
+        vqa_metrics: VqaReportMetrics | None = None
+        if config.score_vqa:
+            # Reuses search_service (same encoder/Milvus/Mongo/ES as the
+            # KIS/OCR channels above, CLAUDE.md §3) -- a fresh ThumbnailService
+            # is built here because QaService's image-loading path is unique
+            # to VQA, nothing else in this file reads thumbnails.
+            qa_service = _build_qa_service(
+                settings, search_service, _build_thumbnail_service(mongo)
+            )
+            vqa_raw_records = json.loads(
+                (_REPO_ROOT / config.vqa_eval_set_path).read_text(encoding="utf-8")
+            )
+            vqa_records = load_qa_eval_set(vqa_raw_records)
+            vqa_metrics = await run_vqa_eval(
+                qa_service, vqa_records, config.vqa_top_k, config.vqa_confidence_threshold
+            )
+
         output_dir = _write_final_report(
             config,
             ground_truth,
@@ -1062,6 +1142,7 @@ async def _main() -> int:
             leakage_report,
             trake_groups,
             trake_ablation_cells,
+            vqa_metrics,
         )
         logger.info("Wrote report to %s", output_dir)
     finally:

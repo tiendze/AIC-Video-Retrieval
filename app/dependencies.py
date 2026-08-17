@@ -16,6 +16,7 @@ from app.services.quest_service import QueryRewriteService, QuestService
 from app.services.search_service import SearchService
 from app.services.thumbnail_service import ThumbnailService
 from app.services.trake_service import TrakeService
+from app.services.vqa_service import QaService
 from app.stores.es_client import EsStore
 from app.stores.milvus_client import MilvusStore
 from app.stores.mongo_client import MongoStore
@@ -51,6 +52,10 @@ def get_quest_service(request: Request) -> QuestService:
 
 def get_query_rewrite_service(request: Request) -> QueryRewriteService:
     return request.app.state.query_rewrite_service
+
+
+def get_qa_service(request: Request) -> QaService:
+    return request.app.state.qa_service
 
 
 def get_health_service(
