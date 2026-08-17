@@ -39,27 +39,27 @@ describe('ModeSelector', () => {
     expect(onChange).toHaveBeenCalledWith('semantic')
   })
 
-  // DANTE/TRAKE (plan §P2.2) went live 2026-08-15 -- no longer the
+  // TRAKE/DANTE (plan §P2.2) went live 2026-08-15 -- no longer the
   // disabled P2 placeholder from plan §P1.5.
-  it('renders DANTE as a selectable, non-disabled option', () => {
+  it('renders TRAKE as a selectable, non-disabled option', () => {
     render(<ModeSelector mode="semantic" onChange={vi.fn()} />)
 
-    expect(screen.getByRole('radio', { name: /DANTE/i })).not.toBeDisabled()
+    expect(screen.getByRole('radio', { name: /TRAKE/i })).not.toBeDisabled()
   })
 
-  it('calls onChange with "dante" when the DANTE option is clicked', async () => {
+  it('calls onChange with "dante" when the TRAKE option is clicked', async () => {
     const user = userEvent.setup()
     const onChange = vi.fn()
     render(<ModeSelector mode="semantic" onChange={onChange} />)
 
-    await user.click(screen.getByRole('radio', { name: /DANTE/i }))
+    await user.click(screen.getByRole('radio', { name: /TRAKE/i }))
 
     expect(onChange).toHaveBeenCalledWith('dante')
   })
 
-  it('shows DANTE as checked when mode is "dante"', () => {
+  it('shows TRAKE as checked when mode is "dante"', () => {
     render(<ModeSelector mode="dante" onChange={vi.fn()} />)
 
-    expect(screen.getByRole('radio', { name: /DANTE/i })).toBeChecked()
+    expect(screen.getByRole('radio', { name: /TRAKE/i })).toBeChecked()
   })
 })

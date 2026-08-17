@@ -38,8 +38,27 @@
 
 .actions {
   display: flex;
+  align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   margin-top: 4px;
+}
+
+.thresholdLabel {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #aaa;
+  font-size: 12px;
+}
+
+.thresholdInput {
+  width: 86px;
+  padding: 7px 8px;
+  font-size: 13px;
+  background: #1a1a1a;
+  color: #eee;
+  border: 1px solid #444;
 }
 
 .addButton {

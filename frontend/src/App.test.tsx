@@ -25,8 +25,8 @@ vi.mock('./api/client', () => ({
   rewriteQuery: vi.fn().mockReturnValue(new Promise(() => {})),
   findImageCandidates: vi.fn().mockReturnValue(new Promise(() => {})),
   searchByCandidate: vi.fn().mockReturnValue(new Promise(() => {})),
-  // DANTE/TRAKE (plan §P2.2) -- never resolves by default; the
-  // DANTE-specific test below overrides it with a real resolved value.
+  // TRAKE/DANTE (plan §P2.2) -- never resolves by default; the
+  // TRAKE-specific test below overrides it with a real resolved value.
   trakeSearch: vi.fn().mockReturnValue(new Promise(() => {})),
   ApiError: class ApiError extends Error {},
 }))
@@ -119,21 +119,21 @@ describe('App', () => {
     await waitFor(() => expect(screen.getByText('Web image search failed')).toBeInTheDocument())
   })
 
-  // DANTE/TRAKE (plan §P2.2, PRD §F6/US-4): selecting the DANTE mode swaps
+  // TRAKE/DANTE (plan §P2.2, PRD §F6/US-4): selecting the TRAKE mode swaps
   // the single-query flow for the N-ordered-events flow -- these are
   // fundamentally different request shapes, not just a filter on the same
   // query box.
-  it('shows the event-sequence input after selecting DANTE mode', async () => {
+  it('shows the event-sequence input after selecting TRAKE mode', async () => {
     const user = userEvent.setup()
     render(<App />)
 
-    await user.click(screen.getByRole('radio', { name: /DANTE/i }))
+    await user.click(screen.getByRole('radio', { name: /TRAKE/i }))
 
     expect(screen.getByLabelText('event 1')).toBeInTheDocument()
     expect(screen.queryByLabelText('query')).not.toBeInTheDocument()
   })
 
-  it('shows TRAKE results after searching in DANTE mode', async () => {
+  it('shows TRAKE results after searching in TRAKE mode', async () => {
     const user = userEvent.setup()
     vi.mocked(trakeSearch).mockResolvedValue({
       results: [
@@ -153,7 +153,7 @@ describe('App', () => {
       ],
     })
     render(<App />)
-    await user.click(screen.getByRole('radio', { name: /DANTE/i }))
+    await user.click(screen.getByRole('radio', { name: /TRAKE/i }))
     await user.type(screen.getByLabelText('event 1'), 'người đàn ông mở cửa')
     await user.type(screen.getByLabelText('event 2'), 'xe máy chạy qua')
 

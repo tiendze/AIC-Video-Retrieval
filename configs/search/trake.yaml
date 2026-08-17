@@ -5,3 +5,9 @@
 # they currently share the same submission-cap ceiling (references.md §1.2).
 default_top_k: 10
 max_top_k: 100
+
+# Minimum DANTE sequence score accepted by POST /api/trake when the client
+# does not provide an explicit threshold. Operators can lower this below 0
+# to inspect weak/long-distance candidates, or raise it to keep only strong
+# sequence matches.
+default_score_threshold: 0.0

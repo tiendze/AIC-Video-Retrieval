@@ -5,6 +5,8 @@ export interface EventSequenceInputProps {
   onEventChange: (index: number, value: string) => void
   onAddEvent: () => void
   onRemoveEvent: (index: number) => void
+  threshold: string
+  onThresholdChange: (value: string) => void
   onSubmit: () => void
   isLoading?: boolean
 }
@@ -18,6 +20,8 @@ export function EventSequenceInput({
   onEventChange,
   onAddEvent,
   onRemoveEvent,
+  threshold,
+  onThresholdChange,
   onSubmit,
   isLoading = false,
 }: EventSequenceInputProps) {
@@ -54,6 +58,17 @@ export function EventSequenceInput({
         </div>
       ))}
       <div className={styles.actions}>
+        <label className={styles.thresholdLabel}>
+          Threshold
+          <input
+            aria-label="threshold"
+            className={styles.thresholdInput}
+            type="number"
+            step="0.01"
+            value={threshold}
+            onChange={(event) => onThresholdChange(event.target.value)}
+          />
+        </label>
         <button type="button" className={styles.addButton} onClick={onAddEvent}>
           + Thêm sự kiện
         </button>

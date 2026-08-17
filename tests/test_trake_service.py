@@ -147,7 +147,7 @@ async def test_trake_search_returns_the_higher_scoring_video_first():
     videos = [_video_doc("video_a", 0, 1), _video_doc("video_b", 100, 101)]
     service, encoder, milvus = _service(rows, videos, events_vectors)
 
-    results = await service.search(["su kien 1", "su kien 2"], top_k=10)
+    results = await service.search(["su kien 1", "su kien 2"], top_k=10, threshold=-1.0)
 
     assert [r.video_id for r in results] == ["video_a", "video_b"]
     assert results[0].score > results[1].score
@@ -267,6 +267,36 @@ async def test_trake_search_limits_results_to_top_k():
     assert len(results) == 2
 
 
+async def test_trake_search_returns_top_k_sequences_not_one_best_sequence_per_video():
+    events_vectors = np.stack([_unit(hot=0), _unit(hot=1)])
+    rows = {
+        "video_a": [
+            _frame_row("video_a_f0", 0, 0, 0.0, hot=0),
+            _frame_row("video_a_f1", 1, 1, 1.0, hot=1),
+            _frame_row("video_a_f2", 2, 2, 2.0, hot=1),
+        ],
+        "video_b": [
+            _frame_row("video_b_f0", 100, 0, 0.0, hot=0),
+            _frame_row("video_b_f1", 101, 1, 1.0, hot=2),
+        ],
+    }
+    videos = [_video_doc("video_a", 0, 2), _video_doc("video_b", 100, 101)]
+    service, _, _ = _service(rows, videos, events_vectors)
+
+    results = await service.search(
+        ["a", "b"],
+        top_k=2,
+        lambda_penalty=0.0,
+        threshold=1.5,
+    )
+
+    assert [result.video_id for result in results] == ["video_a", "video_a"]
+    assert [[kf.keyframe_id for kf in result.keyframes] for result in results] == [
+        ["video_a_f0", "video_a_f1"],
+        ["video_a_f0", "video_a_f2"],
+    ]
+
+
 def _dense_video_rows(
     video_id: str, length: int, hot_at: dict[int, int], filler_hot: int
 ) -> list[dict]:
@@ -307,6 +337,6 @@ async def test_trake_search_passing_a_larger_lambda_penalizes_a_more_spread_out_
     service, _, _ = _service(rows, videos, events_vectors)
 
     small_lambda = await service.search(["a", "b"], top_k=10, lambda_penalty=0.0)
-    large_lambda = await service.search(["a", "b"], top_k=10, lambda_penalty=1.0)
+    large_lambda = await service.search(["a", "b"], top_k=10, lambda_penalty=1.0, threshold=-10.0)
 
     assert large_lambda[0].score < small_lambda[0].score

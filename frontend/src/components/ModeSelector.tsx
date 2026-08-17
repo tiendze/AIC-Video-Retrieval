@@ -11,14 +11,14 @@ export interface ModeSelectorProps {
   ocrDisabled?: boolean
 }
 
-// PRD §F9 mode list: Semantic / OCR / DANTE. All three are live as of
-// 2026-08-15 -- DANTE was the P2 disabled placeholder (plan §P1.5's
+// PRD §F9 mode list: Semantic / OCR / TRAKE. All three are live as of
+// 2026-08-15 -- TRAKE/DANTE was the P2 disabled placeholder (plan §P1.5's
 // decision: "hiện nhưng disabled + badge") until POST /api/trake existed
 // to wire it to.
 const MODES: { value: AppMode; label: string; shortcutKey: string }[] = [
   { value: 'semantic', label: 'Semantic', shortcutKey: '1' },
   { value: 'ocr', label: 'OCR', shortcutKey: '2' },
-  { value: 'dante', label: 'DANTE', shortcutKey: '3' },
+  { value: 'dante', label: 'TRAKE', shortcutKey: '3' },
 ]
 
 export function ModeSelector({ mode, onChange, ocrDisabled = false }: ModeSelectorProps) {

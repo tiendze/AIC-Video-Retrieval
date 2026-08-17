@@ -21,10 +21,10 @@ from app.services.trake_service import TrakeKeyframe, TrakeVideoResult
 class _FakeTrakeService:
     def __init__(self, results: list[TrakeVideoResult] | None = None) -> None:
         self._results = results or []
-        self.search_calls: list[tuple[list[str], int, float | None]] = []
+        self.search_calls: list[tuple[list[str], int, float | None, float]] = []
 
-    async def search(self, events, top_k, lambda_penalty=None):
-        self.search_calls.append((list(events), top_k, lambda_penalty))
+    async def search(self, events, top_k, lambda_penalty=None, threshold=0.0):
+        self.search_calls.append((list(events), top_k, lambda_penalty, threshold))
         return self._results
 
 
@@ -87,7 +87,7 @@ def test_trake_passes_events_and_top_k_through_to_the_service():
 
     client.post("/api/trake", json={"events": ["a", "b"], "top_k": 5})
 
-    assert service.search_calls == [(["a", "b"], 5, None)]
+    assert service.search_calls == [(["a", "b"], 5, None, 0.0)]
 
 
 def test_trake_passes_an_explicit_lambda_penalty_through():
@@ -96,7 +96,16 @@ def test_trake_passes_an_explicit_lambda_penalty_through():
 
     client.post("/api/trake", json={"events": ["a"], "lambda_penalty": 0.01})
 
-    assert service.search_calls == [(["a"], 10, 0.01)]  # 10 = configured default_top_k
+    assert service.search_calls == [(["a"], 10, 0.01, 0.0)]  # 10 = configured default_top_k
+
+
+def test_trake_passes_an_explicit_threshold_through():
+    service = _FakeTrakeService()
+    client = _client(service)
+
+    client.post("/api/trake", json={"events": ["a"], "threshold": 1.25})
+
+    assert service.search_calls == [(["a"], 10, None, 1.25)]  # 10 = configured default_top_k
 
 
 def test_trake_rejects_an_empty_events_list_before_reaching_the_service():

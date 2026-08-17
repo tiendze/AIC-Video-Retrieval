@@ -20,8 +20,8 @@ class TrakeVideoResultResponse(BaseModel):
     video_id: str
     score: float
     # Exactly len(events) entries, strictly time-ordered (CLAUDE.md §4's
-    # DANTE ordering invariant) -- see app/services/trake_service.py's
-    # TrakeVideoResult docstring.
+    # DANTE ordering invariant). One video may appear multiple times when
+    # multiple sequences clear the request threshold.
     keyframes: list[TrakeKeyframeResponse]
 
 

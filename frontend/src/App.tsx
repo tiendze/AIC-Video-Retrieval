@@ -111,6 +111,8 @@ function App() {
             onEventChange={trake.setEvent}
             onAddEvent={trake.addEvent}
             onRemoveEvent={trake.removeEvent}
+            threshold={trake.threshold}
+            onThresholdChange={trake.setThreshold}
             onSubmit={trake.search}
             isLoading={trake.isLoading}
           />

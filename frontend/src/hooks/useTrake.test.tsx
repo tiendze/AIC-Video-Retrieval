@@ -46,6 +46,7 @@ describe('useTrake', () => {
     expect(result.current.results).toEqual([])
     expect(result.current.isLoading).toBe(false)
     expect(result.current.error).toBeNull()
+    expect(result.current.threshold).toBe('0')
   })
 
   it('updates only the targeted event row', () => {
@@ -107,8 +108,32 @@ describe('useTrake', () => {
       ['người đàn ông mở cửa', 'xe máy chạy qua'],
       10,
       null,
+      0,
       expect.anything(),
     )
+  })
+
+  it('passes the configured threshold through to the request', () => {
+    vi.mocked(trakeSearch).mockReturnValue(new Promise(() => {}))
+    const { result } = renderHook(() => useTrake(10))
+    act(() => result.current.setEvent(0, 'a'))
+    act(() => result.current.setEvent(1, 'b'))
+    act(() => result.current.setThreshold('1.25'))
+
+    act(() => result.current.search())
+
+    expect(trakeSearch).toHaveBeenCalledWith(['a', 'b'], 10, null, 1.25, expect.anything())
+  })
+
+  it('shows an error instead of searching when threshold is not numeric', () => {
+    const { result } = renderHook(() => useTrake(10))
+    act(() => result.current.setEvent(0, 'a'))
+    act(() => result.current.setThreshold('abc'))
+
+    act(() => result.current.search())
+
+    expect(trakeSearch).not.toHaveBeenCalled()
+    expect(result.current.error).toBe('Threshold phải là số hợp lệ')
   })
 
   it('sets results on a successful search', async () => {
@@ -148,6 +173,6 @@ describe('useTrake', () => {
 
     act(() => result.current.search())
 
-    expect(trakeSearch).toHaveBeenCalledWith(['a', 'b'], 42, null, expect.anything())
+    expect(trakeSearch).toHaveBeenCalledWith(['a', 'b'], 42, null, 0, expect.anything())
   })
 })

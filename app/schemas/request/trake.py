@@ -21,9 +21,11 @@ def _load_config() -> dict:
 _config = _load_config()
 DEFAULT_TOP_K: int = _config["default_top_k"]
 MAX_TOP_K: int = _config["max_top_k"]
+DEFAULT_SCORE_THRESHOLD: float = _config["default_score_threshold"]
 
 
 class TrakeRequest(BaseModel):
     events: list[str] = Field(min_length=1)  # N event descriptions, in time order
     lambda_penalty: float | None = None  # None = use dante.yaml's configured default
+    threshold: float = DEFAULT_SCORE_THRESHOLD
     top_k: int = Field(default=DEFAULT_TOP_K, ge=1, le=MAX_TOP_K)

@@ -21,6 +21,7 @@ from app.services.dante_service import (
     DanteServiceError,
     compute_similarity_matrix,
     dante_search,
+    dante_search_sequences,
 )
 
 
@@ -147,6 +148,61 @@ def _brute_force_best_ordered_pair(similarity: np.ndarray) -> tuple[float, tuple
                 best_score = score
                 best_pair = (tau, t)
     return best_score, best_pair
+
+
+class TestDanteSearchSequences:
+    def test_returns_multiple_ordered_sequences_at_or_above_threshold(self) -> None:
+        similarity = _similarity(
+            [
+                [0.9, 0.8, 0.1],
+                [0.1, 0.9, 0.7],
+            ]
+        )
+
+        results = dante_search_sequences(
+            similarity,
+            s_v=100,
+            threshold=1.55,
+            top_k=10,
+            lambda_penalty=0.0,
+        )
+
+        assert [(result.score, result.global_indices) for result in results] == [
+            (pytest.approx(1.8), (100, 101)),
+            (pytest.approx(1.6), (100, 102)),
+        ]
+
+    def test_limits_sequence_candidates_to_top_k_after_sorting_by_score(self) -> None:
+        similarity = _similarity(
+            [
+                [0.9, 0.8, 0.7, 0.1],
+                [0.1, 0.9, 0.8, 0.7],
+            ]
+        )
+
+        results = dante_search_sequences(
+            similarity,
+            s_v=0,
+            threshold=0.0,
+            top_k=2,
+            lambda_penalty=0.0,
+        )
+
+        assert [result.global_indices for result in results] == [(0, 1), (0, 2)]
+        assert [result.score for result in results] == pytest.approx([1.8, 1.7])
+
+    def test_returns_an_empty_list_when_sequences_are_finite_but_below_threshold(self) -> None:
+        similarity = _similarity([[0.4, 0.3], [0.2, 0.4]])
+
+        results = dante_search_sequences(
+            similarity,
+            s_v=0,
+            threshold=10.0,
+            top_k=10,
+            lambda_penalty=0.0,
+        )
+
+        assert results == []
 
 
 class TestDanteSearchErrors:

@@ -1,15 +1,15 @@
 """TrakeService -- `POST /api/trake` (plan §P2.2, PRD §F6, architecture.md
 §3.5). The end-to-end bridge from N ordered event descriptions to
-`dante_service.dante_search`'s per-video DP.
+`dante_service.dante_search_sequences`'s per-video DP.
 
 Encodes the events with the SAME encoder used at ingest time (CLAUDE.md §3),
 then runs DANTE's DP over every ingest-"complete" video's own `[s_v, e_v]`
-keyframe range -- architecture.md §3.5's "Duyệt từng video v" loop. The
-paper's own design has no candidate-video pre-filter, so neither does this:
-every video is scored, ranked by `DANTE[v]`, and the top-k returned. TRAKE is
-not the latency-critical task (PRD §1.2 -- ranking, not speed, is what's
-scored); a narrower candidate-restriction strategy is a future optimization,
-not a correctness requirement.
+keyframe range -- architecture.md §3.5's "Duyệt từng video v" loop. Each
+video can contribute multiple sequence candidates above the operator's score
+threshold; all candidates are ranked together and the top-k sequences are
+returned. TRAKE is not the latency-critical task (PRD §1.2 -- ranking, not
+speed, is what's scored); a narrower candidate-restriction strategy is a
+future optimization, not a correctness requirement.
 
 Each event is translated VI->EN before encoding when a `QueryTranslator` is
 injected -- same reasoning as `SearchService._search_semantic` (module
@@ -31,15 +31,17 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
+import yaml
 
 from app.encoders.base import MultimodalEncoder
 from app.services.dante_service import (
     DEFAULT_LAMBDA_PENALTY,
     DanteServiceError,
     compute_similarity_matrix,
-    dante_search,
+    dante_search_sequences,
 )
 from app.services.query_translator import QueryTranslator
 from app.stores.milvus_client import MilvusStore
@@ -48,6 +50,16 @@ from app.stores.mongo_client import MongoStore
 logger = logging.getLogger(__name__)
 
 _INGEST_COMPLETE_STATUS = "complete"
+_CONFIG_PATH = Path(__file__).resolve().parent.parent.parent / "configs" / "search" / "trake.yaml"
+
+
+def _load_config() -> dict:
+    with _CONFIG_PATH.open(encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
+_config = _load_config()
+DEFAULT_SCORE_THRESHOLD: float = _config["default_score_threshold"]
 
 
 @dataclass(frozen=True)
@@ -59,9 +71,10 @@ class TrakeKeyframe:
 
 @dataclass(frozen=True)
 class TrakeVideoResult:
-    """`keyframes` has exactly `len(events)` entries, in strict temporal
-    order (CLAUDE.md §4's DANTE ordering invariant, inherited from
-    `dante_service.DanteResult.global_indices`)."""
+    """One sequence candidate. `keyframes` has exactly `len(events)` entries,
+    in strict temporal order (CLAUDE.md §4's DANTE ordering invariant,
+    inherited from `dante_service.DanteResult.global_indices`). Multiple
+    candidates may share the same `video_id`."""
 
     video_id: str
     score: float
@@ -95,14 +108,20 @@ class TrakeService:
         self._query_translator = query_translator
 
     async def search(
-        self, events: list[str], top_k: int, lambda_penalty: float | None = None
+        self,
+        events: list[str],
+        top_k: int,
+        lambda_penalty: float | None = None,
+        threshold: float = DEFAULT_SCORE_THRESHOLD,
     ) -> list[TrakeVideoResult]:
         if self._query_translator is not None:
             events = await asyncio.to_thread(self._translate_events, events)
         vectors = await asyncio.to_thread(self._encoder.encode_text, events)
         videos = await self._complete_videos()
         effective_lambda = DEFAULT_LAMBDA_PENALTY if lambda_penalty is None else lambda_penalty
-        results = await asyncio.to_thread(self._score_videos, vectors, videos, effective_lambda)
+        results = await asyncio.to_thread(
+            self._score_videos, vectors, videos, effective_lambda, threshold, top_k
+        )
         results.sort(key=lambda r: r.score, reverse=True)
         return results[:top_k]
 
@@ -118,7 +137,12 @@ class TrakeService:
         return videos
 
     def _score_videos(
-        self, vectors: np.ndarray, videos: list[_VideoRange], lambda_penalty: float
+        self,
+        vectors: np.ndarray,
+        videos: list[_VideoRange],
+        lambda_penalty: float,
+        threshold: float,
+        top_k: int,
     ) -> list[TrakeVideoResult]:
         results: list[TrakeVideoResult] = []
         for video in videos:
@@ -142,23 +166,30 @@ class TrakeService:
             frame_vectors = np.stack([row["embedding"] for row in rows])
             similarity = compute_similarity_matrix(vectors, frame_vectors)
             try:
-                dp_result = dante_search(similarity, s_v=video.s_v, lambda_penalty=lambda_penalty)
+                dp_results = dante_search_sequences(
+                    similarity,
+                    s_v=video.s_v,
+                    threshold=threshold,
+                    top_k=top_k,
+                    lambda_penalty=lambda_penalty,
+                )
             except DanteServiceError as exc:
                 logger.info("trake: skipping video_id=%s: %s", video.video_id, exc)
                 continue
 
             rows_by_global_index = {row["global_index"]: row for row in rows}
-            keyframes = tuple(
-                TrakeKeyframe(
-                    keyframe_id=rows_by_global_index[idx]["keyframe_id"],
-                    frame_idx=rows_by_global_index[idx]["frame_idx"],
-                    timestamp=rows_by_global_index[idx]["timestamp"],
+            for dp_result in dp_results:
+                keyframes = tuple(
+                    TrakeKeyframe(
+                        keyframe_id=rows_by_global_index[idx]["keyframe_id"],
+                        frame_idx=rows_by_global_index[idx]["frame_idx"],
+                        timestamp=rows_by_global_index[idx]["timestamp"],
+                    )
+                    for idx in dp_result.global_indices
                 )
-                for idx in dp_result.global_indices
-            )
-            results.append(
-                TrakeVideoResult(
-                    video_id=video.video_id, score=dp_result.score, keyframes=keyframes
+                results.append(
+                    TrakeVideoResult(
+                        video_id=video.video_id, score=dp_result.score, keyframes=keyframes
+                    )
                 )
-            )
         return results

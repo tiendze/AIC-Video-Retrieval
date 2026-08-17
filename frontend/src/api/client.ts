@@ -121,17 +121,24 @@ export function searchByCandidate(
 // POST /api/trake (app/api/trake.py) -- DANTE-backed TRAKE search.
 // `events` must already be in time order; the response's keyframes come
 // back in that same order, never re-sorted (CLAUDE.md §3). `lambdaPenalty`
-// null means "use configs/search/dante.yaml's configured default".
+// null means "use configs/search/dante.yaml's configured default";
+// `threshold` filters candidate sequences before the final top-k ranking.
 export function trakeSearch(
   events: string[],
   topK: number,
   lambdaPenalty: number | null,
+  threshold: number,
   signal?: AbortSignal,
 ): Promise<TrakeResult> {
   return request<TrakeResult>('/api/trake', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ events, top_k: topK, lambda_penalty: lambdaPenalty }),
+    body: JSON.stringify({
+      events,
+      top_k: topK,
+      lambda_penalty: lambdaPenalty,
+      threshold,
+    }),
     signal,
   })
 }

@@ -23,8 +23,9 @@
 .header {
   display: flex;
   justify-content: space-between;
+  align-items: center;
   font-size: 13px;
-  margin-bottom: 6px;
+  margin-bottom: 8px;
 }
 
 .videoId {
@@ -32,8 +33,43 @@
   font-weight: bold;
 }
 
-.score {
+.sequenceCount {
   color: #999;
+  font-size: 12px;
+}
+
+.sequences {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sequenceHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.sequenceLabel {
+  color: #ccc;
+  font-size: 12px;
+}
+
+.score {
+  padding: 2px 6px;
+  color: #dbe7ff;
+  background: #20365f;
+  border: 1px solid #35558f;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.separator {
+  height: 1px;
+  margin: 2px 0 8px;
+  background: #333;
 }
 
 .strip {

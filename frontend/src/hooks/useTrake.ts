@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from 'react'
 import { trakeSearch } from '../api/client'
+import { TRAKE_DEFAULT_THRESHOLD } from '../api/constants'
 import { isAbortError, messageFor } from '../api/requestHelpers'
 import type { TrakeVideoResultItem } from '../api/types'
 
@@ -8,6 +9,8 @@ export interface UseTrakeResult {
   setEvent: (index: number, value: string) => void
   addEvent: () => void
   removeEvent: (index: number) => void
+  threshold: string
+  setThreshold: (value: string) => void
   results: TrakeVideoResultItem[]
   isLoading: boolean
   error: string | null
@@ -15,6 +18,7 @@ export interface UseTrakeResult {
 }
 
 const INITIAL_EVENTS = ['', '']
+const INITIAL_THRESHOLD = String(TRAKE_DEFAULT_THRESHOLD)
 
 // DANTE/TRAKE (plan §P2.2, PRD §F6/US-4): the operator types N event
 // descriptions IN TIME ORDER; POST /api/trake returns each matching
@@ -24,6 +28,7 @@ const INITIAL_EVENTS = ['', '']
 // empty row before searching.
 export function useTrake(topK: number): UseTrakeResult {
   const [events, setEvents] = useState<string[]>(INITIAL_EVENTS)
+  const [threshold, setThreshold] = useState(INITIAL_THRESHOLD)
   const [results, setResults] = useState<TrakeVideoResultItem[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -44,13 +49,18 @@ export function useTrake(topK: number): UseTrakeResult {
   const search = useCallback(() => {
     const trimmed = events.map((event) => event.trim()).filter((event) => event.length > 0)
     if (trimmed.length === 0) return
+    const parsedThreshold = Number(threshold)
+    if (threshold.trim() === '' || !Number.isFinite(parsedThreshold)) {
+      setError('Threshold phải là số hợp lệ')
+      return
+    }
     abortRef.current?.abort()
     const controller = new AbortController()
     abortRef.current = controller
     setIsLoading(true)
     setError(null)
 
-    trakeSearch(trimmed, topK, null, controller.signal)
+    trakeSearch(trimmed, topK, null, parsedThreshold, controller.signal)
       .then((response) => setResults(response.results))
       .catch((err: unknown) => {
         if (isAbortError(err)) return
@@ -59,7 +69,18 @@ export function useTrake(topK: number): UseTrakeResult {
       .finally(() => {
         if (abortRef.current === controller) setIsLoading(false)
       })
-  }, [events, topK])
+  }, [events, threshold, topK])
 
-  return { events, setEvent, addEvent, removeEvent, results, isLoading, error, search }
+  return {
+    events,
+    setEvent,
+    addEvent,
+    removeEvent,
+    threshold,
+    setThreshold,
+    results,
+    isLoading,
+    error,
+    search,
+  }
 }

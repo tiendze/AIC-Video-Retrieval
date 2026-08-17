@@ -79,7 +79,8 @@ export interface TrakeKeyframe {
   image_url: string
 }
 
-// app/schemas/response/trake.py: TrakeVideoResultResponse. `keyframes` has
+// app/schemas/response/trake.py: TrakeVideoResultResponse. Each item is one
+// sequence candidate; multiple items may share a video_id. `keyframes` has
 // exactly N entries (N = number of events submitted) in strict time order
 // -- never re-sort this array (CLAUDE.md §3: DANTE's ordering invariant,
 // τ < t). This is also the exact AIC submission shape for TRAKE:

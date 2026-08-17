@@ -47,6 +47,9 @@ async def trake(
     body: TrakeRequest, service: TrakeService = Depends(get_trake_service)
 ) -> TrakeResponse:
     results = await service.search(
-        body.events, top_k=body.top_k, lambda_penalty=body.lambda_penalty
+        body.events,
+        top_k=body.top_k,
+        lambda_penalty=body.lambda_penalty,
+        threshold=body.threshold,
     )
     return _to_response(results)
