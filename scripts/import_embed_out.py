@@ -5,12 +5,17 @@ second, non-destructive import path for candidate encoders.
 
 Two modes, selected by --encoder:
 
-  --encoder beit3 (default, UNCHANGED behavior from before this flag existed)
+  --encoder beit3 (default)
       The PRIMARY pipeline. Runs the parity gate from
       `pipelines/verify_embed_parity.py` (checksum + text-probe cosine), then
       for every `video_id` under `data/embed_out/vectors/`: joins its
       embedding matrix with `data/shots.json` (real shot boundaries ->
-      `shot_id`) and the raw `.mp4`'s fps (-> `timestamp`), assigns a
+      `shot_id`) and `data/map-keyframes/<video_id>.csv`'s `fps` column
+      (-> `timestamp`) -- NOT the raw `.mp4`, so this import runs without any
+      local video file. Only that CSV's `fps` value is read, never its
+      `frame_idx`/`pts_time` rows: this project's own keyframes are a
+      different extraction than the organiser's `map-keyframes`, so only the
+      video-level constant (`fps`) is safe to reuse from it. Assigns a
       contiguous `global_index`, and writes rows to BOTH Milvus
       (`MilvusStore.upsert`) and MongoDB (`KeyframeDocument` +
       `VideoDocument`) — CLAUDE.md §3: `frame_idx` must travel with every
@@ -37,8 +42,10 @@ Prerequisites:
   docker compose up -d                     # Milvus + MongoDB
   bash scripts/setup_beit3.sh               # models/beit3/*  (--encoder beit3 parity probe)
   data/embed_out/ downloaded and unzipped from Kaggle
-  data/shots.json, data/keyframe/, data/Videos_L*/video/*.mp4 present locally
-                                             # (--encoder beit3 only)
+  data/shots.json, data/keyframe/, data/map-keyframes/<video_id>.csv present locally
+                                             # (--encoder beit3 only; the raw
+                                             # .mp4 is NOT required -- fps is
+                                             # read from map-keyframes instead)
 
 WARNING: per CLAUDE.md §10, this writes to a live Milvus/MongoDB and — with
 --reset — drops/deletes existing collections (MongoDB rows too, but ONLY for
@@ -95,8 +102,6 @@ from pipelines.verify_embed_parity import (
     verify_manifest_fields,
     verify_weight_sha256,
 )
-from pipelines.video_io import read_video_info
-
 # Windows consoles often default to cp1252, which cannot encode the
 # Vietnamese metadata this script logs (video titles/authors) — same fix as
 # run_ingest.py / verify_embed_parity.py.
@@ -301,24 +306,50 @@ async def _import_video(
     embed_out_dir: Path,
     shot_index: dict,
     video_map: dict[str, VideoRef],
+    adapter: AIC2026Adapter,
     image_dir: Path,
     milvus: MilvusStore,
     mongo: MongoStore,
     global_index_start: int,
 ) -> int:
-    """UNCHANGED from before --encoder existed. Imports one video's keyframes
-    into Milvus + MongoDB. Returns the number of keyframes written, so the
-    caller can advance global_index_start for the next video without a DB
-    round trip per video."""
-    video_ref = video_map.get(video_id)
-    if video_ref is None:
-        raise ValueError(f"{video_id}: in embed_out/vectors/ but not found by AIC2026Adapter")
+    """Imports one video's keyframes into Milvus + MongoDB. Returns the
+    number of keyframes written, so the caller can advance global_index_start
+    for the next video without a DB round trip per video.
+
+    `fps` always comes from `data/map-keyframes/<video_id>.csv` (the
+    organiser's `fps` column -- a video-level constant, not a per-keyframe
+    one) via `adapter.load_reference_keyframes`, never from decoding the raw
+    `.mp4` -- this import must run without any local video file. Only `.fps`
+    is read off that CSV; `frame_idx`/`pts_time` are never used here, since
+    this project's own keyframes are a different extraction than the
+    organiser's `map-keyframes`.
+
+    `video_map` (built from `adapter.iter_videos("all")`, which requires the
+    `.mp4` to exist) still supplies title/author/publish_date/... when
+    available. When it doesn't have this `video_id` -- no local `.mp4` --
+    this falls back to a metadata-less `VideoRef` (title/author/... left
+    `None`, which `build_video_document` already treats as optional) rather
+    than raising: `frame_idx`/`global_index`/`shot_id` never depended on the
+    `.mp4` in the first place, only `fps` did, and that now comes from
+    map-keyframes."""
     shot_ranges = shot_index.get(video_id)
     if shot_ranges is None:
         raise ValueError(f"{video_id}: in embed_out/vectors/ but missing from data/shots.json")
 
+    reference_keyframes = adapter.load_reference_keyframes(video_id)
+    if not reference_keyframes:
+        raise ValueError(f"{video_id}: data/map-keyframes/{video_id}.csv has no rows")
+    fps = reference_keyframes[0].fps
+
+    video_ref = video_map.get(video_id)
+    if video_ref is None:
+        video_ref = VideoRef(
+            video_id=video_id,
+            source_path="",
+            duration_sec=reference_keyframes[-1].frame_idx / fps,
+        )
+
     vectors, jsonl_rows = load_video_vectors(embed_out_dir / "vectors", video_id)
-    fps = read_video_info(video_ref.source_path).fps
     keyframes = build_imported_keyframes(
         video_id,
         vectors,
@@ -412,6 +443,7 @@ async def _run_primary_import(
                 embed_out_dir=embed_out_dir,
                 shot_index=shot_index,
                 video_map=video_map,
+                adapter=adapter,
                 image_dir=args.image_dir,
                 milvus=milvus,
                 mongo=mongo,
