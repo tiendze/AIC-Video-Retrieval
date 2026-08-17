@@ -17,6 +17,7 @@ this suite.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 
 import pytest
@@ -614,8 +615,17 @@ class TestRunFreezeCli:
 
         assert exit_code == 0
         assert out_path.exists()
-        assert out_path.with_name(out_path.name + ".sha256").exists()
+        sha_path = out_path.with_name(out_path.name + ".sha256")
+        assert sha_path.exists()
         assert out_path.with_name(out_path.stem + ".quality_report.md").exists()
+
+        # Regression: on Windows, Path.write_text() in default text mode
+        # translates '\n' -> '\r\n', so a digest computed on the pre-write
+        # string no longer matches the bytes actually on disk. The .sha256
+        # file must verify against out_path's real bytes, not just be present.
+        recorded_digest = sha_path.read_text(encoding="utf-8").strip()
+        actual_digest = hashlib.sha256(out_path.read_bytes()).hexdigest()
+        assert actual_digest == recorded_digest
 
     def test_returns_nonzero_and_writes_nothing_when_quality_gate_fails(self, tmp_path):
         config_path = tmp_path / "build_qa_eval_set.yaml"

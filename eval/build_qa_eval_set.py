@@ -621,7 +621,10 @@ def _run_freeze(args: argparse.Namespace) -> int:
         return 1
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(json_text, encoding="utf-8")
+    # newline="" prevents write_text() from translating '\n' -> '\r\n' on
+    # Windows, which would otherwise make `digest` (hashed before the write)
+    # mismatch the bytes actually on disk.
+    args.out.write_text(json_text, encoding="utf-8", newline="")
     args.out.with_name(args.out.name + ".sha256").write_text(digest + "\n", encoding="utf-8")
     args.out.with_name(args.out.stem + ".quality_report.md").write_text(report_md, encoding="utf-8")
     logger.info("Froze %s (sha256=%s)", args.out, digest)
