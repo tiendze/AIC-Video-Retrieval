@@ -89,20 +89,34 @@
 
 ---
 
-## P3.4 — `eval/metrics/vqa.py` 🟡 module scoring xong (2026-08-17), chưa wiring
+## P3.4 — `eval/metrics/vqa.py` 🟡 code xong, chưa có số thật (2026-08-17)
 
-**Trạng thái thật:** `eval/metrics/vqa.py` đã viết + test (28/28 pass, coverage
-100%, xem [`.claude/tdd/p3-4-vqa-metrics.tdd.md`](../tdd/p3-4-vqa-metrics.tdd.md)).
-Đây là **module scoring thuần** — không gọi Gemini/Milvus/MongoDB, giống hệt
-cách `eval/metrics/retrieval.py`/`trake.py` không tự gọi Milvus/TrakeService.
+**Trạng thái thật:** cả module scoring thuần LẪN wiring vào `eval/run.py` đã
+xong:
+- `eval/metrics/vqa.py` — scoring thuần (EM, Token-F1, Grounded Accuracy,
+  Retrieval-conditioned Accuracy, Hallucination Rate, Abstention Rate,
+  `mean_llm_judge_score`). Không gọi Gemini/Milvus/MongoDB, giống hệt cách
+  `eval/metrics/retrieval.py`/`trake.py` không tự gọi Milvus/TrakeService.
+- `eval/vqa_run.py` — orchestration (load `configs/eval/aic_qa_v1.json`,
+  chạy qua `QaService.answer_question`, gộp `answerable_by_ocr=true/false`
+  tách theo cờ per P3.3's OCR-leakage note, render báo cáo Markdown), theo
+  đúng pattern `eval/trake_run.py`.
+- `eval/run.py` — cờ `score_vqa` mới trong `EvalRunConfig` (+
+  `vqa_eval_set_path`, `vqa_top_k`, `vqa_confidence_threshold`),
+  `_build_qa_service`/`_build_thumbnail_service`, phần VQA nối vào CÙNG
+  `report.md`/`metrics.json` một lần chạy (giống cách `trake`/`trake_ablation`
+  đã nối). Config chạy thật: `configs/eval/qa_val.yaml`.
 
-**Quyết định phạm vi** (chốt qua `AskUserQuestion` 2026-08-17, không đoán):
-phase này CHỈ làm phần scoring thuần. Wiring vào `eval/run.py` (một
-`vqa_run.py` như `trake_run.py`) để chạy `QaService` thật trên 91 record đã
-đóng băng trong `configs/eval/aic_qa_v1.json` và ra bảng 7 metric thật —
-**CHƯA làm**, vì đòi hỏi hoặc tốn Gemini API thật trên toàn bộ 91 record,
-hoặc phải định nghĩa trước format input đã có sẵn câu trả lời để chấm
-offline. Đây là bước tiếp theo, không phải đã xong.
+67/67 test pass, coverage 100% trên `eval/metrics/vqa.py` +
+`eval/vqa_run.py`. Xem [`.claude/tdd/p3-4-vqa-metrics.tdd.md`](../tdd/p3-4-vqa-metrics.tdd.md).
+
+**Chưa làm — CHƯA chạy thật:** lệnh
+`python -m eval.run --config configs/eval/qa_val.yaml` tốn Gemini API thật
+trên 91 record đã đóng băng + cần Milvus/MongoDB/Elasticsearch sống + GPU
+cho BEiT-3 (CLAUDE.md §10 — chuẩn bị script, để chủ dự án tự chạy). Vì vậy
+**chưa có con số `Grounded Accuracy`/`Hallucination Rate` thật nào** — chỉ
+mới có logic đã verify bằng test giả lập (Fake `QaService`). Đây là điều
+kiện còn treo trước khi tick "xong" cho P3.4 (xem checklist cuối file).
 
 | Metric | Định nghĩa |
 |---|---|
@@ -118,7 +132,11 @@ Ngưỡng `confidence` đặt trong `configs/`, không hard-code.
 
 **Cách đọc:** cặp `Grounded Accuracy` ↑ / `Hallucination Rate` ↓ mới mô tả đúng chất lượng. Một mình Accuracy cao mà Hallucination cao là hệ thống đang đoán bừa.
 
-**Verify:** chạy qua `eval/run.py`, ra bảng đủ 7 metric.
+**Verify:** wiring qua `eval/run.py` đã có (`score_vqa: true` trong
+`configs/eval/qa_val.yaml`, viết `metrics.json`/`report.md` với section VQA
+đủ 6/7 metric có thể đo tự động — LLM-as-Judge cần thêm một Gemini-judge
+client riêng, chưa viết). **Chưa chạy thật** — lệnh cụ thể ở trên, chủ dự án
+tự chạy khi sẵn sàng chi Gemini API + có Milvus/Mongo/ES sống.
 
 ---
 

@@ -84,8 +84,87 @@ eval\metrics\vqa.py      96      0   100%
 
 ## Merge evidence
 
-Two checkpoint commits on `feature/p3-vqa-submission`:
+Checkpoint commits on `feature/p3-vqa-submission`:
 - `c872e5c` — `test: add reproducer for P3.4 VQA eval metrics` (RED, validated: collection `ModuleNotFoundError`)
 - `8717bfe` — `feat: implement eval/metrics/vqa.py (P3.4 VQA scoring functions)` (GREEN, validated: 27 passed at time of commit; full suite 739 passed / 4 skipped / 0 failed)
+- `4cb83ca` — closing edge-case test (`test_token_f1_both_empty_scores_1`, coverage 99%→100%) + this evidence report
 
-A third commit adds the closing edge-case test (`test_token_f1_both_empty_scores_1`) that brought coverage from 99% to 100%, plus this evidence report.
+---
+
+## Addendum — wiring into `eval/run.py` (2026-08-17, same day, confirmed via `AskUserQuestion`)
+
+**Scope decision:** after the pure module above, chủ dự án explicitly chose to continue with the `eval/run.py` wiring step in the same session rather than stopping at the pure module.
+
+### Task report
+
+| Task | Summary | Command | Result |
+|---|---|---|---|
+| Orchestration module | `eval/vqa_run.py` — `VqaEvalRecord`, `load_qa_eval_set`, `QaAnswerer` protocol, `run_vqa_queries`, `VqaGroupMetrics`/`VqaReportMetrics`, `aggregate_vqa_metrics`, `run_vqa_eval`, `render_vqa_report_md`. Mirrors `eval/trake_run.py`'s split from `eval/run.py`. | `./.venv/Scripts/python.exe -m pytest tests/test_vqa_run.py --cov=eval.vqa_run --cov-report=term-missing -q` | 13 passed, 100% coverage |
+| CLI wiring | `eval/run.py`: `score_vqa`/`vqa_eval_set_path`/`vqa_top_k`/`vqa_confidence_threshold` added to `EvalRunConfig`; `_build_thumbnail_service`/`_build_qa_service` (mirrors `app/main.py`'s real production wiring); `write_report`/`_write_final_report` thread `vqa_metrics` through to the SAME `report.md`/`metrics.json`, same "None = not run" contract as `trake`. | `./.venv/Scripts/python.exe -m pytest tests/test_eval_run.py -q` | 26 passed |
+| Run config | `configs/eval/qa_val.yaml` — `score_vqa: true`, points at `configs/eval/aic_qa_v1.json`; sanity-parsed through `_load_config` | `python -c "from eval.run import _load_config; _load_config(Path('configs/eval/qa_val.yaml'))"` | `score_vqa=True`, fields load correctly |
+| Regression | Nothing existing broken | `./.venv/Scripts/python.exe -m pytest tests/ -q` | 757 passed, 4 skipped, 35 deselected |
+
+RED (`eval/vqa_run.py`, before it existed):
+```
+ModuleNotFoundError: No module named 'eval.vqa_run'
+```
+RED (`eval/run.py` wiring, before `EvalRunConfig`/`write_report` had the new fields):
+```
+TypeError: EvalRunConfig.__init__() got an unexpected keyword argument 'score_vqa'
+AttributeError: 'EvalRunConfig' object has no attribute 'score_vqa'
+(plus 2 write_report-section assertion failures)
+```
+GREEN: `eval/vqa_run.py` 13 passed / 100% coverage; `eval/run.py` wiring 26 passed; combined `eval/metrics/vqa.py` + `eval/vqa_run.py` = 171 statements, 100% coverage, 67 tests; full suite 757 passed / 4 skipped / 0 failed.
+
+### Test specification — `eval/vqa_run.py` (`tests/test_vqa_run.py`)
+
+| # | What is guaranteed | Test | Result |
+|---|---|---|---|
+| 1 | Raw JSON dict records convert to `VqaEvalRecord` | `test_load_qa_eval_set_converts_raw_json_records` | PASS |
+| 2 | Each record's `question` and the caller's `top_k` reach `answerer.answer_question` | `test_run_vqa_queries_sends_question_and_top_k` | PASS |
+| 3 | Cited evidence ids resolve to context keyframes and score as grounded | `test_run_vqa_queries_resolves_evidence_ids_to_context_keyframes` | PASS |
+| 4 | An evidence id absent from the grid is dropped, not raised — scores as ungrounded | `test_run_vqa_queries_drops_evidence_ids_missing_from_the_grid_without_raising` | PASS |
+| 5 | One `VqaQueryResult` per record, in order | `test_run_vqa_queries_one_result_per_record_in_order` | PASS |
+| 6 | `aggregate_vqa_metrics` computes the overall group correctly | `test_aggregate_vqa_metrics_computes_overall_group` | PASS |
+| 7 | Results split correctly by `answerable_by_ocr` flag | `test_aggregate_vqa_metrics_splits_by_answerable_by_ocr_flag` | PASS |
+| 8 | An empty OCR-flag subset reports `None`, not a misleading 0.0 | `test_aggregate_vqa_metrics_ocr_group_is_none_when_no_such_record_exists` | PASS |
+| 9 | `retrieval_conditioned_accuracy` is `None` in the group when nothing had a retrieval hit | `test_aggregate_vqa_metrics_retrieval_conditioned_accuracy_is_none_without_a_retrieval_hit` | PASS |
+| 10 | `run_vqa_eval` raises on an empty record list | `test_run_vqa_eval_raises_on_empty_records` | PASS |
+| 11 | `run_vqa_eval` returns a full `VqaReportMetrics` | `test_run_vqa_eval_returns_report_metrics` | PASS |
+| 12 | Rendered report includes the headline metric names and formatted numbers | `test_render_vqa_report_md_includes_headline_numbers` | PASS |
+| 13 | Rendered report shows `n/a` (not a crash) when `retrieval_conditioned_accuracy` is `None` | `test_render_vqa_report_md_shows_n_a_when_retrieval_conditioned_accuracy_is_none` | PASS |
+
+### Test specification — `eval/run.py` wiring (`tests/test_eval_run.py`)
+
+| # | What is guaranteed | Test | Result |
+|---|---|---|---|
+| 14 | `write_report` appends a VQA section to `report.md` and `metrics.json` when `vqa_metrics` is given | `test_write_report_appends_vqa_section_when_vqa_metrics_given` | PASS |
+| 15 | `write_report` omits the VQA section (`"vqa": null`) when `vqa_metrics` is not given | `test_write_report_omits_vqa_section_when_vqa_metrics_not_given` | PASS |
+| 16 | `_load_config` reads `score_vqa`/`vqa_eval_set_path`/`vqa_top_k`/`vqa_confidence_threshold` | `test_load_config_reads_vqa_fields` | PASS |
+| 17 | `_load_config` defaults `score_vqa` to `False` when absent | `test_load_config_defaults_vqa_fields_when_absent` | PASS |
+
+## Coverage and known gaps
+
+```
+Name                  Stmts   Miss  Cover
+------------------------------------------
+eval\metrics\vqa.py      96      0   100%
+eval\vqa_run.py          75      0   100%
+------------------------------------------
+TOTAL                   171      0   100%
+```
+
+`_build_qa_service`/`_build_thumbnail_service`/the `score_vqa` branch inside `eval/run.py::_main()` itself are **not** covered by any test — same deliberate gap as `_build_trake_service` (never unit-tested either): they construct real `GeminiVqaClient`/`ThumbnailService`/`SearchService` instances, which need a live Gemini key, Milvus, Mongo, and a GPU-loaded BEiT-3 checkpoint. `_build_qa_service` was sanity-checked by import + structural review against `app/main.py`'s identical `_build_qa_service` (same field names, same construction order), not by a mocked-out test — mirroring how `_build_trake_service` was verified in P2.3.
+
+**Còn thiếu (real, not yet done):**
+- The actual `python -m eval.run --config configs/eval/qa_val.yaml` run has **not** been executed — no real `Grounded Accuracy`/`Hallucination Rate` number exists yet, only the code that will produce one. Running it needs `docker compose up -d` (Milvus/Mongo/ES), a GPU for BEiT-3, and spends real Gemini API quota on all 91 frozen records once per run — prepared for chủ dự án to run themselves (CLAUDE.md §10), not run by the agent.
+- `mean_llm_judge_score` (in `eval/metrics/vqa.py`) still has no Gemini-calling judge client wired to it anywhere — the "LLM-as-Judge" row of the plan's metric table is reachable in code but not yet produced by any run.
+- `vqa_confidence_threshold: 0.5` in `configs/eval/qa_val.yaml` is an unvalidated placeholder (flagged `⚠️ [Cần đo]` in the config file itself) — needs tuning against a real confidence-score distribution once the first live run exists.
+
+## Merge evidence — wiring addendum
+
+Three more checkpoint commits on `feature/p3-vqa-submission`:
+- `cdfd776` — `test: add reproducer for P3.4 eval/vqa_run.py orchestration` (RED, validated: `ModuleNotFoundError: No module named 'eval.vqa_run'`)
+- `9a1bbeb` — `feat: implement eval/vqa_run.py (P3.4 VQA evaluation orchestration)` (GREEN, validated: 13 passed, 100% coverage on first attempt)
+- `5ae9376` — `test: add reproducer for P3.4 eval/run.py VQA wiring` (RED, validated: `TypeError`/`AttributeError` on the not-yet-added `EvalRunConfig` fields, plus 2 `write_report` assertion failures)
+- `82588c5` — `feat: wire P3.4 VQA scoring into eval/run.py (score_vqa flag)` (GREEN, validated: `tests/test_eval_run.py` 26 passed; full suite 757 passed / 4 skipped / 0 failed)
