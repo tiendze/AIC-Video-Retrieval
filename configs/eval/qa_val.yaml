@@ -1,0 +1,97 @@
+# eval/run.py EvalRunConfig -- P3.4 VQA evaluation run (plan §P3.4,
+# PRD §6.7). Same EvalRunConfig shape as aic_pilot.yaml/trake_val.yaml
+# (CLAUDE.md §6: eval/run.py is the ONE entry point -- this is a config
+# variant, not a second script), with score_vqa: true added and the
+# KIS-focused optional channels (VI->EN sidecar, live-translated, CLIP
+# baseline) turned off so a VQA-focused run doesn't pay for GPU-heavy
+# channels it doesn't need.
+#
+# Named qa_val.yaml (not aic_qa_v1.yaml) on purpose -- a name that close to
+# configs/eval/aic_qa_v1.json's own filename would read as a matched
+# data/hash pair like aic_eval_v1.json + .sha256, which this is not: this
+# file is a RUN CONFIG that points AT that data file via vqa_eval_set_path
+# below, mirroring trake_val.yaml's <task>_val.yaml naming for the same
+# reason.
+#
+# ⚠️ Running this spends real Gemini API quota -- one call per record in
+# vqa_eval_set_path (91 records in configs/eval/aic_qa_v1.json as of
+# 2026-08-16). CLAUDE.md §10: resource-heavy, prepared here for the project
+# owner to run themselves, not executed automatically.
+#
+#   docker compose up -d
+#   python -m eval.run --config configs/eval/qa_val.yaml
+split: all
+
+dataset_root: data
+eval_set_path: configs/eval/aic_eval_v1.json
+pilot_available_path: configs/eval/pilot_available_v1.txt
+
+top_ks: [1, 5, 20, 50, 100]
+
+# Kept minimal (VQA is the point of this config) -- semantic still runs so
+# the report isn't VQA-only with nothing to sanity-check search_service
+# wiring against.
+modes: [semantic]
+
+random_baseline_seed: 20260810
+leakage_jaccard_threshold: 0.5
+vietnamese_stopwords:
+  - "một"
+  - "các"
+  - "là"
+  - "và"
+  - "có"
+  - "của"
+  - "trong"
+  - "được"
+  - "này"
+  - "đang"
+  - "với"
+  - "cho"
+  - "tại"
+  - "về"
+  - "người"
+  - "đó"
+  - "khi"
+  - "đã"
+  - "sẽ"
+  - "những"
+  - "trên"
+  - "bị"
+  - "để"
+  - "ra"
+  - "vào"
+  - "lên"
+  - "theo"
+  - "hay"
+  - "hoặc"
+  - "rất"
+
+reports_dir: reports
+
+# Off for this config -- these load extra GPU models unrelated to VQA
+# (aic_pilot.yaml is where the KIS-channel diagnostics live).
+query_translation_path: ""
+query_translation_modes: [semantic]
+translate_semantic_live: false
+score_clip_baseline: false
+score_trake: false
+score_trake_ablation: false
+
+# P3.4 (PRD §6.7): the actual point of this config file. Every record in
+# vqa_eval_set_path (P3.3's frozen, already-reviewed QA eval set) is run
+# through the real QaService (app/services/vqa_service.py -- Gemini +
+# grounding gate) once, then scored with eval.metrics.vqa.
+#
+# vqa_top_k=10 mirrors SearchService's typical grid size for a single
+# question -- QaService's own max_keyframes_to_model (configs/qa/vqa.yaml)
+# further caps how many of these actually reach Gemini.
+#
+# vqa_confidence_threshold=0.5 is an UNVALIDATED midpoint default -- ⚠️
+# [Cần đo]: tune against a real run's confidence distribution before
+# trusting Hallucination Rate numbers (eval/run.py's EvalRunConfig comment
+# for this field, and .claude/tdd/p3-4-vqa-metrics.tdd.md).
+score_vqa: true
+vqa_eval_set_path: configs/eval/aic_qa_v1.json
+vqa_top_k: 10
+vqa_confidence_threshold: 0.5
