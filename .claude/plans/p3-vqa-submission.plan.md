@@ -89,7 +89,20 @@
 
 ---
 
-## P3.4 — `eval/metrics/vqa.py`
+## P3.4 — `eval/metrics/vqa.py` 🟡 module scoring xong (2026-08-17), chưa wiring
+
+**Trạng thái thật:** `eval/metrics/vqa.py` đã viết + test (28/28 pass, coverage
+100%, xem [`.claude/tdd/p3-4-vqa-metrics.tdd.md`](../tdd/p3-4-vqa-metrics.tdd.md)).
+Đây là **module scoring thuần** — không gọi Gemini/Milvus/MongoDB, giống hệt
+cách `eval/metrics/retrieval.py`/`trake.py` không tự gọi Milvus/TrakeService.
+
+**Quyết định phạm vi** (chốt qua `AskUserQuestion` 2026-08-17, không đoán):
+phase này CHỈ làm phần scoring thuần. Wiring vào `eval/run.py` (một
+`vqa_run.py` như `trake_run.py`) để chạy `QaService` thật trên 91 record đã
+đóng băng trong `configs/eval/aic_qa_v1.json` và ra bảng 7 metric thật —
+**CHƯA làm**, vì đòi hỏi hoặc tốn Gemini API thật trên toàn bộ 91 record,
+hoặc phải định nghĩa trước format input đã có sẵn câu trả lời để chấm
+offline. Đây là bước tiếp theo, không phải đã xong.
 
 | Metric | Định nghĩa |
 |---|---|

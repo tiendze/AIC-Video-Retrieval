@@ -115,6 +115,10 @@ def test_token_f1_empty_prediction_scores_0():
     assert token_f1("", "đen kịt") == pytest.approx(0.0)
 
 
+def test_token_f1_both_empty_scores_1():
+    assert token_f1("", "") == pytest.approx(1.0)
+
+
 # --------------------------------------------------------------------------
 # score_query
 # --------------------------------------------------------------------------
