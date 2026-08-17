@@ -507,6 +507,117 @@ def test_load_config_reads_trake_ablation_fields(tmp_path):
     assert config.trake_ablation_lambda_values == (0.0, 0.001, 0.01)
 
 
+def test_write_report_appends_vqa_section_when_vqa_metrics_given(tmp_path):
+    # plan §P3.4: score_vqa: true adds a VQA section to the SAME
+    # report.md/metrics.json a KIS/OCR run already writes.
+    from eval.vqa_run import VqaGroupMetrics, VqaReportMetrics
+
+    video_metrics = compute_channel_metrics(
+        "semantic", "video", [1, None], top_ks=(1, 5, 20, 50, 100)
+    )
+    segment_metrics = compute_channel_metrics(
+        "semantic", "segment", [1, None], top_ks=(1, 5, 20, 50, 100)
+    )
+    group = VqaGroupMetrics(
+        num_queries=1,
+        exact_match=1.0,
+        token_f1=1.0,
+        grounded_accuracy=1.0,
+        retrieval_conditioned_accuracy=1.0,
+        hallucination_rate=0.0,
+        abstention_rate=0.0,
+    )
+    vqa_metrics = VqaReportMetrics(
+        overall=group, answerable_by_ocr=None, not_answerable_by_ocr=group, wall_clock_sec=0.1
+    )
+
+    write_report(
+        tmp_path,
+        git_sha="abc123",
+        eval_set_version="v1",
+        eval_set_hash="deadbeef",
+        num_video_ids=1,
+        num_queries=2,
+        seed=42,
+        channel_metrics=[video_metrics, segment_metrics],
+        author_breakdown={},
+        batch_breakdown={},
+        leakage_report=None,
+        per_query=[],
+        vqa_metrics=vqa_metrics,
+    )
+
+    report_md = (tmp_path / "report.md").read_text(encoding="utf-8")
+    assert "VQA metrics" in report_md
+    metrics_doc = (tmp_path / "metrics.json").read_text(encoding="utf-8")
+    assert "grounded_accuracy" in metrics_doc
+
+
+def test_write_report_omits_vqa_section_when_vqa_metrics_not_given(tmp_path):
+    video_metrics = compute_channel_metrics("semantic", "video", [1], top_ks=(1, 5, 20, 50, 100))
+    segment_metrics = compute_channel_metrics(
+        "semantic", "segment", [1], top_ks=(1, 5, 20, 50, 100)
+    )
+
+    write_report(
+        tmp_path,
+        git_sha="abc123",
+        eval_set_version="v1",
+        eval_set_hash="deadbeef",
+        num_video_ids=1,
+        num_queries=1,
+        seed=42,
+        channel_metrics=[video_metrics, segment_metrics],
+        author_breakdown={},
+        batch_breakdown={},
+        leakage_report=None,
+        per_query=[],
+    )
+
+    report_md = (tmp_path / "report.md").read_text(encoding="utf-8")
+    assert "VQA metrics" not in report_md
+    metrics_doc = (tmp_path / "metrics.json").read_text(encoding="utf-8")
+    assert '"vqa": null' in metrics_doc
+
+
+# --------------------------------------------------------------------------
+# _load_config -- P3.4 fields
+# --------------------------------------------------------------------------
+
+
+def test_load_config_reads_vqa_fields(tmp_path):
+    config_path = tmp_path / "aic_qa_v1.yaml"
+    config_path.write_text(
+        "eval_set_path: configs/eval/aic_eval_v1.json\n"
+        "pilot_available_path: configs/eval/pilot_available_v1.txt\n"
+        "score_vqa: true\n"
+        "vqa_eval_set_path: configs/eval/aic_qa_v1.json\n"
+        "vqa_top_k: 20\n"
+        "vqa_confidence_threshold: 0.7\n",
+        encoding="utf-8",
+    )
+
+    config = _load_config(config_path)
+
+    assert config.score_vqa is True
+    assert config.vqa_eval_set_path == "configs/eval/aic_qa_v1.json"
+    assert config.vqa_top_k == 20
+    assert config.vqa_confidence_threshold == pytest.approx(0.7)
+
+
+def test_load_config_defaults_vqa_fields_when_absent(tmp_path):
+    config_path = tmp_path / "aic_pilot.yaml"
+    config_path.write_text(
+        "eval_set_path: configs/eval/aic_eval_v1.json\n"
+        "pilot_available_path: configs/eval/pilot_available_v1.txt\n",
+        encoding="utf-8",
+    )
+
+    config = _load_config(config_path)
+
+    assert config.score_vqa is False
+
+
 def test_load_config_defaults_trake_ablation_fields_when_absent(tmp_path):
     config_path = tmp_path / "aic_pilot.yaml"
     config_path.write_text(
