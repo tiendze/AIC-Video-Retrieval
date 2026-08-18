@@ -18,17 +18,23 @@ import pytest
 from elasticsearch import ConnectionError as EsConnectionError
 from PIL import Image
 
+from app.services.kis_scoring import KisConfig, KisQuery, QueryType
 from app.services.search_service import SearchHit, SearchService, SearchServiceError
 
 
 class _FakeEncoder:
-    def __init__(self, vector: np.ndarray) -> None:
+    def __init__(
+        self, vector: np.ndarray, text_vectors_by_query: dict[str, np.ndarray] | None = None
+    ) -> None:
         self._vector = vector
+        self._text_vectors_by_query = text_vectors_by_query or {}
         self.encode_text_calls: list[list[str]] = []
         self.encode_image_calls: list[list[Any]] = []
 
     @property
     def embedding_dim(self) -> int:
+        if self._text_vectors_by_query:
+            return next(iter(self._text_vectors_by_query.values())).shape[-1]
         return self._vector.shape[-1]
 
     @property
@@ -41,27 +47,68 @@ class _FakeEncoder:
 
     def encode_text(self, texts):
         self.encode_text_calls.append(list(texts))
+        if self._text_vectors_by_query:
+            return np.asarray(
+                [self._text_vectors_by_query[text] for text in texts], dtype=np.float32
+            )
         return self._vector
 
 
 class _FakeMilvusStore:
-    def __init__(self, hits: list[dict[str, Any]]) -> None:
+    def __init__(
+        self, hits: list[dict[str, Any]], vector_rows: dict[str, dict[str, Any]] | None = None
+    ) -> None:
         self._hits = hits
+        self._vector_rows = vector_rows or {}
         self.search_calls: list[tuple[np.ndarray, int]] = []
+        self.get_vectors_by_ids_calls: list[list[str]] = []
 
     def search(self, query_vector: np.ndarray, top_k: int, filter_expr: str = "") -> list[dict]:
         self.search_calls.append((query_vector, top_k))
         return self._hits
 
+    def get_vectors_by_ids(self, keyframe_ids) -> dict[str, dict[str, Any]]:
+        self.get_vectors_by_ids_calls.append(list(keyframe_ids))
+        return {
+            keyframe_id: self._vector_rows[keyframe_id]
+            for keyframe_id in keyframe_ids
+            if keyframe_id in self._vector_rows
+        }
+
 
 class _FakeEsStore:
-    def __init__(self, hits: list[dict[str, Any]]) -> None:
+    def __init__(
+        self,
+        hits: list[dict[str, Any]],
+        texts_by_id: dict[str, str] | None = None,
+        scores_by_query: dict[str, dict[str, float]] | None = None,
+    ) -> None:
         self._hits = hits
+        self._texts_by_id = texts_by_id or {}
+        self._scores_by_query = scores_by_query or {}
         self.search_calls: list[tuple[str, int]] = []
+        self.get_by_ids_calls: list[list[str]] = []
+        self.score_by_ids_calls: list[tuple[str, list[str]]] = []
 
     async def search(self, query_text: str, top_k: int, video_id: str | None = None) -> list[dict]:
         self.search_calls.append((query_text, top_k))
         return self._hits
+
+    async def get_by_ids(self, keyframe_ids) -> dict[str, str]:
+        self.get_by_ids_calls.append(list(keyframe_ids))
+        return {
+            keyframe_id: self._texts_by_id[keyframe_id]
+            for keyframe_id in keyframe_ids
+            if keyframe_id in self._texts_by_id
+        }
+
+    async def score_by_ids(self, query_text: str, keyframe_ids) -> dict[str, float]:
+        self.score_by_ids_calls.append((query_text, list(keyframe_ids)))
+        return {
+            keyframe_id: self._scores_by_query.get(query_text, {}).get(keyframe_id, 0.0)
+            for keyframe_id in keyframe_ids
+            if self._scores_by_query.get(query_text, {}).get(keyframe_id, 0.0) > 0
+        }
 
 
 class _FakeEsStoreDown:
@@ -103,11 +150,20 @@ def _service(
     mongo_docs: dict[str, dict] | None = None,
     query_vector: np.ndarray | None = None,
     query_translator: _FakeQueryTranslator | None = None,
+    vector_rows: dict[str, dict] | None = None,
+    ocr_texts_by_id: dict[str, str] | None = None,
+    bm25_scores_by_query: dict[str, dict[str, float]] | None = None,
+    text_vectors_by_query: dict[str, np.ndarray] | None = None,
 ) -> tuple[SearchService, _FakeEncoder, _FakeMilvusStore, _FakeEsStore, _FakeMongoStore]:
     default_vector = np.zeros((1, 4), dtype=np.float32)
-    encoder = _FakeEncoder(query_vector if query_vector is not None else default_vector)
-    milvus_store = _FakeMilvusStore(milvus_hits or [])
-    es_store = _FakeEsStore(es_hits or [])
+    encoder = _FakeEncoder(
+        query_vector if query_vector is not None else default_vector,
+        text_vectors_by_query=text_vectors_by_query,
+    )
+    milvus_store = _FakeMilvusStore(milvus_hits or [], vector_rows=vector_rows)
+    es_store = _FakeEsStore(
+        es_hits or [], texts_by_id=ocr_texts_by_id, scores_by_query=bm25_scores_by_query
+    )
     mongo_store = _FakeMongoStore(mongo_docs or {})
     service = SearchService(
         encoder=encoder,
@@ -115,6 +171,7 @@ def _service(
         es_store=es_store,
         mongo_store=mongo_store,
         query_translator=query_translator,
+        kis_config=KisConfig(candidate_multiplier=2, candidate_min=4),
     )
     return service, encoder, milvus_store, es_store, mongo_store
 
@@ -287,6 +344,373 @@ async def test_ocr_mode_never_translates_the_query():
 
     assert translator.translate_calls == []
     assert es_store.search_calls == [("tin tuc", 5)]
+
+
+async def test_kis_stage1_text_only_retrieves_configured_text_candidates():
+    vector = np.array([[1.0, 0.0]], dtype=np.float32)
+    milvus_hits = [
+        {
+            "keyframe_id": "A",
+            "distance": 0.9,
+            "entity": {"video_id": "V1", "frame_idx": 10, "timestamp": 0.4},
+        },
+        {
+            "keyframe_id": "B",
+            "distance": 0.8,
+            "entity": {"video_id": "V1", "frame_idx": 20, "timestamp": 0.8},
+        },
+    ]
+    mongo_docs = {
+        "A": {"video_id": "V1", "frame_idx": 10, "timestamp": 0.4, "thumbnail_path": "a.jpg"},
+        "B": {"video_id": "V1", "frame_idx": 20, "timestamp": 0.8, "thumbnail_path": "b.jpg"},
+    }
+    service, encoder, milvus_store, es_store, _ = _service(
+        milvus_hits=milvus_hits,
+        mongo_docs=mongo_docs,
+        query_vector=vector,
+    )
+
+    pool = await service.retrieve_kis_candidates(
+        text_query="red shirt",
+        text_top_k=2,
+        ocr_query=None,
+        ocr_top_k=5,
+    )
+
+    assert encoder.encode_text_calls == [["red shirt"]]
+    assert milvus_store.search_calls[0][1] == 2
+    assert es_store.search_calls == []
+    assert pool.candidate_ids == ["A", "B"]
+    assert pool.candidate_pool_size == 2
+    assert pool.text_candidate_count == 2
+    assert pool.ocr_candidate_count == 0
+    assert pool.results[0].final_score is None
+    assert pool.results[0].stage1.text.raw_cosine == pytest.approx(0.9)
+    assert pool.results[0].stage1.text.rank == 1
+
+
+async def test_kis_stage1_text_and_ocr_use_independent_k_and_deduplicate_union():
+    vector = np.array([[1.0, 0.0]], dtype=np.float32)
+    milvus_hits = [
+        {
+            "keyframe_id": "A",
+            "distance": 0.9,
+            "entity": {"video_id": "V1", "frame_idx": 10, "timestamp": 0.4},
+        },
+        {
+            "keyframe_id": "B",
+            "distance": 0.8,
+            "entity": {"video_id": "V1", "frame_idx": 20, "timestamp": 0.8},
+        },
+    ]
+    es_hits = [
+        {
+            "keyframe_id": "B",
+            "ocr_text": "VINAMILK",
+            "video_id": "V1",
+            "timestamp": 0.8,
+            "score": 10.0,
+        },
+        {
+            "keyframe_id": "C",
+            "ocr_text": "VINAMILK",
+            "video_id": "V1",
+            "timestamp": 1.2,
+            "score": 9.0,
+        },
+        {
+            "keyframe_id": "D",
+            "ocr_text": "VINAMILK",
+            "video_id": "V1",
+            "timestamp": 1.6,
+            "score": 8.0,
+        },
+    ]
+    mongo_docs = {
+        keyframe_id: {
+            "video_id": "V1",
+            "frame_idx": index * 10,
+            "timestamp": index * 0.4,
+            "thumbnail_path": f"{keyframe_id}.jpg",
+        }
+        for index, keyframe_id in enumerate(["A", "B", "C", "D"], start=1)
+    }
+    service, _, milvus_store, es_store, _ = _service(
+        milvus_hits=milvus_hits,
+        es_hits=es_hits,
+        mongo_docs=mongo_docs,
+        query_vector=vector,
+        ocr_texts_by_id={"A": "", "B": "VINAMILK", "C": "VINAMILK"},
+        bm25_scores_by_query={"VINAMILK": {"B": 10.0, "C": 9.0}},
+    )
+
+    pool = await service.retrieve_kis_candidates(
+        text_query="boat",
+        text_top_k=2,
+        ocr_query="VINAMILK",
+        ocr_top_k=2,
+    )
+
+    assert milvus_store.search_calls[0][1] == 2
+    assert es_store.search_calls == [("VINAMILK", 4)]
+    assert pool.candidate_ids == ["A", "B", "C"]
+    assert pool.candidate_pool_size == 3
+    assert pool.text_candidate_count == 2
+    assert pool.ocr_candidate_count == 2
+    assert [hit.keyframe_id for hit in pool.results] == ["B", "A", "C"]
+    assert pool.results[0].stage1.source_modalities == ["text", "ocr"]
+    assert pool.results[1].stage1.source_modalities == ["text"]
+    assert pool.results[1].stage1.ocr.query_score == pytest.approx(0.0)
+
+
+async def test_kis_stage1_allows_ocr_only_candidate_retrieval():
+    es_hits = [
+        {
+            "keyframe_id": "A",
+            "ocr_text": "SAIGON",
+            "video_id": "V1",
+            "timestamp": 0.4,
+            "score": 7.5,
+        }
+    ]
+    mongo_docs = {
+        "A": {"video_id": "V1", "frame_idx": 10, "timestamp": 0.4, "thumbnail_path": "a.jpg"}
+    }
+    service, _, milvus_store, es_store, _ = _service(
+        es_hits=es_hits,
+        mongo_docs=mongo_docs,
+        ocr_texts_by_id={"A": "SAIGON"},
+        bm25_scores_by_query={"SAIGON": {"A": 7.5}},
+    )
+
+    pool = await service.retrieve_kis_candidates(
+        text_query=None,
+        text_top_k=5,
+        ocr_query="SAIGON",
+        ocr_top_k=1,
+    )
+
+    assert milvus_store.search_calls == []
+    assert es_store.search_calls == [("SAIGON", 4)]
+    assert pool.candidate_ids == ["A"]
+    assert pool.results[0].stage1.text is None
+    assert pool.results[0].stage1.ocr.query_score == pytest.approx(1.0)
+
+
+async def test_kis_stage2_text_subquery_reranks_candidate_pool_without_global_search_or_q0():
+    vector_rows = {
+        "A": {
+            "keyframe_id": "A",
+            "embedding": np.array([1.0, 0.0], dtype=np.float32),
+            "video_id": "V1",
+            "frame_idx": 10,
+            "timestamp": 0.4,
+        },
+        "B": {
+            "keyframe_id": "B",
+            "embedding": np.array([0.0, 1.0], dtype=np.float32),
+            "video_id": "V1",
+            "frame_idx": 20,
+            "timestamp": 0.8,
+        },
+    }
+    mongo_docs = {
+        "A": {"video_id": "V1", "frame_idx": 10, "timestamp": 0.4, "thumbnail_path": "a.jpg"},
+        "B": {"video_id": "V1", "frame_idx": 20, "timestamp": 0.8, "thumbnail_path": "b.jpg"},
+    }
+    service, encoder, milvus_store, _, _ = _service(
+        vector_rows=vector_rows,
+        mongo_docs=mongo_docs,
+        text_vectors_by_query={
+            "global q0": np.array([1.0, 0.0], dtype=np.float32),
+            "vertical": np.array([0.0, 1.0], dtype=np.float32),
+        },
+    )
+
+    results = await service.rerank_kis_candidates(
+        candidate_ids=["A", "B"],
+        queries=[KisQuery(query_index=0, type=QueryType.TEXT, text="vertical")],
+        final_top_k=2,
+    )
+
+    assert encoder.encode_text_calls == [["vertical"]]
+    assert milvus_store.search_calls == []
+    assert milvus_store.get_vectors_by_ids_calls == [["A", "B"]]
+    assert [hit.keyframe_id for hit in results] == ["B", "A"]
+    assert results[0].final_score == pytest.approx(1.0)
+    assert results[0].modalities["text"].queries[0].query == "vertical"
+
+
+async def test_kis_stage2_multiple_text_queries_use_text_geometric_mean():
+    vector_rows = {
+        "A": {
+            "keyframe_id": "A",
+            "embedding": np.array([1.0, 0.0], dtype=np.float32),
+            "video_id": "V1",
+            "frame_idx": 10,
+            "timestamp": 0.4,
+        },
+        "B": {
+            "keyframe_id": "B",
+            "embedding": np.array([0.0, 1.0], dtype=np.float32),
+            "video_id": "V1",
+            "frame_idx": 20,
+            "timestamp": 0.8,
+        },
+        "C": {
+            "keyframe_id": "C",
+            "embedding": np.array([1.0, 1.0], dtype=np.float32),
+            "video_id": "V1",
+            "frame_idx": 30,
+            "timestamp": 1.2,
+        },
+    }
+    mongo_docs = {
+        keyframe_id: {
+            "video_id": "V1",
+            "frame_idx": index * 10,
+            "timestamp": index * 0.4,
+            "thumbnail_path": f"{keyframe_id}.jpg",
+        }
+        for index, keyframe_id in enumerate(["A", "B", "C"], start=1)
+    }
+    service, _, _, _, _ = _service(
+        vector_rows=vector_rows,
+        mongo_docs=mongo_docs,
+        text_vectors_by_query={
+            "horizontal": np.array([1.0, 0.0], dtype=np.float32),
+            "vertical": np.array([0.0, 1.0], dtype=np.float32),
+        },
+    )
+
+    results = await service.rerank_kis_candidates(
+        candidate_ids=["A", "B", "C"],
+        queries=[
+            KisQuery(query_index=0, type=QueryType.TEXT, text="horizontal"),
+            KisQuery(query_index=1, type=QueryType.TEXT, text="vertical"),
+        ],
+        final_top_k=3,
+    )
+
+    assert [hit.keyframe_id for hit in results] == ["C", "A", "B"]
+    assert results[0].modalities["text"].score == pytest.approx(0.5)
+    assert [query.rank for query in results[0].modalities["text"].queries] == [2, 2]
+    assert [query.rank_percentile for query in results[0].modalities["text"].queries] == [
+        pytest.approx(0.5),
+        pytest.approx(0.5),
+    ]
+
+
+async def test_kis_stage2_multiple_ocr_queries_use_ocr_geometric_mean_without_global_search():
+    mongo_docs = {
+        "A": {"video_id": "V1", "frame_idx": 10, "timestamp": 0.4, "thumbnail_path": "a.jpg"},
+        "B": {"video_id": "V1", "frame_idx": 20, "timestamp": 0.8, "thumbnail_path": "b.jpg"},
+        "C": {"video_id": "V1", "frame_idx": 30, "timestamp": 1.2, "thumbnail_path": "c.jpg"},
+    }
+    service, _, _, es_store, _ = _service(
+        mongo_docs=mongo_docs,
+        ocr_texts_by_id={"A": "AAA", "B": "BBB", "C": "AAA BBB"},
+        bm25_scores_by_query={
+            "AAA": {"A": 10.0, "C": 7.0},
+            "BBB": {"B": 10.0, "C": 7.0},
+        },
+    )
+
+    results = await service.rerank_kis_candidates(
+        candidate_ids=["A", "B", "C"],
+        queries=[
+            KisQuery(query_index=0, type=QueryType.OCR, text="AAA"),
+            KisQuery(query_index=1, type=QueryType.OCR, text="BBB"),
+        ],
+        final_top_k=3,
+    )
+
+    assert es_store.search_calls == []
+    assert es_store.score_by_ids_calls == [("AAA", ["A", "B", "C"]), ("BBB", ["A", "B", "C"])]
+    assert [hit.keyframe_id for hit in results] == ["C", "A", "B"]
+    assert results[0].modalities["ocr"].score == pytest.approx(0.5)
+
+
+async def test_kis_stage2_text_and_ocr_fuses_active_modalities_with_final_geomean():
+    vector_rows = {
+        "semantic_only": {
+            "keyframe_id": "semantic_only",
+            "embedding": np.array([1.0, 0.0], dtype=np.float32),
+            "video_id": "V1",
+            "frame_idx": 10,
+            "timestamp": 0.4,
+        },
+        "balanced": {
+            "keyframe_id": "balanced",
+            "embedding": np.array([1.0, 1.0], dtype=np.float32),
+            "video_id": "V1",
+            "frame_idx": 20,
+            "timestamp": 0.8,
+        },
+        "ocr_only": {
+            "keyframe_id": "ocr_only",
+            "embedding": np.array([0.0, 1.0], dtype=np.float32),
+            "video_id": "V1",
+            "frame_idx": 30,
+            "timestamp": 1.2,
+        },
+    }
+    mongo_docs = {
+        keyframe_id: {
+            "video_id": "V1",
+            "frame_idx": index * 10,
+            "timestamp": index * 0.4,
+            "thumbnail_path": f"{keyframe_id}.jpg",
+        }
+        for index, keyframe_id in enumerate(["semantic_only", "balanced", "ocr_only"], start=1)
+    }
+    service, _, milvus_store, es_store, _ = _service(
+        mongo_docs=mongo_docs,
+        vector_rows=vector_rows,
+        ocr_texts_by_id={"semantic_only": "", "balanced": "VINAMILK", "ocr_only": "VINAMILK"},
+        bm25_scores_by_query={"VINAMILK": {"ocr_only": 10.0, "balanced": 8.0}},
+        text_vectors_by_query={"red shirt": np.array([1.0, 0.0], dtype=np.float32)},
+    )
+
+    results = await service.rerank_kis_candidates(
+        candidate_ids=["semantic_only", "balanced", "ocr_only"],
+        queries=[
+            KisQuery(query_index=0, type=QueryType.TEXT, text="red shirt"),
+            KisQuery(query_index=1, type=QueryType.OCR, text="VINAMILK"),
+        ],
+        final_top_k=3,
+    )
+
+    assert milvus_store.get_vectors_by_ids_calls == [["semantic_only", "balanced", "ocr_only"]]
+    assert es_store.score_by_ids_calls == [("VINAMILK", ["semantic_only", "balanced", "ocr_only"])]
+    assert [hit.keyframe_id for hit in results] == ["balanced", "semantic_only", "ocr_only"]
+    assert results[0].final_score == pytest.approx(0.5)
+    assert results[0].active_modalities == 2
+    assert 0 <= results[0].final_score <= 1
+    assert results[0].modalities["text"].queries[0].rank_percentile == pytest.approx(0.5)
+    assert results[0].modalities["ocr"].queries[0].query_score == pytest.approx(0.8)
+
+
+async def test_kis_stage2_rejects_final_top_k_larger_than_candidate_pool():
+    service, *_ = _service()
+
+    with pytest.raises(SearchServiceError) as exc_info:
+        await service.rerank_kis_candidates(
+            candidate_ids=["A"],
+            queries=[KisQuery(query_index=0, type=QueryType.TEXT, text="x")],
+            final_top_k=2,
+        )
+
+    assert exc_info.value.error_code == "invalid_kis_request"
+
+
+async def test_kis_stage2_rejects_empty_subqueries_without_fake_final_score():
+    service, *_ = _service()
+
+    with pytest.raises(SearchServiceError) as exc_info:
+        await service.rerank_kis_candidates(candidate_ids=["A"], queries=[], final_top_k=1)
+
+    assert "Stage 2 requires at least one subquery" in str(exc_info.value)
 
 
 async def test_search_by_image_encodes_with_vision_branch_and_searches_milvus():

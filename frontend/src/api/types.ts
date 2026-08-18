@@ -5,18 +5,105 @@
 // app/schemas/request/search.py: SearchRequest
 export type SearchMode = 'semantic' | 'ocr'
 
-// UI-only: which panel ModeSelector/App.tsx show. Distinct from SearchMode
-// because DANTE isn't a POST /api/search mode at all -- it's a wholly
-// different endpoint (POST /api/trake) with a wholly different request
-// shape (N ordered events, not one query string), so it can never be a
-// valid value for useSearch's `mode` state.
-export type AppMode = SearchMode | 'dante'
+// app/schemas/request/search.py: KisSearchRequest
+export type KisQueryType = 'text' | 'ocr'
+
+export interface KisQueryPayload {
+  type: KisQueryType
+  text: string
+}
+
+export interface KisCandidatePayload {
+  text_query?: string | null
+  text_top_k: number
+  ocr_query?: string | null
+  ocr_top_k: number
+}
+
+export interface KisRerankPayload {
+  candidate_ids: string[]
+  subqueries: KisQueryPayload[]
+  final_top_k: number
+}
+
+// UI state for the editable KIS Stage 2 subquery list.
+export interface KisQueryRow extends KisQueryPayload {
+  id: string
+}
+
+// UI-only: KIS uses the two-stage /api/search/kis/* flow, while TRAKE/DANTE
+// uses POST /api/trake with ordered event rows.
+export type AppMode = 'kis' | 'dante'
+
+export interface TextQueryScore {
+  query_index: number
+  query: string
+  raw_cosine: number
+  rank: number
+  rank_percentile: number
+}
+
+export interface OcrQueryScore {
+  query_index: number
+  query: string
+  raw_bm25: number
+  bm25_reference: number
+  bm25_normalized: number
+  coverage: number
+  query_score: number
+  rank: number
+  rank_percentile: number
+}
+
+export interface TextModalityScore {
+  geometric_mean: number
+  score: number
+  queries: TextQueryScore[]
+}
+
+export interface OcrModalityScore {
+  geometric_mean: number
+  score: number
+  queries: OcrQueryScore[]
+}
+
+export interface SearchModalities {
+  text?: TextModalityScore
+  ocr?: OcrModalityScore
+}
+
+export interface Stage1TextScore {
+  query: string
+  raw_cosine: number
+  rank: number
+}
+
+export interface Stage1OcrScore {
+  query: string
+  raw_bm25: number
+  bm25_reference: number
+  bm25_normalized: number
+  coverage: number
+  query_score: number
+  rank: number
+}
+
+export interface Stage1RetrievalScore {
+  source_modalities: KisQueryType[]
+  text?: Stage1TextScore
+  ocr?: Stage1OcrScore
+}
 
 // app/schemas/response/search.py: SearchHitResponse
 export interface SearchHit {
   keyframe_id: string
   video_id: string
   score: number
+  final_score?: number
+  active_modalities?: number
+  modalities?: SearchModalities
+  stage1?: Stage1RetrievalScore
+  candidate_pool_size?: number
   frame_idx: number
   timestamp: number
   thumbnail_path: string
@@ -26,6 +113,20 @@ export interface SearchHit {
 
 // app/schemas/response/search.py: SearchResponse
 export interface SearchResponse {
+  results: SearchHit[]
+}
+
+export interface KisCandidateResponse {
+  candidate_ids: string[]
+  candidate_pool_size: number
+  text_candidate_count: number
+  ocr_candidate_count: number
+  results: SearchHit[]
+}
+
+export interface KisRerankResponse {
+  candidate_pool_size: number
+  final_top_k: number
   results: SearchHit[]
 }
 

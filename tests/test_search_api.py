@@ -24,7 +24,13 @@ from app.api import search as search_api
 from app.api.errors import APIError, register_error_handling
 from app.dependencies import get_search_service
 from app.schemas.request.search import MAX_UPLOAD_SIZE_BYTES
-from app.services.search_service import SearchHit, SearchServiceError
+from app.services.kis_scoring import (
+    OcrModalityScore,
+    OcrQueryScore,
+    Stage1RetrievalScore,
+    Stage1TextScore,
+)
+from app.services.search_service import KisCandidatePool, SearchHit, SearchServiceError
 
 
 def _png_bytes(size: tuple[int, int] = (8, 8), color: tuple[int, int, int] = (10, 20, 30)) -> bytes:
@@ -55,14 +61,55 @@ def _decompression_bomb_png_bytes() -> bytes:
 
 
 class _FakeSearchService:
-    def __init__(self, hits: list[SearchHit] | None = None, error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        hits: list[SearchHit] | None = None,
+        candidate_pool: KisCandidatePool | None = None,
+        error: Exception | None = None,
+    ) -> None:
         self._hits = hits or []
+        self._candidate_pool = candidate_pool or KisCandidatePool(
+            candidate_ids=[],
+            text_candidate_count=0,
+            ocr_candidate_count=0,
+            results=[],
+        )
         self._error = error
         self.search_calls: list[tuple[str, str, int]] = []
+        self.retrieve_kis_candidates_calls: list[tuple[str | None, int, str | None, int]] = []
+        self.rerank_kis_candidates_calls: list[
+            tuple[list[str], list[tuple[int, str, str]], int]
+        ] = []
         self.search_by_image_calls: list[int] = []
 
     async def search(self, query: str, mode: str, top_k: int) -> list[SearchHit]:
         self.search_calls.append((query, mode, top_k))
+        if self._error is not None:
+            raise self._error
+        return self._hits
+
+    async def retrieve_kis_candidates(
+        self,
+        text_query: str | None,
+        text_top_k: int,
+        ocr_query: str | None,
+        ocr_top_k: int,
+    ) -> KisCandidatePool:
+        self.retrieve_kis_candidates_calls.append((text_query, text_top_k, ocr_query, ocr_top_k))
+        if self._error is not None:
+            raise self._error
+        return self._candidate_pool
+
+    async def rerank_kis_candidates(
+        self, candidate_ids, queries, final_top_k: int
+    ) -> list[SearchHit]:
+        self.rerank_kis_candidates_calls.append(
+            (
+                list(candidate_ids),
+                [(query.query_index, query.type.value, query.text) for query in queries],
+                final_top_k,
+            )
+        )
         if self._error is not None:
             raise self._error
         return self._hits
@@ -93,6 +140,58 @@ _ONE_HIT = [
         thumbnail_path="t.jpg",
     )
 ]
+
+_ONE_KIS_HIT = [
+    SearchHit(
+        keyframe_id="L21_V001_f10",
+        video_id="L21_V001",
+        score=1.0,
+        frame_idx=10,
+        timestamp=0.4,
+        thumbnail_path="t.jpg",
+        final_score=1.0,
+        active_modalities=1,
+        modalities={
+            "ocr": OcrModalityScore(
+                geometric_mean=1.0,
+                score=1.0,
+                queries=[
+                    OcrQueryScore(
+                        query_index=0,
+                        query="VINAMILK",
+                        raw_bm25=7.5,
+                        bm25_reference=7.5,
+                        bm25_normalized=1.0,
+                        coverage=1.0,
+                        query_score=1.0,
+                        rank=1,
+                        rank_percentile=1.0,
+                    )
+                ],
+            )
+        },
+    )
+]
+
+_ONE_CANDIDATE_POOL = KisCandidatePool(
+    candidate_ids=["L21_V001_f10"],
+    text_candidate_count=1,
+    ocr_candidate_count=0,
+    results=[
+        SearchHit(
+            keyframe_id="L21_V001_f10",
+            video_id="L21_V001",
+            score=0.91,
+            frame_idx=10,
+            timestamp=0.4,
+            thumbnail_path="t.jpg",
+            stage1=Stage1RetrievalScore(
+                source_modalities=["text"],
+                text=Stage1TextScore(query="a man in a red shirt", raw_cosine=0.91, rank=1),
+            ),
+        )
+    ],
+)
 
 
 def test_search_returns_200_with_mapped_hits():
@@ -222,6 +321,147 @@ def test_search_logs_zero_results_and_correct_mode_for_ocr(caplog):
     message = records[0].getMessage()
     assert "mode=ocr" in message
     assert "num_results=0" in message
+
+
+def test_kis_candidate_retrieval_accepts_stage1_shape_and_uses_candidate_defaults():
+    service = _FakeSearchService(candidate_pool=_ONE_CANDIDATE_POOL)
+    client = _client(service)
+
+    response = client.post(
+        "/api/search/kis/candidates",
+        json={"text_query": "a man in a red shirt"},
+    )
+
+    assert response.status_code == 200
+    assert service.retrieve_kis_candidates_calls == [("a man in a red shirt", 300, None, 100)]
+
+
+def test_kis_candidate_retrieval_returns_pool_metadata_and_stage1_breakdown():
+    service = _FakeSearchService(candidate_pool=_ONE_CANDIDATE_POOL)
+    client = _client(service)
+
+    response = client.post(
+        "/api/search/kis/candidates",
+        json={"text_query": "a man in a red shirt", "text_top_k": 50},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["candidate_ids"] == ["L21_V001_f10"]
+    assert body["candidate_pool_size"] == 1
+    assert body["text_candidate_count"] == 1
+    hit = body["results"][0]
+    assert "final_score" not in hit
+    assert hit["stage1"] == {
+        "source_modalities": ["text"],
+        "text": {"query": "a man in a red shirt", "raw_cosine": 0.91, "rank": 1},
+    }
+
+
+def test_kis_candidate_retrieval_rejects_blank_stage1_before_reaching_service():
+    service = _FakeSearchService()
+    client = _client(service)
+
+    response = client.post(
+        "/api/search/kis/candidates",
+        json={"text_query": "  ", "ocr_query": ""},
+    )
+
+    assert response.status_code == 422
+    assert service.retrieve_kis_candidates_calls == []
+
+
+def test_kis_rerank_accepts_candidate_pool_subqueries_and_final_top_k():
+    service = _FakeSearchService(hits=_ONE_KIS_HIT)
+    client = _client(service)
+
+    response = client.post(
+        "/api/search/kis/rerank",
+        json={
+            "candidate_ids": ["A", "B"],
+            "subqueries": [
+                {"type": "text", "text": "night scene"},
+                {"type": "ocr", "text": "VINAMILK"},
+            ],
+            "final_top_k": 2,
+        },
+    )
+
+    assert response.status_code == 200
+    assert service.rerank_kis_candidates_calls == [
+        (
+            ["A", "B"],
+            [(0, "text", "night scene"), (1, "ocr", "VINAMILK")],
+            2,
+        )
+    ]
+    assert response.json()["candidate_pool_size"] == 2
+    assert response.json()["final_top_k"] == 2
+
+
+def test_kis_rerank_returns_nested_score_breakdown():
+    service = _FakeSearchService(hits=_ONE_KIS_HIT)
+    client = _client(service)
+
+    response = client.post(
+        "/api/search/kis/rerank",
+        json={
+            "candidate_ids": ["L21_V001_f10"],
+            "subqueries": [{"type": "ocr", "text": "VINAMILK"}],
+            "final_top_k": 1,
+        },
+    )
+
+    assert response.status_code == 200
+    hit = response.json()["results"][0]
+    assert hit["score"] == 1.0
+    assert hit["final_score"] == 1.0
+    assert hit["active_modalities"] == 1
+    assert hit["modalities"]["ocr"]["queries"][0] == {
+        "query_index": 0,
+        "query": "VINAMILK",
+        "raw_bm25": 7.5,
+        "bm25_reference": 7.5,
+        "bm25_normalized": 1.0,
+        "coverage": 1.0,
+        "query_score": 1.0,
+        "rank": 1,
+        "rank_percentile": 1.0,
+    }
+
+
+def test_kis_rerank_rejects_final_top_k_above_candidate_pool_before_reaching_service():
+    service = _FakeSearchService(hits=[])
+    client = _client(service)
+
+    response = client.post(
+        "/api/search/kis/rerank",
+        json={
+            "candidate_ids": ["A"],
+            "subqueries": [{"type": "text", "text": "x"}],
+            "final_top_k": 2,
+        },
+    )
+
+    assert response.status_code == 422
+    assert service.rerank_kis_candidates_calls == []
+
+
+def test_kis_rerank_rejects_unknown_subquery_type_before_reaching_service():
+    service = _FakeSearchService(hits=[])
+    client = _client(service)
+
+    response = client.post(
+        "/api/search/kis/rerank",
+        json={
+            "candidate_ids": ["A"],
+            "subqueries": [{"type": "object", "text": "person"}],
+            "final_top_k": 1,
+        },
+    )
+
+    assert response.status_code == 422
+    assert service.rerank_kis_candidates_calls == []
 
 
 def test_search_does_not_log_on_service_error(caplog):

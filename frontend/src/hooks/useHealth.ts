@@ -3,8 +3,8 @@ import { getHealth } from '../api/client'
 import type { HealthStatus } from '../api/types'
 
 // plan §P1.8, PRD T5: polls GET /health so the UI can show a degraded-mode
-// banner and disable OCR mode when Elasticsearch is unreachable, without a
-// person having to submit a search first to find out.
+// banner and disable OCR query-row selection when Elasticsearch is
+// unreachable, without a person having to submit a search first to find out.
 const POLL_INTERVAL_MS = 30_000
 
 const UNREACHABLE_STATUS: HealthStatus = {

@@ -17,6 +17,9 @@ from elasticsearch import AsyncElasticsearch
 from elasticsearch.helpers import async_bulk, async_scan
 
 _ANALYZER_NAME = "vi_analyzer"
+_OCR_FUZZINESS = 1
+_OCR_FUZZY_PREFIX_LENGTH = 1
+_OCR_FUZZY_MAX_EXPANSIONS = 50
 
 # Shared between EsStore (OCR) and AsrEsStore (ASR transcripts, P0.11a) --
 # both indexes need the same Vietnamese word-segmentation + no-diacritics
@@ -111,15 +114,58 @@ class EsStore:
 
     async def search(self, query_text: str, top_k: int, video_id: str | None = None) -> list[dict]:
         """Full-text OCR search. `video_id` filter runs inside ES, never after the fact."""
-        query: dict = {"match": {"ocr_text": query_text}}
+        query = _ocr_match_query(query_text)
         if video_id is not None:
             query = {"bool": {"must": [query], "filter": [{"term": {"video_id": video_id}}]}}
 
         response = await self._client.search(index=self._index_name, query=query, size=top_k)
         return [hit["_source"] | {"score": hit["_score"]} for hit in response["hits"]["hits"]]
 
+    async def score_by_ids(self, query_text: str, keyframe_ids: Sequence[str]) -> dict[str, float]:
+        """BM25 scores for one OCR query against an existing candidate pool.
+
+        Elasticsearch returns only candidates that match the `match` query.
+        Callers assign raw score 0 to every requested id omitted here.
+        """
+        if not keyframe_ids:
+            return {}
+        unique_ids = list(dict.fromkeys(keyframe_ids))
+        query = {
+            "bool": {
+                "must": [_ocr_match_query(query_text)],
+                "filter": [{"ids": {"values": unique_ids}}],
+            }
+        }
+        response = await self._client.search(
+            index=self._index_name,
+            query=query,
+            size=len(unique_ids),
+            source_includes=["keyframe_id"],
+        )
+        return {
+            hit["_source"]["keyframe_id"]: float(hit["_score"]) for hit in response["hits"]["hits"]
+        }
+
     async def close(self) -> None:
         await self._client.close()
+
+
+def _ocr_match_query(query_text: str) -> dict[str, dict[str, dict[str, object]]]:
+    """OCR candidate generation tolerates one-character OCR mistakes.
+
+    The KIS coverage step still rescored matched candidates afterward, so
+    this fuzzy query only widens the pool enough for cases like OpenAI/OpenAl.
+    """
+    return {
+        "match": {
+            "ocr_text": {
+                "query": query_text,
+                "fuzziness": _OCR_FUZZINESS,
+                "prefix_length": _OCR_FUZZY_PREFIX_LENGTH,
+                "max_expansions": _OCR_FUZZY_MAX_EXPANSIONS,
+            }
+        }
+    }
 
 
 @dataclass(frozen=True)

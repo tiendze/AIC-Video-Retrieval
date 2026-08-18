@@ -4,6 +4,9 @@
 export const DEFAULT_TOP_K = 20
 export const MIN_TOP_K = 1
 export const MAX_TOP_K = 100
+export const DEFAULT_TEXT_CANDIDATE_K = 300
+export const DEFAULT_OCR_CANDIDATE_K = 100
+export const MAX_CANDIDATE_K = 1000
 
 // Mirrors configs/search/trake.yaml -- POST /api/trake ranks N-keyframe
 // sequences, a different unit than /api/search's per-keyframe top_k, so it
@@ -11,8 +14,3 @@ export const MAX_TOP_K = 100
 // submission-cap ceiling for both.
 export const TRAKE_DEFAULT_TOP_K = 10
 export const TRAKE_DEFAULT_THRESHOLD = 0
-
-// Semantic mode's supplementary OCR conditions (frontend-only for now --
-// POST /api/search does not accept ocr_queries yet). Frontend-chosen cap to
-// keep the row list usable, not a backend constraint.
-export const MAX_OCR_QUERIES = 10

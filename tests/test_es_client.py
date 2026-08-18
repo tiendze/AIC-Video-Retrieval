@@ -35,6 +35,8 @@ class _FakeAsyncElasticsearch:
     def __init__(self, *args, **kwargs) -> None:
         self.indices = _FakeIndicesClient()
         self.delete_by_query_calls: list[dict] = []
+        self.search_calls: list[dict] = []
+        self.search_hits: list[dict] = []
         self.ping_result = True
         self.mget_docs: dict[str, dict] = {}
 
@@ -55,6 +57,10 @@ class _FakeAsyncElasticsearch:
                 for doc_id in ids
             ]
         }
+
+    async def search(self, **kwargs):
+        self.search_calls.append(kwargs)
+        return {"hits": {"hits": self.search_hits}}
 
 
 def _store(monkeypatch) -> AsrEsStore:
@@ -141,3 +147,69 @@ async def test_get_by_ids_returns_empty_dict_for_empty_input(monkeypatch):
     store = _ocr_store(monkeypatch)
 
     assert await store.get_by_ids([]) == {}
+
+
+async def test_ocr_search_uses_fuzzy_match_for_candidate_generation(monkeypatch):
+    store = _ocr_store(monkeypatch)
+
+    await store.search("OpenAI", top_k=5)
+
+    assert store._client.search_calls == [
+        {
+            "index": "ocr_keyframes",
+            "query": {
+                "match": {
+                    "ocr_text": {
+                        "query": "OpenAI",
+                        "fuzziness": 1,
+                        "prefix_length": 1,
+                        "max_expansions": 50,
+                    }
+                }
+            },
+            "size": 5,
+        }
+    ]
+
+
+async def test_score_by_ids_scores_one_ocr_query_inside_candidate_pool(monkeypatch):
+    store = _ocr_store(monkeypatch)
+    store._client.search_hits = [
+        {"_source": {"keyframe_id": "A"}, "_score": 12.5},
+        {"_source": {"keyframe_id": "B"}, "_score": 3.0},
+    ]
+
+    result = await store.score_by_ids("VINAMILK", ["A", "B", "A"])
+
+    assert result == {"A": 12.5, "B": 3.0}
+    assert store._client.search_calls == [
+        {
+            "index": "ocr_keyframes",
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "match": {
+                                "ocr_text": {
+                                    "query": "VINAMILK",
+                                    "fuzziness": 1,
+                                    "prefix_length": 1,
+                                    "max_expansions": 50,
+                                }
+                            }
+                        }
+                    ],
+                    "filter": [{"ids": {"values": ["A", "B"]}}],
+                }
+            },
+            "size": 2,
+            "source_includes": ["keyframe_id"],
+        }
+    ]
+
+
+async def test_score_by_ids_returns_empty_dict_for_empty_input(monkeypatch):
+    store = _ocr_store(monkeypatch)
+
+    assert await store.score_by_ids("VINAMILK", []) == {}
+    assert store._client.search_calls == []

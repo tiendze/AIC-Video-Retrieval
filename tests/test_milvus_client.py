@@ -248,3 +248,41 @@ def test_get_vectors_for_video_returns_empty_list_when_no_rows_match(monkeypatch
     rows = store.get_vectors_for_video("L21_V999", s_v=0, e_v=5)
 
     assert rows == []
+
+
+def test_get_vectors_by_ids_fetches_embeddings_and_metadata_by_primary_key(monkeypatch):
+    store = _keyframe_store(monkeypatch)
+    store._client.seeded_rows = [
+        {
+            "keyframe_id": "A",
+            "embedding": [1.0, 0.0],
+            "video_id": "V1",
+            "global_index": 1,
+            "frame_idx": 10,
+            "timestamp": 0.4,
+        }
+    ]
+
+    rows = store.get_vectors_by_ids(["A", "B", "A"])
+
+    assert set(rows) == {"A"}
+    assert isinstance(rows["A"]["embedding"], np.ndarray)
+    assert rows["A"]["embedding"].dtype == np.float32
+    sent = store._client.query_calls[0]
+    assert sent["collection_name"] == "keyframes_beit3_base_itc"
+    assert sent["filter"] == 'keyframe_id in ["A", "B"]'
+    assert set(sent["output_fields"]) == {
+        "keyframe_id",
+        "embedding",
+        "video_id",
+        "global_index",
+        "frame_idx",
+        "timestamp",
+    }
+
+
+def test_get_vectors_by_ids_returns_empty_dict_for_empty_input(monkeypatch):
+    store = _keyframe_store(monkeypatch)
+
+    assert store.get_vectors_by_ids([]) == {}
+    assert store._client.query_calls == []

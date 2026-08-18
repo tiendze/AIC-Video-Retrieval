@@ -5,6 +5,37 @@
 default_top_k: 20
 max_top_k: 100
 
+# KIS Stage 1 candidate-pool controls. These are intentionally separate from
+# max_top_k: operators may retrieve a high-recall pool (for example 300 text
+# candidates + 100 OCR candidates), then choose a contest-sized final Top-K
+# only after the pool is visible.
+default_text_candidate_k: 300
+default_ocr_candidate_k: 100
+max_candidate_k: 1000
+
+# Textual KIS V1 candidate generation. Display top_k remains capped by the
+# AIC submission limit above, but KIS retrieval intentionally pulls a deeper
+# per-query pool before union + rescoring.
+kis_candidate_multiplier: 5
+kis_candidate_min: 100
+
+# KIS rank-percentile fusion. Raw Text cosine and OCR query score are only
+# used to rank candidates per query; rank percentiles are fused with a
+# geometric mean in log-space, using this epsilon only to avoid log(0).
+kis_geomean_epsilon: 0.00000001
+
+# Per-query OCR BM25 normalization. If fewer than this many positive BM25
+# scores are retrieved for a query, KIS uses max(score) instead of P95.
+kis_bm25_percentile: 95
+kis_bm25_percentile_min_samples: 20
+
+# OCR fuzzy coverage. Numeric tokens are always exact-match only; these
+# thresholds apply to short non-numeric tokens and longer words.
+kis_ocr_short_token_max_length: 3
+kis_ocr_short_token_threshold: 0.95
+kis_ocr_long_token_threshold: 0.8
+kis_ocr_ngram_max_tokens: 2
+
 # POST /api/search/image upload guard (plan §P1.1, CLAUDE.md §7: validate
 # size + MIME on any uploaded image, never store it permanently).
 max_upload_size_bytes: 10485760  # 10 MiB

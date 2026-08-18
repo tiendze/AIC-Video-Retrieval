@@ -1,63 +1,256 @@
-import { act, renderHook } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { act, renderHook, waitFor } from '@testing-library/react'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { rerankKisCandidates, retrieveKisCandidates } from '../api/client'
 import { useSearch } from './useSearch'
 
-// RED reproducer for Semantic mode's supplementary OCR conditions (plan:
-// "OCR Queries · optional" rows alongside the primary Semantic Query).
-// `ocrQueries` lives in the same hook as `query`/`mode`/`topK` so the
-// eventual backend wiring (POST /api/search ocr_queries param) is a change
-// to this one hook's runSearch call, not a cross-component rewire.
-// Rows are keyed by a stable `id` (not array index) -- mirrors
-// useTrake.ts's `events` array shape but swaps index-addressing for
-// id-addressing since OcrQueryList needs a stable React key.
-describe('useSearch OCR queries', () => {
-  it('starts with a single blank OCR row', () => {
-    const { result } = renderHook(() => useSearch())
+vi.mock('../api/client', () => ({
+  retrieveKisCandidates: vi.fn().mockResolvedValue({
+    candidate_ids: [],
+    candidate_pool_size: 0,
+    text_candidate_count: 0,
+    ocr_candidate_count: 0,
+    results: [],
+  }),
+  rerankKisCandidates: vi.fn().mockResolvedValue({
+    candidate_pool_size: 0,
+    final_top_k: 0,
+    results: [],
+  }),
+  searchByImage: vi.fn().mockResolvedValue({ results: [] }),
+}))
 
-    expect(result.current.ocrQueries).toHaveLength(1)
-    expect(result.current.ocrQueries[0]?.text).toBe('')
+describe('useSearch staged KIS flow', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(retrieveKisCandidates).mockResolvedValue({
+      candidate_ids: [],
+      candidate_pool_size: 0,
+      text_candidate_count: 0,
+      ocr_candidate_count: 0,
+      results: [],
+    })
+    vi.mocked(rerankKisCandidates).mockResolvedValue({
+      candidate_pool_size: 0,
+      final_top_k: 0,
+      results: [],
+    })
   })
 
-  it('updates only the targeted row via setOcrQuery', () => {
+  it('starts with blank Stage 1 controls and no Stage 2 subqueries', () => {
     const { result } = renderHook(() => useSearch())
-    const firstId = result.current.ocrQueries[0]!.id
 
-    act(() => result.current.addOcrQuery())
-    act(() => result.current.setOcrQuery(firstId, 'VINMART'))
-
-    expect(result.current.ocrQueries.map((q) => q.text)).toEqual(['VINMART', ''])
+    expect(result.current.globalTextQuery).toBe('')
+    expect(result.current.ocrQuery).toBe('')
+    expect(result.current.textCandidateK).toBe(300)
+    expect(result.current.ocrCandidateK).toBe(100)
+    expect(result.current.stage2Queries).toEqual([])
+    expect(result.current.candidatePool).toBeNull()
   })
 
-  it('appends a blank row with a new unique id via addOcrQuery', () => {
+  it('edits Stage 2 rows independently and allows removing all constraints', () => {
     const { result } = renderHook(() => useSearch())
-    const firstId = result.current.ocrQueries[0]!.id
 
-    act(() => result.current.addOcrQuery())
+    act(() => result.current.addStage2Query())
+    const firstId = result.current.stage2Queries[0]!.id
+    act(() => result.current.setStage2QueryText(firstId, 'night scene'))
+    act(() => result.current.setStage2QueryType(firstId, 'ocr'))
+    act(() => result.current.removeStage2Query(firstId))
 
-    expect(result.current.ocrQueries).toHaveLength(2)
-    expect(result.current.ocrQueries[1]?.id).not.toBe(firstId)
-    expect(result.current.ocrQueries[1]?.text).toBe('')
+    expect(result.current.stage2Queries).toEqual([])
   })
 
-  it('removes the row with the given id via removeOcrQuery', () => {
+  it('clears Stage 2 subqueries when a Stage 1 input changes', () => {
     const { result } = renderHook(() => useSearch())
-    const firstId = result.current.ocrQueries[0]!.id
-    act(() => result.current.addOcrQuery())
-    act(() => result.current.setOcrQuery(firstId, 'a'))
-    const secondId = result.current.ocrQueries[1]!.id
-    act(() => result.current.setOcrQuery(secondId, 'b'))
 
-    act(() => result.current.removeOcrQuery(firstId))
+    act(() => result.current.addStage2Query())
+    const firstId = result.current.stage2Queries[0]!.id
+    act(() => result.current.setStage2QueryText(firstId, 'old constraint'))
+    act(() => result.current.setGlobalTextQuery('new global q0'))
 
-    expect(result.current.ocrQueries).toEqual([{ id: secondId, text: 'b' }])
+    expect(result.current.stage2Queries).toEqual([])
+    expect(result.current.candidatePool).toBeNull()
   })
 
-  it('never removes the last remaining row', () => {
+  it('sends Stage 1 Text Q0 and optional OCR with independent candidate counts', () => {
     const { result } = renderHook(() => useSearch())
-    const firstId = result.current.ocrQueries[0]!.id
 
-    act(() => result.current.removeOcrQuery(firstId))
+    act(() => result.current.setGlobalTextQuery('  people on a boat  '))
+    act(() => result.current.setTextCandidateK(300))
+    act(() => result.current.setOcrQuery(' SAIGON '))
+    act(() => result.current.setOcrCandidateK(100))
+    act(() => result.current.retrieveCandidates())
 
-    expect(result.current.ocrQueries).toHaveLength(1)
+    expect(retrieveKisCandidates).toHaveBeenCalledWith(
+      {
+        text_query: 'people on a boat',
+        text_top_k: 300,
+        ocr_query: 'SAIGON',
+        ocr_top_k: 100,
+      },
+      expect.any(AbortSignal),
+    )
+  })
+
+  it('stores the full Stage 1 pool and reranks that original pool after subquery changes', async () => {
+    vi.mocked(retrieveKisCandidates).mockResolvedValueOnce({
+      candidate_ids: ['A', 'B', 'C'],
+      candidate_pool_size: 3,
+      text_candidate_count: 2,
+      ocr_candidate_count: 2,
+      results: [
+        {
+          keyframe_id: 'A',
+          video_id: 'V1',
+          score: 0.9,
+          frame_idx: 10,
+          timestamp: 0.4,
+          thumbnail_path: 'a.jpg',
+          thumbnail_url: '/api/keyframes/A/thumbnail',
+          image_url: '/api/keyframes/A/image',
+          stage1: { source_modalities: ['text'] },
+        },
+        {
+          keyframe_id: 'B',
+          video_id: 'V1',
+          score: 0.8,
+          frame_idx: 20,
+          timestamp: 0.8,
+          thumbnail_path: 'b.jpg',
+          thumbnail_url: '/api/keyframes/B/thumbnail',
+          image_url: '/api/keyframes/B/image',
+          stage1: { source_modalities: ['text', 'ocr'] },
+        },
+        {
+          keyframe_id: 'C',
+          video_id: 'V1',
+          score: 1,
+          frame_idx: 30,
+          timestamp: 1.2,
+          thumbnail_path: 'c.jpg',
+          thumbnail_url: '/api/keyframes/C/thumbnail',
+          image_url: '/api/keyframes/C/image',
+          stage1: { source_modalities: ['ocr'] },
+        },
+      ],
+    })
+    vi.mocked(rerankKisCandidates)
+      .mockResolvedValueOnce({
+        candidate_pool_size: 3,
+        final_top_k: 1,
+        results: [
+          {
+            keyframe_id: 'B',
+            video_id: 'V1',
+            score: 1,
+            final_score: 1,
+            active_modalities: 1,
+            modalities: { text: { geometric_mean: 1, score: 1, queries: [] } },
+            frame_idx: 20,
+            timestamp: 0.8,
+            thumbnail_path: 'b.jpg',
+            thumbnail_url: '/api/keyframes/B/thumbnail',
+            image_url: '/api/keyframes/B/image',
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        candidate_pool_size: 3,
+        final_top_k: 1,
+        results: [
+          {
+            keyframe_id: 'C',
+            video_id: 'V1',
+            score: 1,
+            final_score: 1,
+            active_modalities: 2,
+            modalities: {
+              text: { geometric_mean: 1, score: 1, queries: [] },
+              ocr: { geometric_mean: 1, score: 1, queries: [] },
+            },
+            frame_idx: 30,
+            timestamp: 1.2,
+            thumbnail_path: 'c.jpg',
+            thumbnail_url: '/api/keyframes/C/thumbnail',
+            image_url: '/api/keyframes/C/image',
+          },
+        ],
+      })
+    const { result } = renderHook(() => useSearch())
+
+    act(() => result.current.setGlobalTextQuery('boat'))
+    act(() => result.current.retrieveCandidates())
+    await waitFor(() => expect(result.current.candidatePool?.candidateIds).toEqual(['A', 'B', 'C']))
+
+    act(() => result.current.addStage2Query())
+    const firstId = result.current.stage2Queries[0]!.id
+    act(() => result.current.setStage2QueryText(firstId, 'night'))
+    act(() => result.current.setFinalTopK(1))
+    act(() => result.current.rerankCandidates())
+    await waitFor(() => expect(rerankKisCandidates).toHaveBeenCalledTimes(1))
+
+    act(() => result.current.addStage2Query())
+    const secondId = result.current.stage2Queries[1]!.id
+    act(() => result.current.setStage2QueryType(secondId, 'ocr'))
+    act(() => result.current.setStage2QueryText(secondId, 'SAIGON'))
+    act(() => result.current.rerankCandidates())
+    await waitFor(() => expect(rerankKisCandidates).toHaveBeenCalledTimes(2))
+
+    expect(rerankKisCandidates).toHaveBeenNthCalledWith(
+      1,
+      {
+        candidate_ids: ['A', 'B', 'C'],
+        subqueries: [{ type: 'text', text: 'night' }],
+        final_top_k: 1,
+      },
+      expect.any(AbortSignal),
+    )
+    expect(rerankKisCandidates).toHaveBeenNthCalledWith(
+      2,
+      {
+        candidate_ids: ['A', 'B', 'C'],
+        subqueries: [
+          { type: 'text', text: 'night' },
+          { type: 'ocr', text: 'SAIGON' },
+        ],
+        final_top_k: 1,
+      },
+      expect.any(AbortSignal),
+    )
+    await waitFor(() =>
+      expect(result.current.results[0]?.stage1?.source_modalities).toEqual(['ocr']),
+    )
+  })
+
+  it('does not call Stage 2 rerank when there are no subqueries', async () => {
+    vi.mocked(retrieveKisCandidates).mockResolvedValueOnce({
+      candidate_ids: ['A'],
+      candidate_pool_size: 1,
+      text_candidate_count: 1,
+      ocr_candidate_count: 0,
+      results: [
+        {
+          keyframe_id: 'A',
+          video_id: 'V1',
+          score: 0.9,
+          frame_idx: 10,
+          timestamp: 0.4,
+          thumbnail_path: 'a.jpg',
+          thumbnail_url: '/api/keyframes/A/thumbnail',
+          image_url: '/api/keyframes/A/image',
+          stage1: { source_modalities: ['text'] },
+        },
+      ],
+    })
+    const { result } = renderHook(() => useSearch())
+
+    act(() => result.current.setGlobalTextQuery('boat'))
+    act(() => result.current.retrieveCandidates())
+    await waitFor(() => expect(result.current.candidatePool?.candidatePoolSize).toBe(1))
+    act(() => result.current.rerankCandidates())
+
+    expect(rerankKisCandidates).not.toHaveBeenCalled()
+    expect(result.current.error).toBe(
+      'Add at least one Stage 2 constraint to calculate final reranking',
+    )
   })
 })

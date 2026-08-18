@@ -1,32 +1,48 @@
 import { useCallback, useRef, useState } from 'react'
-import { DEFAULT_TOP_K } from '../api/constants'
-import { search as searchApi, searchByImage as searchByImageApi } from '../api/client'
+import {
+  DEFAULT_OCR_CANDIDATE_K,
+  DEFAULT_TEXT_CANDIDATE_K,
+  DEFAULT_TOP_K,
+} from '../api/constants'
+import {
+  rerankKisCandidates as rerankKisCandidatesApi,
+  retrieveKisCandidates as retrieveKisCandidatesApi,
+  searchByImage as searchByImageApi,
+} from '../api/client'
 import { isAbortError, messageFor } from '../api/requestHelpers'
-import type { SearchHit, SearchMode } from '../api/types'
+import type { KisQueryPayload, KisQueryRow, KisQueryType, SearchHit } from '../api/types'
 
-export interface OcrQueryRow {
-  id: string
-  text: string
+export interface KisCandidatePoolState {
+  candidateIds: string[]
+  candidatePoolSize: number
+  textCandidateCount: number
+  ocrCandidateCount: number
+  hits: SearchHit[]
 }
 
 export interface UseSearchResult {
+  globalTextQuery: string
+  setGlobalTextQuery: (query: string) => void
+  textCandidateK: number
+  setTextCandidateK: (topK: number) => void
+  ocrQuery: string
+  setOcrQuery: (query: string) => void
+  ocrCandidateK: number
+  setOcrCandidateK: (topK: number) => void
+  candidatePool: KisCandidatePoolState | null
+  stage2Queries: KisQueryRow[]
+  setStage2QueryText: (id: string, text: string) => void
+  setStage2QueryType: (id: string, type: KisQueryType) => void
+  addStage2Query: () => void
+  removeStage2Query: (id: string) => void
+  finalTopK: number
+  setFinalTopK: (topK: number) => void
+  primaryTextQuery: string
+  // Compatibility helpers for QUEST/WebImageSearch: they operate on the
+  // global Text Q0, while Stage 2 has its own independent subquery rows.
   query: string
   setQuery: (query: string) => void
-  mode: SearchMode
-  setMode: (mode: SearchMode) => void
-  // Semantic mode's supplementary OCR conditions (frontend UI + state only
-  // -- POST /api/search does not accept ocr_queries yet, so runSearch below
-  // does not read this). Rows are keyed by a stable `id`, not array index,
-  // because OcrQueryList needs a React key that survives removing a row
-  // from the middle of the list without reassigning a surviving row's
-  // focus/caret to the wrong input.
-  ocrQueries: OcrQueryRow[]
-  setOcrQuery: (id: string, text: string) => void
-  addOcrQuery: () => void
-  removeOcrQuery: (id: string) => void
-  // Was hard-coded to DEFAULT_TOP_K with no UI control -- results always
-  // capped at 20 regardless of how many the backend could return (up to
-  // max_top_k=100). Now user-adjustable via TopKControl.
+  // Shared with non-KIS features still using a simple Top-K.
   topK: number
   setTopK: (topK: number) => void
   results: SearchHit[]
@@ -51,47 +67,99 @@ export interface UseSearchResult {
   // in the same click, not whatever `query` still held from the render
   // before `setQuery` was called.
   runSearch: (overrideQuery?: string) => void
+  retrieveCandidates: (overrideQuery?: string) => void
+  rerankCandidates: () => void
   runImageSearch: (file: Blob) => void
 }
 
-// `query` and `mode` are independent state -- switching mode can never
-// touch `query` (plan §P1.6 invariant: "Đổi mode không mất truy vấn đang
-// gõ"). AbortController cancels an in-flight request when a newer one
-// starts, so a slow first response can't overwrite a later one's results.
-let ocrRowIdCounter = 0
-function nextOcrRowId(): string {
-  ocrRowIdCounter += 1
-  return `ocr-${ocrRowIdCounter}`
+// KIS Stage 2 rows are keyed by a stable id so removing a middle row never
+// re-associates focus/caret with the wrong input. AbortController cancels
+// an in-flight request when a newer one starts, so a slow first response
+// can't overwrite a later one's results.
+let kisRowIdCounter = 0
+function nextKisRowId(): string {
+  kisRowIdCounter += 1
+  return `kis-${kisRowIdCounter}`
+}
+
+function activePayload(rows: KisQueryRow[]): KisQueryPayload[] {
+  return rows
+    .map((row) => ({ type: row.type, text: row.text.trim() }))
+    .filter((row) => row.text.length > 0)
 }
 
 export function useSearch(): UseSearchResult {
-  const [query, setQuery] = useState('')
-  const [mode, setMode] = useState<SearchMode>('semantic')
-  const [topK, setTopK] = useState(DEFAULT_TOP_K)
+  const [globalTextQueryValue, setGlobalTextQueryValue] = useState('')
+  const [textCandidateKValue, setTextCandidateKValue] = useState(DEFAULT_TEXT_CANDIDATE_K)
+  const [ocrQueryValue, setOcrQueryValue] = useState('')
+  const [ocrCandidateKValue, setOcrCandidateKValue] = useState(DEFAULT_OCR_CANDIDATE_K)
+  const [candidatePool, setCandidatePool] = useState<KisCandidatePoolState | null>(null)
+  const [stage2Queries, setStage2Queries] = useState<KisQueryRow[]>([])
+  const [finalTopK, setFinalTopK] = useState(DEFAULT_TOP_K)
   const [results, setResults] = useState<SearchHit[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [latencyMs, setLatencyMs] = useState<number | null>(null)
-  const [ocrQueries, setOcrQueries] = useState<OcrQueryRow[]>(() => [
-    { id: nextOcrRowId(), text: '' },
-  ])
   const abortRef = useRef<AbortController | null>(null)
+  const primaryTextQuery = globalTextQueryValue
 
-  const setOcrQuery = useCallback((id: string, text: string) => {
-    setOcrQueries((prev) => prev.map((row) => (row.id === id ? { ...row, text } : row)))
+  const invalidateCandidatePool = useCallback(() => {
+    setCandidatePool(null)
+    setStage2Queries([])
+    setResults([])
+    setError(null)
+    setLatencyMs(null)
   }, [])
 
-  const addOcrQuery = useCallback(() => {
-    setOcrQueries((prev) => [...prev, { id: nextOcrRowId(), text: '' }])
+  const setGlobalTextQuery = useCallback((query: string) => {
+    setGlobalTextQueryValue(query)
+    invalidateCandidatePool()
+  }, [invalidateCandidatePool])
+
+  const setOcrQuery = useCallback((query: string) => {
+    setOcrQueryValue(query)
+    invalidateCandidatePool()
+  }, [invalidateCandidatePool])
+
+  const setTextCandidateK = useCallback((topK: number) => {
+    setTextCandidateKValue(topK)
+    invalidateCandidatePool()
+  }, [invalidateCandidatePool])
+
+  const setOcrCandidateK = useCallback((topK: number) => {
+    setOcrCandidateKValue(topK)
+    invalidateCandidatePool()
+  }, [invalidateCandidatePool])
+
+  const setStage2QueryText = useCallback((id: string, text: string) => {
+    setStage2Queries((prev) => prev.map((row) => (row.id === id ? { ...row, text } : row)))
   }, [])
 
-  const removeOcrQuery = useCallback((id: string) => {
-    setOcrQueries((prev) => (prev.length <= 1 ? prev : prev.filter((row) => row.id !== id)))
+  const setStage2QueryType = useCallback((id: string, type: KisQueryType) => {
+    setStage2Queries((prev) => prev.map((row) => (row.id === id ? { ...row, type } : row)))
   }, [])
 
-  const runSearch = useCallback((overrideQuery?: string) => {
-    const q = overrideQuery ?? query
-    if (!q.trim()) return
+  const addStage2Query = useCallback(() => {
+    setStage2Queries((prev) => [...prev, { id: nextKisRowId(), type: 'text', text: '' }])
+  }, [])
+
+  const removeStage2Query = useCallback((id: string) => {
+    setStage2Queries((prev) => prev.filter((row) => row.id !== id))
+  }, [])
+
+  const setQuery = useCallback((text: string) => {
+    setGlobalTextQuery(text)
+  }, [setGlobalTextQuery])
+
+  const applyExternalResults = useCallback((hits: SearchHit[]) => {
+    setCandidatePool(null)
+    setResults(hits)
+  }, [])
+
+  const retrieveCandidates = useCallback((overrideQuery?: string) => {
+    const textQuery = (overrideQuery ?? globalTextQueryValue).trim()
+    const ocrQuery = ocrQueryValue.trim()
+    if (!textQuery && !ocrQuery) return
     abortRef.current?.abort()
     const controller = new AbortController()
     abortRef.current = controller
@@ -99,19 +167,89 @@ export function useSearch(): UseSearchResult {
     setError(null)
     const start = performance.now()
 
-    searchApi(q, mode, topK, controller.signal)
+    retrieveKisCandidatesApi(
+      {
+        text_query: textQuery || null,
+        text_top_k: textCandidateKValue,
+        ocr_query: ocrQuery || null,
+        ocr_top_k: ocrCandidateKValue,
+      },
+      controller.signal,
+    )
       .then((response) => {
-        setResults(response.results)
+        const hits = response.results.map((hit) => ({
+          ...hit,
+          candidate_pool_size: response.candidate_pool_size,
+        }))
+        const pool = {
+          candidateIds: response.candidate_ids,
+          candidatePoolSize: response.candidate_pool_size,
+          textCandidateCount: response.text_candidate_count,
+          ocrCandidateCount: response.ocr_candidate_count,
+          hits,
+        }
+        setCandidatePool(pool)
+        setResults(hits)
+        if (response.candidate_pool_size > 0 && finalTopK > response.candidate_pool_size) {
+          setFinalTopK(response.candidate_pool_size)
+        }
         setLatencyMs(performance.now() - start)
       })
       .catch((err: unknown) => {
         if (isAbortError(err)) return
-        setError(messageFor(err, 'Search failed'))
+        setError(messageFor(err, 'Candidate retrieval failed'))
       })
       .finally(() => {
         if (abortRef.current === controller) setIsLoading(false)
       })
-  }, [query, mode, topK])
+  }, [finalTopK, globalTextQueryValue, ocrCandidateKValue, ocrQueryValue, textCandidateKValue])
+
+  const rerankCandidates = useCallback(() => {
+    const subqueries = activePayload(stage2Queries)
+    if (!candidatePool) return
+    if (subqueries.length === 0) {
+      setError('Add at least one Stage 2 constraint to calculate final reranking')
+      return
+    }
+    if (finalTopK < 1 || finalTopK > candidatePool.candidatePoolSize) {
+      setError('Final Top-K must be between 1 and the candidate pool size')
+      return
+    }
+
+    abortRef.current?.abort()
+    const controller = new AbortController()
+    abortRef.current = controller
+    setIsLoading(true)
+    setError(null)
+    const start = performance.now()
+    const stage1ById = new Map(candidatePool.hits.map((hit) => [hit.keyframe_id, hit]))
+
+    rerankKisCandidatesApi(
+      {
+        candidate_ids: candidatePool.candidateIds,
+        subqueries,
+        final_top_k: finalTopK,
+      },
+      controller.signal,
+    )
+      .then((response) => {
+        setResults(
+          response.results.map((hit) => ({
+            ...hit,
+            stage1: stage1ById.get(hit.keyframe_id)?.stage1,
+            candidate_pool_size: response.candidate_pool_size,
+          })),
+        )
+        setLatencyMs(performance.now() - start)
+      })
+      .catch((err: unknown) => {
+        if (isAbortError(err)) return
+        setError(messageFor(err, 'Candidate reranking failed'))
+      })
+      .finally(() => {
+        if (abortRef.current === controller) setIsLoading(false)
+      })
+  }, [candidatePool, finalTopK, stage2Queries])
 
   const runImageSearch = useCallback((file: Blob) => {
     abortRef.current?.abort()
@@ -121,8 +259,9 @@ export function useSearch(): UseSearchResult {
     setError(null)
     const start = performance.now()
 
-    searchByImageApi(file, topK, controller.signal)
+    searchByImageApi(file, finalTopK, controller.signal)
       .then((response) => {
+        setCandidatePool(null)
         setResults(response.results)
         setLatencyMs(performance.now() - start)
       })
@@ -133,26 +272,39 @@ export function useSearch(): UseSearchResult {
       .finally(() => {
         if (abortRef.current === controller) setIsLoading(false)
       })
-  }, [topK])
+  }, [finalTopK])
 
   return {
-    query,
-    setQuery,
-    mode,
-    setMode,
-    ocrQueries,
+    globalTextQuery: globalTextQueryValue,
+    setGlobalTextQuery,
+    textCandidateK: textCandidateKValue,
+    setTextCandidateK,
+    ocrQuery: ocrQueryValue,
     setOcrQuery,
-    addOcrQuery,
-    removeOcrQuery,
-    topK,
-    setTopK,
+    ocrCandidateK: ocrCandidateKValue,
+    setOcrCandidateK,
+    candidatePool,
+    stage2Queries,
+    setStage2QueryText,
+    setStage2QueryType,
+    addStage2Query,
+    removeStage2Query,
+    finalTopK,
+    setFinalTopK,
+    primaryTextQuery,
+    query: primaryTextQuery,
+    setQuery,
+    topK: finalTopK,
+    setTopK: setFinalTopK,
     results,
-    setResults,
+    setResults: applyExternalResults,
     isLoading,
     error,
     latencyMs,
     setLatencyMs,
-    runSearch,
+    runSearch: retrieveCandidates,
+    retrieveCandidates,
+    rerankCandidates,
     runImageSearch,
   }
 }

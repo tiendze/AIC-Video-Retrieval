@@ -36,11 +36,41 @@ from app.schemas.request.search import (
     DEFAULT_TOP_K,
     MAX_TOP_K,
     MAX_UPLOAD_SIZE_BYTES,
+    KisCandidateRequest,
+    KisRerankRequest,
     SearchRequest,
 )
 from app.schemas.response.error import ErrorResponse
-from app.schemas.response.search import SearchHitResponse, SearchResponse
-from app.services.search_service import SearchHit, SearchService, SearchServiceError
+from app.schemas.response.search import (
+    KisCandidateHitResponse,
+    KisCandidateResponse,
+    KisRerankResponse,
+    KisSearchHitResponse,
+    KisSearchResponse,
+    OcrModalityScoreResponse,
+    OcrQueryScoreResponse,
+    SearchHitResponse,
+    SearchModalitiesResponse,
+    SearchResponse,
+    Stage1OcrScoreResponse,
+    Stage1RetrievalResponse,
+    Stage1TextScoreResponse,
+    TextModalityScoreResponse,
+    TextQueryScoreResponse,
+)
+from app.services.kis_scoring import (
+    KisQuery,
+    OcrModalityScore,
+    QueryType,
+    Stage1RetrievalScore,
+    TextModalityScore,
+)
+from app.services.search_service import (
+    KisCandidatePool,
+    SearchHit,
+    SearchService,
+    SearchServiceError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +109,144 @@ def _to_response(hits: list[SearchHit]) -> SearchResponse:
     )
 
 
-@router.post("/api/search", response_model=SearchResponse)
+def _to_kis_response(hits: list[SearchHit]) -> KisSearchResponse:
+    return KisSearchResponse(
+        results=[
+            KisSearchHitResponse(
+                keyframe_id=hit.keyframe_id,
+                video_id=hit.video_id,
+                score=hit.score,
+                frame_idx=hit.frame_idx,
+                timestamp=hit.timestamp,
+                thumbnail_path=hit.thumbnail_path,
+                thumbnail_url=f"/api/keyframes/{hit.keyframe_id}/thumbnail",
+                image_url=f"/api/keyframes/{hit.keyframe_id}/image",
+                final_score=hit.final_score if hit.final_score is not None else hit.score,
+                active_modalities=hit.active_modalities
+                if hit.active_modalities is not None
+                else len(hit.modalities or {}),
+                modalities=_to_modalities_response(hit.modalities) or SearchModalitiesResponse(),
+            )
+            for hit in hits
+        ]
+    )
+
+
+def _to_kis_candidate_response(pool: KisCandidatePool) -> KisCandidateResponse:
+    return KisCandidateResponse(
+        candidate_ids=pool.candidate_ids,
+        candidate_pool_size=pool.candidate_pool_size,
+        text_candidate_count=pool.text_candidate_count,
+        ocr_candidate_count=pool.ocr_candidate_count,
+        results=[
+            KisCandidateHitResponse(
+                keyframe_id=hit.keyframe_id,
+                video_id=hit.video_id,
+                score=hit.score,
+                frame_idx=hit.frame_idx,
+                timestamp=hit.timestamp,
+                thumbnail_path=hit.thumbnail_path,
+                thumbnail_url=f"/api/keyframes/{hit.keyframe_id}/thumbnail",
+                image_url=f"/api/keyframes/{hit.keyframe_id}/image",
+                stage1=_to_stage1_response(hit.stage1),
+            )
+            for hit in pool.results
+        ],
+    )
+
+
+def _to_rerank_response(
+    hits: list[SearchHit], candidate_pool_size: int, final_top_k: int
+) -> KisRerankResponse:
+    return KisRerankResponse(
+        candidate_pool_size=candidate_pool_size,
+        final_top_k=final_top_k,
+        results=_to_kis_response(hits).results,
+    )
+
+
+def _to_stage1_response(stage1: Stage1RetrievalScore | None) -> Stage1RetrievalResponse:
+    if stage1 is None:
+        return Stage1RetrievalResponse(source_modalities=[])
+    return Stage1RetrievalResponse(
+        source_modalities=stage1.source_modalities,
+        text=(
+            Stage1TextScoreResponse(
+                query=stage1.text.query,
+                raw_cosine=stage1.text.raw_cosine,
+                rank=stage1.text.rank,
+            )
+            if stage1.text is not None
+            else None
+        ),
+        ocr=(
+            Stage1OcrScoreResponse(
+                query=stage1.ocr.query,
+                raw_bm25=stage1.ocr.raw_bm25,
+                bm25_reference=stage1.ocr.bm25_reference,
+                bm25_normalized=stage1.ocr.bm25_normalized,
+                coverage=stage1.ocr.coverage,
+                query_score=stage1.ocr.query_score,
+                rank=stage1.ocr.rank,
+            )
+            if stage1.ocr is not None
+            else None
+        ),
+    )
+
+
+def _to_modalities_response(
+    modalities: dict[str, TextModalityScore | OcrModalityScore] | None,
+) -> SearchModalitiesResponse | None:
+    if modalities is None:
+        return None
+    text = modalities.get("text")
+    ocr = modalities.get("ocr")
+    return SearchModalitiesResponse(
+        text=(
+            TextModalityScoreResponse(
+                geometric_mean=text.geometric_mean,
+                score=text.score,
+                queries=[
+                    TextQueryScoreResponse(
+                        query_index=query.query_index,
+                        query=query.query,
+                        raw_cosine=query.raw_cosine,
+                        rank=query.rank,
+                        rank_percentile=query.rank_percentile,
+                    )
+                    for query in text.queries
+                ],
+            )
+            if isinstance(text, TextModalityScore)
+            else None
+        ),
+        ocr=(
+            OcrModalityScoreResponse(
+                geometric_mean=ocr.geometric_mean,
+                score=ocr.score,
+                queries=[
+                    OcrQueryScoreResponse(
+                        query_index=query.query_index,
+                        query=query.query,
+                        raw_bm25=query.raw_bm25,
+                        bm25_reference=query.bm25_reference,
+                        bm25_normalized=query.bm25_normalized,
+                        coverage=query.coverage,
+                        query_score=query.query_score,
+                        rank=query.rank,
+                        rank_percentile=query.rank_percentile,
+                    )
+                    for query in ocr.queries
+                ],
+            )
+            if isinstance(ocr, OcrModalityScore)
+            else None
+        ),
+    )
+
+
+@router.post("/api/search", response_model=SearchResponse, response_model_exclude_none=True)
 async def search(
     body: SearchRequest, service: SearchService = Depends(get_search_service)
 ) -> SearchResponse:
@@ -110,7 +277,75 @@ async def search(
     return _to_response(hits)
 
 
-@router.post("/api/search/image", response_model=SearchResponse)
+@router.post(
+    "/api/search/kis/candidates",
+    response_model=KisCandidateResponse,
+    response_model_exclude_none=True,
+)
+async def retrieve_kis_candidates(
+    body: KisCandidateRequest, service: SearchService = Depends(get_search_service)
+) -> KisCandidateResponse:
+    start = time.perf_counter()
+    try:
+        pool = await service.retrieve_kis_candidates(
+            text_query=body.text_query,
+            text_top_k=body.text_top_k,
+            ocr_query=body.ocr_query,
+            ocr_top_k=body.ocr_top_k,
+        )
+    except SearchServiceError as exc:
+        raise APIError(
+            detail=str(exc), error_code=exc.error_code, status_code=exc.status_code
+        ) from exc
+
+    latency_ms = (time.perf_counter() - start) * 1000
+    logger.info(
+        "search request completed: mode=kis_stage1 latency_ms=%.1f candidate_pool_size=%d "
+        "text_candidates=%d ocr_candidates=%d",
+        latency_ms,
+        pool.candidate_pool_size,
+        pool.text_candidate_count,
+        pool.ocr_candidate_count,
+    )
+    return _to_kis_candidate_response(pool)
+
+
+@router.post(
+    "/api/search/kis/rerank",
+    response_model=KisRerankResponse,
+    response_model_exclude_none=True,
+)
+async def rerank_kis_candidates(
+    body: KisRerankRequest, service: SearchService = Depends(get_search_service)
+) -> KisRerankResponse:
+    start = time.perf_counter()
+    subqueries = [
+        KisQuery(query_index=index, type=QueryType(query.type), text=query.text)
+        for index, query in enumerate(body.subqueries)
+    ]
+    try:
+        hits = await service.rerank_kis_candidates(
+            candidate_ids=body.candidate_ids,
+            queries=subqueries,
+            final_top_k=body.final_top_k,
+        )
+    except SearchServiceError as exc:
+        raise APIError(
+            detail=str(exc), error_code=exc.error_code, status_code=exc.status_code
+        ) from exc
+
+    latency_ms = (time.perf_counter() - start) * 1000
+    logger.info(
+        "search request completed: mode=kis_stage2 latency_ms=%.1f candidate_pool_size=%d "
+        "num_results=%d",
+        latency_ms,
+        len(body.candidate_ids),
+        len(hits),
+    )
+    return _to_rerank_response(hits, len(body.candidate_ids), body.final_top_k)
+
+
+@router.post("/api/search/image", response_model=SearchResponse, response_model_exclude_none=True)
 async def search_by_image(
     file: UploadFile = File(...),
     top_k: int = Form(default=DEFAULT_TOP_K, ge=1, le=MAX_TOP_K),

@@ -2,9 +2,8 @@ import { render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 import { StatusBar } from './StatusBar'
 
-// RED reproducer for plan §P1.8 (PRD T5): StatusBar's own docstring named
-// this exact gap -- "a degraded-mode banner (ES down -> semantic only) is
-// P1.8 scope, not this one".
+const ES_DOWN_MESSAGE = 'Elasticsearch không khả dụng — OCR trong KIS tạm thời không hoạt động'
+
 describe('StatusBar', () => {
   it('shows the degraded-mode banner when degradedMessage is set', () => {
     render(
@@ -13,13 +12,11 @@ describe('StatusBar', () => {
         latencyMs={null}
         isLoading={false}
         error={null}
-        degradedMessage="Elasticsearch không khả dụng — chỉ tìm kiếm Semantic"
+        degradedMessage={ES_DOWN_MESSAGE}
       />,
     )
 
-    expect(
-      screen.getByText('Elasticsearch không khả dụng — chỉ tìm kiếm Semantic'),
-    ).toBeInTheDocument()
+    expect(screen.getByText(ES_DOWN_MESSAGE)).toBeInTheDocument()
   })
 
   it('shows no banner when degradedMessage is null', () => {
@@ -35,7 +32,7 @@ describe('StatusBar', () => {
         latencyMs={120}
         isLoading={false}
         error={null}
-        degradedMessage="Elasticsearch không khả dụng — chỉ tìm kiếm Semantic"
+        degradedMessage={ES_DOWN_MESSAGE}
       />,
     )
 

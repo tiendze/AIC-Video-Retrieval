@@ -1,4 +1,4 @@
-import { useRef } from 'react'
+import { useRef, type RefObject } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import type { SearchHit } from '../api/types'
 import { ResultCard } from './ResultCard'
@@ -6,8 +6,11 @@ import styles from './ResultGrid.module.css'
 
 export interface ResultGridProps {
   hits: SearchHit[]
+  selectedKeyframeId?: string | null
+  scrollElementRef?: RefObject<HTMLDivElement | null>
   onSelect: (hit: SearchHit) => void
   onFindSimilar: (hit: SearchHit) => void
+  onOpenDetail?: (hit: SearchHit) => void
 }
 
 const CARD_SIZE_PX = 160
@@ -20,8 +23,17 @@ const GAP_PX = 4
 // and verifying virtualization against a synthetic 1,000-item fixture
 // instead). A row virtualizer (not per-card) keeps the DOM bounded to
 // roughly one viewport's worth of rows regardless of hit count.
-export function ResultGrid({ hits, onSelect, onFindSimilar }: ResultGridProps) {
+export function ResultGrid({
+  hits,
+  selectedKeyframeId = null,
+  scrollElementRef,
+  onSelect,
+  onFindSimilar,
+  onOpenDetail,
+}: ResultGridProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
+  const usesExternalScroll = scrollElementRef !== undefined
+  const scrollMargin = usesExternalScroll ? (scrollRef.current?.offsetTop ?? 0) : 0
 
   const columns = Math.max(
     1,
@@ -31,8 +43,9 @@ export function ResultGrid({ hits, onSelect, onFindSimilar }: ResultGridProps) {
 
   const rowVirtualizer = useVirtualizer({
     count: rowCount,
-    getScrollElement: () => scrollRef.current,
+    getScrollElement: () => scrollElementRef?.current ?? scrollRef.current,
     estimateSize: () => CARD_SIZE_PX + GAP_PX,
+    scrollMargin,
     overscan: 3,
   })
 
@@ -44,7 +57,7 @@ export function ResultGrid({ hits, onSelect, onFindSimilar }: ResultGridProps) {
     <div
       ref={scrollRef}
       data-testid="result-grid-scroll-container"
-      className={styles.scrollContainer}
+      className={`${styles.scrollContainer} ${usesExternalScroll ? styles.externalScrollContainer : ''}`}
     >
       <div
         style={{ height: rowVirtualizer.getTotalSize(), position: 'relative', width: '100%' }}
@@ -62,7 +75,7 @@ export function ResultGrid({ hits, onSelect, onFindSimilar }: ResultGridProps) {
                 left: 0,
                 width: '100%',
                 height: virtualRow.size,
-                transform: `translateY(${virtualRow.start}px)`,
+                transform: `translateY(${virtualRow.start - scrollMargin}px)`,
               }}
             >
               {rowHits.map((hit) => (
@@ -71,7 +84,13 @@ export function ResultGrid({ hits, onSelect, onFindSimilar }: ResultGridProps) {
                   className={styles.cell}
                   style={{ width: CARD_SIZE_PX, height: CARD_SIZE_PX }}
                 >
-                  <ResultCard hit={hit} onSelect={onSelect} onFindSimilar={onFindSimilar} />
+                  <ResultCard
+                    hit={hit}
+                    selected={hit.keyframe_id === selectedKeyframeId}
+                    onSelect={onSelect}
+                    onFindSimilar={onFindSimilar}
+                    onOpenDetail={onOpenDetail}
+                  />
                 </div>
               ))}
             </div>

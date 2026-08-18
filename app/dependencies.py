@@ -7,12 +7,13 @@ lifespan, not here.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from fastapi import Depends, Request
 
 from app.encoders.base import MultimodalEncoder
 from app.services.health_service import HealthService
 from app.services.query_translator import QueryTranslator
-from app.services.quest_service import QueryRewriteService, QuestService
 from app.services.search_service import SearchService
 from app.services.thumbnail_service import ThumbnailService
 from app.services.trake_service import TrakeService
@@ -20,6 +21,9 @@ from app.services.vqa_service import QaService
 from app.stores.es_client import EsStore
 from app.stores.milvus_client import MilvusStore
 from app.stores.mongo_client import MongoStore
+
+if TYPE_CHECKING:
+    from app.services.quest_service import QueryRewriteService, QuestService
 
 
 def get_encoder(request: Request) -> MultimodalEncoder:

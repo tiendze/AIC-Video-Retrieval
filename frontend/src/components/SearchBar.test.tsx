@@ -1,100 +1,126 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import type { ComponentProps } from 'react'
 import { describe, expect, it, vi } from 'vitest'
+import type { KisQueryRow } from '../api/types'
 import { SearchBar } from './SearchBar'
 
-// RED reproducer for wiring QUEST branch 1's "AI enhancer" button (plan
-// §P2.5, PRD §F5) -- it was a disabled P2 placeholder (module docstring
-// pre-2026-08-15); now that POST /api/quest/rewrite-query exists, it must
-// call onEnhance with the current query instead of doing nothing.
 describe('SearchBar', () => {
-  it('calls onQueryChange when typing', async () => {
+  function renderSearchBar(overrides: Partial<ComponentProps<typeof SearchBar>> = {}) {
+    const props: ComponentProps<typeof SearchBar> = {
+      globalTextQuery: '',
+      textCandidateK: 300,
+      ocrQuery: '',
+      ocrCandidateK: 100,
+      candidatePoolSize: null,
+      textCandidateCount: 0,
+      ocrCandidateCount: 0,
+      stage2Queries: [],
+      finalTopK: 20,
+      onGlobalTextQueryChange: vi.fn(),
+      onTextCandidateKChange: vi.fn(),
+      onOcrQueryChange: vi.fn(),
+      onOcrCandidateKChange: vi.fn(),
+      onStage2QueryTextChange: vi.fn(),
+      onStage2QueryTypeChange: vi.fn(),
+      onAddStage2Query: vi.fn(),
+      onRemoveStage2Query: vi.fn(),
+      onFinalTopKChange: vi.fn(),
+      onRetrieveCandidates: vi.fn(),
+      onRerankCandidates: vi.fn(),
+      onEnhance: vi.fn(),
+      ...overrides,
+    }
+    render(<SearchBar {...props} />)
+    return props
+  }
+
+  it('calls onGlobalTextQueryChange when typing Text Q0', async () => {
     const user = userEvent.setup()
-    const onQueryChange = vi.fn()
-    render(
-      <SearchBar query="" onQueryChange={onQueryChange} onSubmit={vi.fn()} onEnhance={vi.fn()} />,
-    )
+    const props = renderSearchBar()
 
-    await user.type(screen.getByLabelText('query'), 'a')
+    await user.type(screen.getByLabelText('text q0'), 'a')
 
-    expect(onQueryChange).toHaveBeenCalledWith('a')
+    expect(props.onGlobalTextQueryChange).toHaveBeenCalledWith('a')
   })
 
-  it('calls onSubmit when the form is submitted', async () => {
+  it('calls onRetrieveCandidates when Stage 1 form is submitted', async () => {
     const user = userEvent.setup()
-    const onSubmit = vi.fn()
-    render(
-      <SearchBar query="thu tuong" onQueryChange={vi.fn()} onSubmit={onSubmit} onEnhance={vi.fn()} />,
-    )
+    const props = renderSearchBar({ globalTextQuery: 'boat' })
 
-    await user.click(screen.getByRole('button', { name: 'Search' }))
+    await user.click(screen.getByRole('button', { name: 'Retrieve Candidates' }))
 
-    expect(onSubmit).toHaveBeenCalledTimes(1)
+    expect(props.onRetrieveCandidates).toHaveBeenCalledTimes(1)
   })
 
-  it('calls onEnhance with the current query when the AI enhancer button is clicked', async () => {
+  it('keeps Text and OCR candidate counts independent', () => {
+    const props = renderSearchBar()
+
+    fireEvent.change(screen.getByLabelText('text candidates'), { target: { value: '250' } })
+    fireEvent.change(screen.getByLabelText('ocr candidates'), { target: { value: '75' } })
+
+    expect(props.onTextCandidateKChange).toHaveBeenLastCalledWith(250)
+    expect(props.onOcrCandidateKChange).toHaveBeenLastCalledWith(75)
+  })
+
+  it('calls onEnhance with Text Q0 when the AI enhancer button is clicked', async () => {
     const user = userEvent.setup()
     const onEnhance = vi.fn()
-    render(
-      <SearchBar
-        query="Labubu"
-        onQueryChange={vi.fn()}
-        onSubmit={vi.fn()}
-        onEnhance={onEnhance}
-      />,
-    )
+    renderSearchBar({ globalTextQuery: 'Labubu', onEnhance })
 
     await user.click(screen.getByRole('button', { name: /AI enhancer/i }))
 
     expect(onEnhance).toHaveBeenCalledWith('Labubu')
   })
 
-  it('disables the AI enhancer button when the query is blank', () => {
-    render(<SearchBar query="   " onQueryChange={vi.fn()} onSubmit={vi.fn()} onEnhance={vi.fn()} />)
+  it('disables the AI enhancer button when Text Q0 is blank', () => {
+    renderSearchBar({ globalTextQuery: '   ' })
 
     expect(screen.getByRole('button', { name: /AI enhancer/i })).toBeDisabled()
   })
 
-  it('shows a loading state instead of disabling the whole button while a rewrite is in flight', () => {
-    render(
-      <SearchBar
-        query="Labubu"
-        onQueryChange={vi.fn()}
-        onSubmit={vi.fn()}
-        onEnhance={vi.fn()}
-        enhanceLoading
-      />,
-    )
+  it('disables Stage 1 OCR input and Stage 2 OCR option when Elasticsearch is unavailable', () => {
+    const rows: KisQueryRow[] = [{ id: 'q1', type: 'text', text: '' }]
+    renderSearchBar({ ocrDisabled: true, candidatePoolSize: 3, stage2Queries: rows })
 
-    expect(screen.getByRole('button', { name: /AI enhancer/i })).toBeDisabled()
+    expect(screen.getByLabelText('stage 1 ocr')).toBeDisabled()
+    expect(screen.getByRole('option', { name: 'OCR' })).toBeDisabled()
   })
 
-  // Semantic mode's supplementary OCR conditions: the `ocr` prop is
-  // optional and only App.tsx passes it while activeMode === 'semantic'.
-  // OCR mode renders SearchBar without it, so these two tests double as
-  // the regression proof that OCR mode's existing behavior is untouched.
-  it('renders the OCR query rows when the ocr prop is provided', () => {
-    render(
-      <SearchBar
-        query=""
-        onQueryChange={vi.fn()}
-        onSubmit={vi.fn()}
-        onEnhance={vi.fn()}
-        ocr={{
-          queries: [{ id: 'ocr-1', text: '' }],
-          onChange: vi.fn(),
-          onAdd: vi.fn(),
-          onRemove: vi.fn(),
-        }}
-      />,
-    )
+  it('reveals Stage 2 after candidate retrieval and wires subquery controls', async () => {
+    const user = userEvent.setup()
+    const rows: KisQueryRow[] = [
+      { id: 'q1', type: 'text', text: 'night scene' },
+      { id: 'q2', type: 'ocr', text: 'SAIGON' },
+    ]
+    const props = renderSearchBar({
+      candidatePoolSize: 347,
+      textCandidateCount: 300,
+      ocrCandidateCount: 100,
+      stage2Queries: rows,
+    })
 
-    expect(screen.getByLabelText('ocr query 1')).toBeInTheDocument()
+    expect(screen.getByText('Candidate Pool: 347')).toBeInTheDocument()
+    expect(screen.getByLabelText('stage 2 query 1')).toHaveValue('night scene')
+    expect(screen.getByLabelText('stage 2 query 2')).toHaveValue('SAIGON')
+
+    await user.selectOptions(screen.getByLabelText('stage 2 query type 1'), 'ocr')
+    await user.type(screen.getByLabelText('stage 2 query 1'), '!')
+    await user.click(screen.getByRole('button', { name: /\+ Add subquery/i }))
+    await user.click(screen.getByRole('button', { name: /remove stage 2 query 2/i }))
+
+    expect(props.onStage2QueryTypeChange).toHaveBeenCalledWith('q1', 'ocr')
+    expect(props.onStage2QueryTextChange).toHaveBeenCalledWith('q1', 'night scene!')
+    expect(props.onAddStage2Query).toHaveBeenCalledTimes(1)
+    expect(props.onRemoveStage2Query).toHaveBeenCalledWith('q2')
   })
 
-  it('does not render OCR query rows when the ocr prop is omitted', () => {
-    render(<SearchBar query="" onQueryChange={vi.fn()} onSubmit={vi.fn()} onEnhance={vi.fn()} />)
+  it('disables rerank and shows guidance when no Stage 2 subquery is active', () => {
+    renderSearchBar({ candidatePoolSize: 10, stage2Queries: [] })
 
-    expect(screen.queryByLabelText('ocr query 1')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Rerank Candidates' })).toBeDisabled()
+    expect(
+      screen.getByText('Add at least one Stage 2 constraint to calculate final reranking.'),
+    ).toBeInTheDocument()
   })
 })

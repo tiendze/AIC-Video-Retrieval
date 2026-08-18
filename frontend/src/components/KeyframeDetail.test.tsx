@@ -1,6 +1,7 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { getVideoKeyframes } from '../api/client'
 import { KeyframeDetail } from './KeyframeDetail'
 import type { SearchHit } from '../api/types'
 
@@ -39,6 +40,10 @@ const HIT: SearchHit = {
 }
 
 describe('KeyframeDetail', () => {
+  beforeEach(() => {
+    vi.mocked(getVideoKeyframes).mockResolvedValue({ keyframes: [] })
+  })
+
   it('closes itself when "Find Similar Images" is clicked, so the caller-owned grid becomes visible', async () => {
     const user = userEvent.setup()
     const onClose = vi.fn()
@@ -47,7 +52,7 @@ describe('KeyframeDetail', () => {
 
     await user.click(screen.getByRole('button', { name: /find similar images/i }))
 
-    expect(onFindSimilar).toHaveBeenCalledWith(HIT)
+    expect(onFindSimilar).toHaveBeenCalledWith(HIT.image_url)
     expect(onClose).toHaveBeenCalledTimes(1)
   })
 
@@ -59,5 +64,92 @@ describe('KeyframeDetail', () => {
     await user.click(screen.getByRole('button', { name: /close/i }))
 
     expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the displayed frame centered in the bottom strip and navigates prev/next', async () => {
+    const user = userEvent.setup()
+    vi.mocked(getVideoKeyframes).mockResolvedValueOnce({
+      keyframes: [
+        {
+          keyframe_id: 'L21_V001_f5',
+          frame_idx: 5,
+          timestamp: 20,
+          global_index: 0,
+          thumbnail_url: '/api/keyframes/L21_V001_f5/thumbnail',
+          image_url: '/api/keyframes/L21_V001_f5/image',
+        },
+        {
+          keyframe_id: HIT.keyframe_id,
+          frame_idx: HIT.frame_idx,
+          timestamp: HIT.timestamp,
+          global_index: 1,
+          thumbnail_url: HIT.thumbnail_url,
+          image_url: HIT.image_url,
+        },
+        {
+          keyframe_id: 'L21_V001_f20',
+          frame_idx: 20,
+          timestamp: 50,
+          global_index: 2,
+          thumbnail_url: '/api/keyframes/L21_V001_f20/thumbnail',
+          image_url: '/api/keyframes/L21_V001_f20/image',
+        },
+      ],
+    })
+    render(<KeyframeDetail hit={HIT} onClose={vi.fn()} onFindSimilar={vi.fn()} />)
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /show frame 10/i })).toHaveAttribute(
+        'aria-current',
+        'true',
+      ),
+    )
+
+    await user.click(screen.getByRole('button', { name: /next keyframe/i }))
+
+    expect(screen.getByAltText('L21_V001 @ 50s')).toHaveAttribute(
+      'src',
+      '/api/keyframes/L21_V001_f20/image',
+    )
+    expect(screen.getByRole('button', { name: /show frame 20/i })).toHaveAttribute(
+      'aria-current',
+      'true',
+    )
+
+    await user.click(screen.getByRole('button', { name: /previous keyframe/i }))
+
+    expect(screen.getByAltText('L21_V001 @ 42.5s')).toHaveAttribute('src', HIT.image_url)
+  })
+
+  it('finds similar images from the frame currently shown in the detail viewer', async () => {
+    const user = userEvent.setup()
+    const onFindSimilar = vi.fn()
+    vi.mocked(getVideoKeyframes).mockResolvedValueOnce({
+      keyframes: [
+        {
+          keyframe_id: HIT.keyframe_id,
+          frame_idx: HIT.frame_idx,
+          timestamp: HIT.timestamp,
+          global_index: 1,
+          thumbnail_url: HIT.thumbnail_url,
+          image_url: HIT.image_url,
+        },
+        {
+          keyframe_id: 'L21_V001_f20',
+          frame_idx: 20,
+          timestamp: 50,
+          global_index: 2,
+          thumbnail_url: '/api/keyframes/L21_V001_f20/thumbnail',
+          image_url: '/api/keyframes/L21_V001_f20/image',
+        },
+      ],
+    })
+    render(<KeyframeDetail hit={HIT} onClose={vi.fn()} onFindSimilar={onFindSimilar} />)
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /next keyframe/i })).toBeEnabled())
+    await user.click(screen.getByRole('button', { name: /next keyframe/i }))
+    await user.click(screen.getByRole('button', { name: /find similar images/i }))
+
+    expect(onFindSimilar).toHaveBeenCalledWith('/api/keyframes/L21_V001_f20/image')
   })
 })

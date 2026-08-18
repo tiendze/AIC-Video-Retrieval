@@ -5,7 +5,7 @@ import { useHealth } from './useHealth'
 
 // RED reproducer for plan §P1.8 (PRD T5): the frontend needs to know when
 // Elasticsearch is down so it can show a degraded-mode banner and disable
-// the OCR mode -- GET /health (app/api/health.py) already reports
+// OCR row selection -- GET /health (app/api/health.py) already reports
 // elasticsearch_ok, this hook just polls it.
 vi.mock('../api/client', () => ({
   getHealth: vi.fn(),

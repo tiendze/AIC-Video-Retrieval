@@ -3,6 +3,10 @@ import type {
   HealthStatus,
   ImageCandidatesResult,
   ImageSearchResult,
+  KisCandidatePayload,
+  KisCandidateResponse,
+  KisRerankPayload,
+  KisRerankResponse,
   QueryRewriteResult,
   SearchMode,
   SearchResponse,
@@ -46,6 +50,32 @@ export function search(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ query, mode, top_k: topK }),
+    signal,
+  })
+}
+
+// POST /api/search/kis/candidates (app/api/search.py)
+export function retrieveKisCandidates(
+  payload: KisCandidatePayload,
+  signal?: AbortSignal,
+): Promise<KisCandidateResponse> {
+  return request<KisCandidateResponse>('/api/search/kis/candidates', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    signal,
+  })
+}
+
+// POST /api/search/kis/rerank (app/api/search.py)
+export function rerankKisCandidates(
+  payload: KisRerankPayload,
+  signal?: AbortSignal,
+): Promise<KisRerankResponse> {
+  return request<KisRerankResponse>('/api/search/kis/rerank', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
     signal,
   })
 }

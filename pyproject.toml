@@ -11,6 +11,9 @@ dependencies = [
     "pymilvus==2.6.12",
     "pymongo==4.17.0",
     "elasticsearch[async]==9.3.0",
+    # Textual KIS V1 OCR coverage uses token-level fuzzy matching. RapidFuzz
+    # keeps this lightweight and avoids adding another online ML model.
+    "rapidfuzz==3.14.3",
     # POST /api/search/image (plan §P1.1) accepts multipart/form-data --
     # FastAPI's File()/Form() raise at import time without this installed.
     "python-multipart==0.0.20",

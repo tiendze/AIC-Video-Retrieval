@@ -9,6 +9,7 @@ Uses `MilvusClient` (pymilvus >=2.4), never the legacy ORM API.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -23,6 +24,7 @@ _VIDEO_ID_MAX_LENGTH = 32
 _AUTHOR_MAX_LENGTH = 128
 _BATCH_MAX_LENGTH = 8
 _SEGMENT_ID_MAX_LENGTH = 64
+_QUERY_ID_BATCH_SIZE = 512
 
 
 @dataclass(frozen=True)
@@ -203,6 +205,40 @@ class MilvusStore:
         for row in rows:
             row["embedding"] = np.asarray(row["embedding"], dtype=np.float32)
         return sorted(rows, key=lambda r: r["global_index"])
+
+    def get_vectors_by_ids(self, keyframe_ids: Sequence[str]) -> dict[str, dict]:
+        """Exact batch lookup for KIS union-pool rescoring.
+
+        Unlike `search()` this is not ANN retrieval: callers already have the
+        candidate ids and need stored vectors/metadata for vectorized cosine
+        scoring. Missing ids are omitted, matching Mongo/ES lookup conventions.
+        """
+        if not keyframe_ids:
+            return {}
+
+        rows_by_id: dict[str, dict] = {}
+        for batch_start in range(0, len(keyframe_ids), _QUERY_ID_BATCH_SIZE):
+            batch = list(
+                dict.fromkeys(keyframe_ids[batch_start : batch_start + _QUERY_ID_BATCH_SIZE])
+            )
+            id_list = ", ".join(json.dumps(keyframe_id) for keyframe_id in batch)
+            rows = self._client.query(
+                collection_name=self._collection_name,
+                filter=f"keyframe_id in [{id_list}]",
+                output_fields=[
+                    "keyframe_id",
+                    "embedding",
+                    "video_id",
+                    "global_index",
+                    "frame_idx",
+                    "timestamp",
+                ],
+                consistency_level="Strong",
+            )
+            for row in rows:
+                row["embedding"] = np.asarray(row["embedding"], dtype=np.float32)
+                rows_by_id[row["keyframe_id"]] = row
+        return rows_by_id
 
 
 @dataclass(frozen=True)

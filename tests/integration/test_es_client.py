@@ -67,6 +67,25 @@ async def test_search_matches_diacritic_free_query_via_asciifolding(store: EsSto
     assert len(results) == 1
 
 
+async def test_search_matches_one_character_ocr_error_with_fuzziness(store: EsStore) -> None:
+    await store.bulk_index(
+        [
+            OcrDocument(
+                keyframe_id="video1_0",
+                ocr_text="OpenAl",
+                video_id="video1",
+                timestamp=0.0,
+            )
+        ]
+    )
+    await store._client.indices.refresh(index=store.index_name)
+
+    results = await store.search(query_text="OpenAI", top_k=10)
+
+    assert len(results) == 1
+    assert results[0]["keyframe_id"] == "video1_0"
+
+
 async def test_search_video_id_filter_is_passed_to_engine_not_applied_after(
     store: EsStore,
 ) -> None:
