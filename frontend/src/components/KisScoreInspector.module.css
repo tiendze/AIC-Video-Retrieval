@@ -54,6 +54,12 @@
   font-family: monospace;
 }
 
+.row span:last-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
 .queryBlock {
   margin-top: 8px;
   padding-top: 8px;
@@ -72,6 +78,70 @@
   font-size: 11px;
   line-height: 1.3;
   overflow-wrap: anywhere;
+}
+
+.pairBlock {
+  margin-top: 6px;
+  padding: 6px;
+  background: #1b1b21;
+  border: 1px solid #303038;
+  border-radius: 4px;
+}
+
+.heatmapToggle {
+  width: 100%;
+  margin-top: 8px;
+  padding: 6px 8px;
+  background: transparent;
+  color: #ddd;
+  border: 1px solid #444;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.heatmapBlock {
+  margin-top: 8px;
+}
+
+.heatmapGrid {
+  display: grid;
+  gap: 1px;
+  width: 100%;
+  aspect-ratio: 1;
+}
+
+.heatmapCell {
+  display: block;
+  min-width: 0;
+  min-height: 0;
+  border-radius: 1px;
+}
+
+.heatmapLegend {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+  color: #cbd5e1;
+  font-size: 10px;
+}
+
+.heatmapLegend span:first-child::before,
+.heatmapLegend span:last-child::before {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 4px;
+  border-radius: 1px;
+  content: "";
+}
+
+.heatmapLegend span:first-child::before {
+  background: #3b82f6;
+}
+
+.heatmapLegend span:last-child::before {
+  background: #10b981;
 }
 
 .sourceList,

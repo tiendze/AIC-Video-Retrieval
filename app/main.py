@@ -21,7 +21,7 @@ from app.api.trake import router as trake_router
 from app.api.videos import router as videos_router
 from app.config import CorsSettings, Settings
 from app.encoders.base import MultimodalEncoder
-from app.encoders.beit3 import BEiT3Encoder
+from app.encoders.factory import build_encoder
 from app.services.query_translator import LocalNmtTranslator
 from app.services.quest_service import GeminiQueryRewriter, QueryRewriteService, QuestService
 from app.services.search_service import SearchService
@@ -38,7 +38,7 @@ from app.stores.milvus_client import MilvusStore
 from app.stores.mongo_client import MongoStore
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
-_BEIT3_CONFIG_PATH = _REPO_ROOT / "configs" / "model" / "beit3.yaml"
+_FG_CLIP_CONFIG_PATH = _REPO_ROOT / "configs" / "model" / "fg_clip.yaml"
 _QUERY_TRANSLATOR_CONFIG_PATH = _REPO_ROOT / "configs" / "model" / "query_translator.yaml"
 _MILVUS_CONFIG_PATH = _REPO_ROOT / "configs" / "stores" / "milvus.yaml"
 _SEARCH_CONFIG_PATH = _REPO_ROOT / "configs" / "search" / "search.yaml"
@@ -56,15 +56,8 @@ def _load_yaml(path: Path) -> dict:
         return yaml.safe_load(f)
 
 
-def _build_encoder() -> BEiT3Encoder:
-    config = _load_yaml(_BEIT3_CONFIG_PATH)
-    return BEiT3Encoder(
-        checkpoint_path=str(_REPO_ROOT / config["checkpoint_path"]),
-        sentencepiece_model_path=str(_REPO_ROOT / config["sentencepiece_model_path"]),
-        device=config["device"],
-        batch_size=config["batch_size"],
-        model_id=config["model_id"],
-    )
+def _build_encoder() -> MultimodalEncoder:
+    return build_encoder(_FG_CLIP_CONFIG_PATH)
 
 
 def _build_milvus_store(settings: Settings, encoder: MultimodalEncoder) -> MilvusStore:
@@ -183,6 +176,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         mongo_store=app.state.mongo_store,
         query_translator=app.state.query_translator,
     )
+    app.state.search_service = search_service
     app.state.quest_service = _build_quest_service(search_service, app.state.quest_http_client)
     app.state.query_rewrite_service = _build_query_rewrite_service(settings)
     app.state.qa_service = _build_qa_service(settings, search_service, app.state.thumbnail_service)

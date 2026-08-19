@@ -99,3 +99,26 @@ def test_encode_text_with_empty_input_returns_empty_array_not_error(encoder):
 
     assert vecs.shape == (0, encoder.embedding_dim)
     assert vecs.dtype == np.float32
+
+
+def test_encode_image_patches_returns_normalized_local_patch_embeddings(encoder, sample_images):
+    patches = encoder.encode_image_patches(sample_images)
+
+    assert patches.shape[0] == len(sample_images)
+    assert patches.shape[1] > 0
+    assert patches.shape[2] == encoder.embedding_dim
+    assert patches.dtype == np.float32
+    assert np.isfinite(patches).all()
+    np.testing.assert_allclose(np.linalg.norm(patches, axis=2), 1.0, atol=1e-4)
+
+
+def test_encode_text_tokens_excludes_special_and_padding_tokens(encoder):
+    encoded = encoder.encode_text_tokens(["red seasoning packet"])
+
+    assert len(encoded) == 1
+    assert encoded[0].embeddings.shape[0] == len(encoded[0].tokens)
+    assert encoded[0].embeddings.shape[0] > 0
+    assert encoded[0].embeddings.shape[1] == encoder.embedding_dim
+    assert encoded[0].embeddings.dtype == np.float32
+    assert np.isfinite(encoded[0].embeddings).all()
+    np.testing.assert_allclose(np.linalg.norm(encoded[0].embeddings, axis=1), 1.0, atol=1e-4)

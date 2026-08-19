@@ -18,16 +18,28 @@ import pytest
 from elasticsearch import ConnectionError as EsConnectionError
 from PIL import Image
 
-from app.services.kis_scoring import KisConfig, KisQuery, QueryType
+from app.services.abe import AbeQueryComponents, AbeRankedQuery
+from app.services.kis_scoring import (
+    AbePair,
+    AbePairScore,
+    KisConfig,
+    KisQuery,
+    QueryType,
+    RankedScore,
+)
 from app.services.search_service import SearchHit, SearchService, SearchServiceError
 
 
 class _FakeEncoder:
     def __init__(
-        self, vector: np.ndarray, text_vectors_by_query: dict[str, np.ndarray] | None = None
+        self,
+        vector: np.ndarray,
+        text_vectors_by_query: dict[str, np.ndarray] | None = None,
+        model_id: str = "fake-encoder",
     ) -> None:
         self._vector = vector
         self._text_vectors_by_query = text_vectors_by_query or {}
+        self._model_id = model_id
         self.encode_text_calls: list[list[str]] = []
         self.encode_image_calls: list[list[Any]] = []
 
@@ -39,7 +51,7 @@ class _FakeEncoder:
 
     @property
     def model_id(self) -> str:
-        return "fake-encoder"
+        return self._model_id
 
     def encode_image(self, images):
         self.encode_image_calls.append(list(images))
@@ -154,11 +166,13 @@ def _service(
     ocr_texts_by_id: dict[str, str] | None = None,
     bm25_scores_by_query: dict[str, dict[str, float]] | None = None,
     text_vectors_by_query: dict[str, np.ndarray] | None = None,
+    model_id: str = "fake-encoder",
 ) -> tuple[SearchService, _FakeEncoder, _FakeMilvusStore, _FakeEsStore, _FakeMongoStore]:
     default_vector = np.zeros((1, 4), dtype=np.float32)
     encoder = _FakeEncoder(
         query_vector if query_vector is not None else default_vector,
         text_vectors_by_query=text_vectors_by_query,
+        model_id=model_id,
     )
     milvus_store = _FakeMilvusStore(milvus_hits or [], vector_rows=vector_rows)
     es_store = _FakeEsStore(
@@ -174,6 +188,47 @@ def _service(
         kis_config=KisConfig(candidate_multiplier=2, candidate_min=4),
     )
     return service, encoder, milvus_store, es_store, mongo_store
+
+
+def _fake_abe_ranked(
+    query_index: int,
+    candidate_ids: list[str],
+    percentiles_by_id: dict[str, float],
+) -> dict[int, AbeRankedQuery]:
+    components_by_id = {
+        keyframe_id: AbeQueryComponents(
+            pairs=[
+                AbePairScore(
+                    attribute="red",
+                    object="packet",
+                    positive_attributes=["red"],
+                    negative_attributes=["white"],
+                )
+            ],
+            base_local=0.1,
+            refined_local=0.3,
+            binding_delta=0.2,
+            local_score=0.5,
+            global_abe=0.6,
+            raw_score=percentiles_by_id[keyframe_id],
+            patch_heatmap=None,
+        )
+        for keyframe_id in candidate_ids
+    }
+    rankings = {
+        keyframe_id: RankedScore(
+            raw_score=percentile,
+            rank=rank,
+            rank_percentile=percentile,
+        )
+        for rank, (keyframe_id, percentile) in enumerate(percentiles_by_id.items(), start=1)
+    }
+    return {
+        query_index: AbeRankedQuery(
+            components_by_id=components_by_id,
+            rankings=rankings,
+        )
+    }
 
 
 async def test_semantic_mode_embeds_query_and_searches_milvus_with_the_query_vector():
@@ -387,6 +442,24 @@ async def test_kis_stage1_text_only_retrieves_configured_text_candidates():
     assert pool.results[0].final_score is None
     assert pool.results[0].stage1.text.raw_cosine == pytest.approx(0.9)
     assert pool.results[0].stage1.text.rank == 1
+
+
+async def test_kis_stage1_text_rejects_beit3_encoder_before_query_encoding():
+    service, encoder, milvus_store, _, _ = _service(
+        query_vector=np.array([[1.0, 0.0]], dtype=np.float32),
+        model_id="beit3_base_itc_patch16_224",
+    )
+
+    with pytest.raises(SearchServiceError, match="FG-CLIP"):
+        await service.retrieve_kis_candidates(
+            text_query="red shirt",
+            text_top_k=2,
+            ocr_query=None,
+            ocr_top_k=5,
+        )
+
+    assert encoder.encode_text_calls == []
+    assert milvus_store.search_calls == []
 
 
 async def test_kis_stage1_text_and_ocr_use_independent_k_and_deduplicate_union():
@@ -689,6 +762,160 @@ async def test_kis_stage2_text_and_ocr_fuses_active_modalities_with_final_geomea
     assert 0 <= results[0].final_score <= 1
     assert results[0].modalities["text"].queries[0].rank_percentile == pytest.approx(0.5)
     assert results[0].modalities["ocr"].queries[0].query_score == pytest.approx(0.8)
+
+
+async def test_kis_stage2_text_and_abe_fuses_active_modalities_with_final_geomean(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    vector_rows = {
+        "A": {
+            "keyframe_id": "A",
+            "embedding": np.array([1.0, 0.0], dtype=np.float32),
+            "video_id": "V1",
+            "frame_idx": 10,
+            "timestamp": 0.4,
+        },
+        "B": {
+            "keyframe_id": "B",
+            "embedding": np.array([0.0, 1.0], dtype=np.float32),
+            "video_id": "V1",
+            "frame_idx": 20,
+            "timestamp": 0.8,
+        },
+    }
+    mongo_docs = {
+        "A": {"video_id": "V1", "frame_idx": 10, "timestamp": 0.4, "thumbnail_path": "a.jpg"},
+        "B": {"video_id": "V1", "frame_idx": 20, "timestamp": 0.8, "thumbnail_path": "b.jpg"},
+    }
+    service, _, _, _, _ = _service(
+        mongo_docs=mongo_docs,
+        vector_rows=vector_rows,
+        text_vectors_by_query={"horizontal": np.array([1.0, 0.0], dtype=np.float32)},
+    )
+    monkeypatch.setattr(
+        service,
+        "_rank_abe_queries",
+        lambda candidate_pool_ids, abe_queries, mongo_docs, vector_rows_by_id: _fake_abe_ranked(
+            1, list(candidate_pool_ids), {"A": 0.25, "B": 1.0}
+        ),
+    )
+
+    results = await service.rerank_kis_candidates(
+        candidate_ids=["A", "B"],
+        queries=[
+            KisQuery(query_index=0, type=QueryType.TEXT, text="horizontal"),
+            KisQuery(
+                query_index=1,
+                type=QueryType.ABE,
+                pairs=(AbePair(attribute="red", object="packet"),),
+            ),
+        ],
+        final_top_k=2,
+    )
+
+    assert results[0].active_modalities == 2
+    assert results[0].modalities.keys() == {"text", "abe"}
+    assert results[0].modalities["abe"].queries[0].rank_percentile == pytest.approx(0.25)
+    assert results[0].final_score == pytest.approx((1.0 * 0.25) ** 0.5)
+
+
+async def test_kis_stage2_ocr_and_abe_fuses_active_modalities_with_final_geomean(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    mongo_docs = {
+        "A": {"video_id": "V1", "frame_idx": 10, "timestamp": 0.4, "thumbnail_path": "a.jpg"},
+        "B": {"video_id": "V1", "frame_idx": 20, "timestamp": 0.8, "thumbnail_path": "b.jpg"},
+    }
+    service, _, _, _, _ = _service(
+        mongo_docs=mongo_docs,
+        ocr_texts_by_id={"A": "VINAMILK", "B": ""},
+        bm25_scores_by_query={"VINAMILK": {"A": 10.0}},
+    )
+    monkeypatch.setattr(
+        service,
+        "_rank_abe_queries",
+        lambda candidate_pool_ids, abe_queries, mongo_docs, vector_rows_by_id: _fake_abe_ranked(
+            1, list(candidate_pool_ids), {"A": 0.25, "B": 1.0}
+        ),
+    )
+
+    results = await service.rerank_kis_candidates(
+        candidate_ids=["A", "B"],
+        queries=[
+            KisQuery(query_index=0, type=QueryType.OCR, text="VINAMILK"),
+            KisQuery(
+                query_index=1,
+                type=QueryType.ABE,
+                pairs=(AbePair(attribute="red", object="packet"),),
+            ),
+        ],
+        final_top_k=2,
+    )
+
+    assert results[0].active_modalities == 2
+    assert results[0].modalities.keys() == {"abe", "ocr"}
+    assert results[0].final_score == pytest.approx((1.0 * 0.25) ** 0.5)
+
+
+async def test_kis_stage2_text_ocr_and_abe_fuses_only_active_stage2_modalities(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    vector_rows = {
+        "A": {
+            "keyframe_id": "A",
+            "embedding": np.array([1.0, 0.0], dtype=np.float32),
+            "video_id": "V1",
+            "frame_idx": 10,
+            "timestamp": 0.4,
+        },
+        "B": {
+            "keyframe_id": "B",
+            "embedding": np.array([0.0, 1.0], dtype=np.float32),
+            "video_id": "V1",
+            "frame_idx": 20,
+            "timestamp": 0.8,
+        },
+    }
+    mongo_docs = {
+        "A": {"video_id": "V1", "frame_idx": 10, "timestamp": 0.4, "thumbnail_path": "a.jpg"},
+        "B": {"video_id": "V1", "frame_idx": 20, "timestamp": 0.8, "thumbnail_path": "b.jpg"},
+    }
+    service, encoder, _, _, _ = _service(
+        mongo_docs=mongo_docs,
+        vector_rows=vector_rows,
+        ocr_texts_by_id={"A": "VINAMILK", "B": ""},
+        bm25_scores_by_query={"VINAMILK": {"A": 10.0}},
+        text_vectors_by_query={
+            "global q0 must never be encoded": np.array([0.0, 1.0], dtype=np.float32),
+            "horizontal": np.array([1.0, 0.0], dtype=np.float32),
+        },
+    )
+    monkeypatch.setattr(
+        service,
+        "_rank_abe_queries",
+        lambda candidate_pool_ids, abe_queries, mongo_docs, vector_rows_by_id: _fake_abe_ranked(
+            2, list(candidate_pool_ids), {"A": 0.25, "B": 1.0}
+        ),
+    )
+
+    results = await service.rerank_kis_candidates(
+        candidate_ids=["A", "B"],
+        queries=[
+            KisQuery(query_index=0, type=QueryType.TEXT, text="horizontal"),
+            KisQuery(query_index=1, type=QueryType.OCR, text="VINAMILK"),
+            KisQuery(
+                query_index=2,
+                type=QueryType.ABE,
+                pairs=(AbePair(attribute="red", object="packet"),),
+            ),
+        ],
+        final_top_k=2,
+    )
+
+    assert encoder.encode_text_calls == [["horizontal"]]
+    assert results[0].active_modalities == 3
+    assert results[0].modalities.keys() == {"text", "abe", "ocr"}
+    assert results[0].final_score == pytest.approx((1.0 * 1.0 * 0.25) ** (1 / 3))
 
 
 async def test_kis_stage2_rejects_final_top_k_larger_than_candidate_pool():

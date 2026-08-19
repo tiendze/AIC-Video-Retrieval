@@ -65,6 +65,7 @@ import argparse
 import asyncio
 import logging
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
@@ -102,6 +103,7 @@ from pipelines.verify_embed_parity import (
     verify_manifest_fields,
     verify_weight_sha256,
 )
+
 # Windows consoles often default to cp1252, which cannot encode the
 # Vietnamese metadata this script logs (video titles/authors) — same fix as
 # run_ingest.py / verify_embed_parity.py.
@@ -121,7 +123,16 @@ _COSINE_THRESHOLD = 0.9999  # kaggle-offline-embed.plan.md §3 "Parity probe"
 _ENCODER_CONFIG_PATHS = {
     "beit3": _BEIT3_CONFIG_PATH,
     "siglip2": _REPO_ROOT / "configs" / "model" / "siglip2.yaml",
+    "fg_clip": _REPO_ROOT / "configs" / "model" / "fg_clip.yaml",
 }
+
+
+@dataclass(frozen=True)
+class _VectorArtifactIdentity:
+    """Encoder identity for explicit no-parity vectors-only imports."""
+
+    model_id: str
+    embedding_dim: int
 
 
 def _parse_args() -> argparse.Namespace:
@@ -179,6 +190,27 @@ def _parse_args() -> argparse.Namespace:
             "Any other --encoder: drop ONLY that encoder's own Milvus collection — "
             "MongoDB is NEVER touched by --reset outside the beit3 path."
         ),
+    )
+    parser.add_argument(
+        "--skip-parity-check",
+        action="store_true",
+        help=(
+            "Unsafe vectors-only import for artifacts that only have vectors/ and no "
+            "manifest.json or probe/. Only allowed for non-beit3 candidate encoders. "
+            "Uses configs/model/<encoder>.yaml's model_id/embedding_dim unless "
+            "--model-id/--embedding-dim override them."
+        ),
+    )
+    parser.add_argument(
+        "--model-id",
+        default=None,
+        help="Override the Milvus collection suffix for --skip-parity-check.",
+    )
+    parser.add_argument(
+        "--embedding-dim",
+        type=int,
+        default=None,
+        help="Override the vector dimension for --skip-parity-check.",
     )
     return parser.parse_args()
 
@@ -252,7 +284,9 @@ def _run_candidate_parity_gate(
     weight file(s) actually behind that revision, plus the same text probe
     beit3 uses. Blocks on any mismatch, same as _run_parity_gate."""
     try:
-        verify_hf_identity(manifest, hf_repo_id=config["hf_repo_id"], hf_revision=config["hf_revision"])
+        verify_hf_identity(
+            manifest, hf_repo_id=config["hf_repo_id"], hf_revision=config["hf_revision"]
+        )
         verify_weight_sha256(
             manifest,
             compute_sha256=hf_hub_weight_sha256(config["hf_repo_id"], config["hf_revision"]),
@@ -276,7 +310,10 @@ def _run_candidate_parity_gate(
     report = ParityReport(probe_results=probe_results, threshold=_COSINE_THRESHOLD)
     logger.info("text parity probe: min_cosine=%.6f passed=%s", report.min_cosine, report.passed)
     if not report.passed:
-        logger.error("BLOCKED: text parity probe failed -- refusing to import %s", embed_out_dir / "vectors")
+        logger.error(
+            "BLOCKED: text parity probe failed -- refusing to import %s",
+            embed_out_dir / "vectors",
+        )
         sys.exit(1)
 
     logger.warning(
@@ -287,7 +324,64 @@ def _run_candidate_parity_gate(
     return encoder
 
 
-def _build_milvus_store(settings: Settings, encoder: MultimodalEncoder) -> MilvusStore:
+def _infer_embedding_dim(vectors_dir: Path) -> int:
+    vector_files = sorted(vectors_dir.glob("*.npy"))
+    if not vector_files:
+        raise ValueError(f"{vectors_dir}: no .npy vector files found")
+    vectors, _ = load_video_vectors(vectors_dir, vector_files[0].stem)
+    if vectors.ndim != 2:
+        raise ValueError(f"{vector_files[0]}: vectors must be rank-2, got shape {vectors.shape}")
+    return int(vectors.shape[1])
+
+
+def _build_unverified_vector_identity(
+    args: argparse.Namespace, config: dict, embed_out_dir: Path
+) -> _VectorArtifactIdentity:
+    if args.encoder == "beit3":
+        logger.error(
+            "BLOCKED: --skip-parity-check is only allowed for vectors-only candidate imports, "
+            "not the primary --encoder beit3 path that writes MongoDB metadata"
+        )
+        sys.exit(1)
+
+    model_id = args.model_id or config.get("model_id")
+    if not model_id:
+        logger.error(
+            "BLOCKED: --skip-parity-check needs model_id from configs/model/%s.yaml or --model-id",
+            args.encoder,
+        )
+        sys.exit(1)
+
+    try:
+        inferred_dim = _infer_embedding_dim(embed_out_dir / "vectors")
+    except ValueError as exc:
+        logger.error("BLOCKED: %s", exc)
+        sys.exit(1)
+
+    embedding_dim = args.embedding_dim or config.get("embedding_dim") or inferred_dim
+    if int(embedding_dim) != inferred_dim:
+        logger.error(
+            "BLOCKED: embedding_dim=%s but the first vector file has dim=%s",
+            embedding_dim,
+            inferred_dim,
+        )
+        sys.exit(1)
+
+    logger.warning(
+        "UNVERIFIED import: skipping manifest/probe checks for encoder=%s, "
+        "model_id=%s, embedding_dim=%s. Make sure query-time uses the exact "
+        "same FG_CLIP checkpoint/tokenizer/preprocess that produced %s.",
+        args.encoder,
+        model_id,
+        embedding_dim,
+        embed_out_dir / "vectors",
+    )
+    return _VectorArtifactIdentity(model_id=str(model_id), embedding_dim=int(embedding_dim))
+
+
+def _build_milvus_store(
+    settings: Settings, encoder: MultimodalEncoder | _VectorArtifactIdentity
+) -> MilvusStore:
     config = _load_yaml(_MILVUS_CONFIG_PATH)
     return MilvusStore(
         uri=settings.milvus_uri,
@@ -519,12 +613,16 @@ async def _main() -> int:
     config_path = _ENCODER_CONFIG_PATHS[args.encoder]
     config = _load_yaml(config_path)
 
-    if args.encoder == "beit3":
+    if args.skip_parity_check:
+        encoder = _build_unverified_vector_identity(args, config, embed_out_dir)
+    elif args.encoder == "beit3":
         encoder = _run_parity_gate(embed_out_dir, config, args.device)
     else:
         manifest = load_manifest(embed_out_dir / "manifest.json")
         _check_manifest_encoder_kind(manifest, args.encoder)
-        encoder = _run_candidate_parity_gate(embed_out_dir, manifest, config_path, config, args.device)
+        encoder = _run_candidate_parity_gate(
+            embed_out_dir, manifest, config_path, config, args.device
+        )
 
     milvus = _build_milvus_store(settings, encoder)
     mongo = MongoStore(uri=settings.mongo_uri)

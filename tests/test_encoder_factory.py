@@ -1,6 +1,6 @@
 """RED reproducer for app/encoders/factory.py -- pure dispatch logic, no
 torch/GPU needed. Uses monkeypatched sys.modules stand-ins for
-app.encoders.beit3 / app.encoders.siglip2 so this runs in the default test
+ app.encoders.beit3 / app.encoders.fg_clip / app.encoders.siglip2 so this runs in the default test
 tier (neither real encoder's heavy deps need to be installed to prove the
 factory picks the right one and passes the right arguments)."""
 
@@ -46,7 +46,11 @@ class TestLoadEncoderConfig:
 
 
 class TestBuildEncoderDispatch:
-    def test_kind_beit3_builds_beit3encoder_with_repo_root_resolved_paths(self, tmp_path, monkeypatch):
+    def test_kind_beit3_builds_beit3encoder_with_repo_root_resolved_paths(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
         calls = _install_fake_encoder_module(monkeypatch, "beit3", "BEiT3Encoder")
         config_path = _write_yaml(
             tmp_path / "beit3.yaml",
@@ -68,6 +72,34 @@ class TestBuildEncoderDispatch:
         assert kwargs["device"] == "cuda"
         assert kwargs["batch_size"] == 16
         assert kwargs["model_id"] == "beit3_base_itc_patch16_224"
+
+    def test_kind_fg_clip_builds_fgclipencoder_with_local_model_fields(self, tmp_path, monkeypatch):
+        calls = _install_fake_encoder_module(monkeypatch, "fg_clip", "FGClipEncoder")
+        config_path = _write_yaml(
+            tmp_path / "fg_clip.yaml",
+            kind="fg_clip",
+            local_model_path="models/fgclip_base",
+            device="cuda",
+            batch_size=16,
+            model_id="fgclip_base",
+            embedding_dim=512,
+            image_size=224,
+            max_text_tokens=77,
+        )
+
+        build_encoder(config_path, batch_size=256)
+
+        assert len(calls) == 1
+        kwargs = calls[0]
+        assert kwargs["model_path"].endswith("models/fgclip_base") or kwargs["model_path"].endswith(
+            "models\\fgclip_base"
+        )
+        assert kwargs["device"] == "cuda"
+        assert kwargs["batch_size"] == 256
+        assert kwargs["model_id"] == "fgclip_base"
+        assert kwargs["embedding_dim"] == 512
+        assert kwargs["image_size"] == 224
+        assert kwargs["max_text_tokens"] == 77
 
     def test_kind_siglip2_builds_siglip2encoder_with_hf_fields(self, tmp_path, monkeypatch):
         calls = _install_fake_encoder_module(monkeypatch, "siglip2", "SigLip2Encoder")

@@ -23,6 +23,10 @@ describe('SearchBar', () => {
       onOcrCandidateKChange: vi.fn(),
       onStage2QueryTextChange: vi.fn(),
       onStage2QueryTypeChange: vi.fn(),
+      onAbePairAttributeChange: vi.fn(),
+      onAbePairObjectChange: vi.fn(),
+      onAddAbePair: vi.fn(),
+      onRemoveAbePair: vi.fn(),
       onAddStage2Query: vi.fn(),
       onRemoveStage2Query: vi.fn(),
       onFinalTopKChange: vi.fn(),
@@ -80,7 +84,7 @@ describe('SearchBar', () => {
   })
 
   it('disables Stage 1 OCR input and Stage 2 OCR option when Elasticsearch is unavailable', () => {
-    const rows: KisQueryRow[] = [{ id: 'q1', type: 'text', text: '' }]
+    const rows: KisQueryRow[] = [{ id: 'q1', type: 'text', text: '', pairs: [] }]
     renderSearchBar({ ocrDisabled: true, candidatePoolSize: 3, stage2Queries: rows })
 
     expect(screen.getByLabelText('stage 1 ocr')).toBeDisabled()
@@ -90,8 +94,8 @@ describe('SearchBar', () => {
   it('reveals Stage 2 after candidate retrieval and wires subquery controls', async () => {
     const user = userEvent.setup()
     const rows: KisQueryRow[] = [
-      { id: 'q1', type: 'text', text: 'night scene' },
-      { id: 'q2', type: 'ocr', text: 'SAIGON' },
+      { id: 'q1', type: 'text', text: 'night scene', pairs: [] },
+      { id: 'q2', type: 'ocr', text: 'SAIGON', pairs: [] },
     ]
     const props = renderSearchBar({
       candidatePoolSize: 347,
@@ -113,6 +117,32 @@ describe('SearchBar', () => {
     expect(props.onStage2QueryTextChange).toHaveBeenCalledWith('q1', 'night scene!')
     expect(props.onAddStage2Query).toHaveBeenCalledTimes(1)
     expect(props.onRemoveStage2Query).toHaveBeenCalledWith('q2')
+  })
+
+  it('renders ABE pair controls and wires pair edits', async () => {
+    const user = userEvent.setup()
+    const rows: KisQueryRow[] = [
+      {
+        id: 'q1',
+        type: 'abe',
+        text: '',
+        pairs: [{ id: 'p1', attribute: 'red', object: 'packet' }],
+      },
+    ]
+    const props = renderSearchBar({
+      candidatePoolSize: 10,
+      stage2Queries: rows,
+    })
+
+    await user.type(screen.getByLabelText('abe attribute 1.1'), '!')
+    await user.type(screen.getByLabelText('abe object 1.1'), '!')
+    await user.click(screen.getByRole('button', { name: /\+ Add pair/i }))
+    await user.click(screen.getByRole('button', { name: /remove abe pair 1.1/i }))
+
+    expect(props.onAbePairAttributeChange).toHaveBeenCalledWith('q1', 'p1', 'red!')
+    expect(props.onAbePairObjectChange).toHaveBeenCalledWith('q1', 'p1', 'packet!')
+    expect(props.onAddAbePair).toHaveBeenCalledWith('q1')
+    expect(props.onRemoveAbePair).toHaveBeenCalledWith('q1', 'p1')
   })
 
   it('disables rerank and shows guidance when no Stage 2 subquery is active', () => {

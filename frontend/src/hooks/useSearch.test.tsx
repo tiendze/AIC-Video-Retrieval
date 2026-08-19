@@ -179,7 +179,9 @@ describe('useSearch staged KIS flow', () => {
 
     act(() => result.current.setGlobalTextQuery('boat'))
     act(() => result.current.retrieveCandidates())
-    await waitFor(() => expect(result.current.candidatePool?.candidateIds).toEqual(['A', 'B', 'C']))
+    await waitFor(() =>
+      expect(result.current.candidatePool?.candidateIds).toEqual(['A', 'B', 'C']),
+    )
 
     act(() => result.current.addStage2Query())
     const firstId = result.current.stage2Queries[0]!.id
@@ -251,6 +253,75 @@ describe('useSearch staged KIS flow', () => {
     expect(rerankKisCandidates).not.toHaveBeenCalled()
     expect(result.current.error).toBe(
       'Add at least one Stage 2 constraint to calculate final reranking',
+    )
+  })
+
+  it('sends ABE pairs as Stage 2 payloads', async () => {
+    vi.mocked(retrieveKisCandidates).mockResolvedValueOnce({
+      candidate_ids: ['A', 'B'],
+      candidate_pool_size: 2,
+      text_candidate_count: 2,
+      ocr_candidate_count: 0,
+      results: [
+        {
+          keyframe_id: 'A',
+          video_id: 'V1',
+          score: 0.9,
+          frame_idx: 10,
+          timestamp: 0.4,
+          thumbnail_path: 'a.jpg',
+          thumbnail_url: '/api/keyframes/A/thumbnail',
+          image_url: '/api/keyframes/A/image',
+          stage1: { source_modalities: ['text'] },
+        },
+        {
+          keyframe_id: 'B',
+          video_id: 'V1',
+          score: 0.8,
+          frame_idx: 20,
+          timestamp: 0.8,
+          thumbnail_path: 'b.jpg',
+          thumbnail_url: '/api/keyframes/B/thumbnail',
+          image_url: '/api/keyframes/B/image',
+          stage1: { source_modalities: ['text'] },
+        },
+      ],
+    })
+    const { result } = renderHook(() => useSearch())
+
+    act(() => result.current.setGlobalTextQuery('packet and uniform'))
+    act(() => result.current.retrieveCandidates())
+    await waitFor(() => expect(result.current.candidatePool?.candidateIds).toEqual(['A', 'B']))
+
+    act(() => result.current.addStage2Query())
+    const queryId = result.current.stage2Queries[0]!.id
+    act(() => result.current.setStage2QueryType(queryId, 'abe'))
+    const pairId = result.current.stage2Queries[0]!.pairs[0]!.id
+    act(() => result.current.setAbePairAttribute(queryId, pairId, ' red '))
+    act(() => result.current.setAbePairObject(queryId, pairId, ' packet '))
+    act(() => result.current.addAbePair(queryId))
+    const secondPairId = result.current.stage2Queries[0]!.pairs[1]!.id
+    act(() => result.current.setAbePairAttribute(queryId, secondPairId, ' white '))
+    act(() => result.current.setAbePairObject(queryId, secondPairId, ' uniform '))
+    act(() => result.current.setFinalTopK(1))
+    act(() => result.current.rerankCandidates())
+
+    await waitFor(() => expect(rerankKisCandidates).toHaveBeenCalledTimes(1))
+    expect(rerankKisCandidates).toHaveBeenCalledWith(
+      {
+        candidate_ids: ['A', 'B'],
+        subqueries: [
+          {
+            type: 'abe',
+            pairs: [
+              { attribute: 'red', object: 'packet' },
+              { attribute: 'white', object: 'uniform' },
+            ],
+          },
+        ],
+        final_top_k: 1,
+      },
+      expect.any(AbortSignal),
     )
   })
 })

@@ -114,6 +114,20 @@ def test_lifespan_loads_settings_onto_app_state(
         assert client.app.state.settings.gemini_api_key.get_secret_value() == "fake-gemini-key"
 
 
+def test_build_encoder_uses_fg_clip_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[Path] = []
+    fake_encoder = _FakeEncoder()
+
+    def fake_build_encoder(path: Path):
+        calls.append(path)
+        return fake_encoder
+
+    monkeypatch.setattr(main_module, "build_encoder", fake_build_encoder)
+
+    assert main_module._build_encoder() is fake_encoder
+    assert calls == [main_module._FG_CLIP_CONFIG_PATH]
+
+
 def test_lifespan_raises_clear_error_when_api_key_missing(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

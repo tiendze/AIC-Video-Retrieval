@@ -7,12 +7,10 @@ afterward because ES OCR hits carry no `frame_idx` at all (CLAUDE.md §3 only
 requires `frame_idx` in Milvus/MongoDB).
 
 `semantic` translates the query VI->EN before encoding when a
-`QueryTranslator` is injected (plan §P0.9): BEiT-3's text tower is trained on
-English pairs, so a Vietnamese query is off-distribution for it even though
-the image tower is untouched -- confirmed 2026-08-11 by the `semantic@en`
-eval channel (AIC Final Score 0.0451 -> 0.6208 on the same collection). `ocr`
-never translates -- the ES index holds Vietnamese OCR text, so an English
-query there would measure translation loss, not the retrieval channel.
+`QueryTranslator` is injected (plan §P0.9): the production vision-language
+text tower is English-caption oriented, while the OCR index stores Vietnamese
+text. `ocr` never translates -- an English OCR query would measure translation
+loss, not the retrieval channel.
 
 `search_by_image` (plan §P1.1) is image-to-image search: it shares the same
 Milvus-vector-to-SearchHit mapping as `semantic` (`_search_milvus_vector`),
@@ -35,8 +33,7 @@ into ranking, matching how the strongest AIC teams (Vortex, MERVIN) use OCR
 as an operator-driven filter/mode rather than an automatic-ranking channel.
 
 `_reciprocal_rank_fusion` below is KEPT (not deleted) for a future genuine
-use: fusing two semantic encoders of comparable quality (e.g. BEiT-3+envit5
-⊕ SigLIP2, per docs/research-encoder-vietnamese.md §8.3) once a second
+use: fusing two semantic encoders of comparable quality once a second
 encoder exists -- unlike semantic-vs-ocr, two same-kind channels are the
 case RRF-by-rank is designed for. It is currently unused/unwired.
 
@@ -60,7 +57,10 @@ from elasticsearch import ConnectionError as EsConnectionError
 from PIL import Image
 
 from app.encoders.base import MultimodalEncoder
+from app.services.abe import AbeConceptBank, AbeError, AbePatchCache, AbeRankedQuery, AbeScorer
 from app.services.kis_scoring import (
+    AbeModalityScore,
+    AbeQueryScore,
     KisConfig,
     KisQuery,
     OcrModalityScore,
@@ -91,10 +91,12 @@ SearchMode = Literal["semantic", "ocr"]
 _SEARCH_CONFIG_PATH = (
     Path(__file__).resolve().parent.parent.parent / "configs" / "search" / "search.yaml"
 )
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _DEFAULT_RRF_K = 60  # plan §P1.3: RRF's own well-known literature default,
 # kept only as _reciprocal_rank_fusion's own default -- no caller wires it
 # today (module docstring: hybrid mode removed 2026-08-12).
 _MISSING_TEXT_RAW_SCORE = -1.0
+_EXPECTED_KIS_ENCODER_KIND = "fg_clip"
 
 
 @dataclass(frozen=True)
@@ -142,7 +144,7 @@ class SearchHit:
     thumbnail_path: str
     final_score: float | None = None
     active_modalities: int | None = None
-    modalities: dict[str, TextModalityScore | OcrModalityScore] | None = None
+    modalities: dict[str, TextModalityScore | OcrModalityScore | AbeModalityScore] | None = None
     stage1: Stage1RetrievalScore | None = None
 
 
@@ -167,6 +169,8 @@ class SearchService:
         mongo_store: MongoStore,
         query_translator: QueryTranslator | None = None,
         kis_config: KisConfig | None = None,
+        abe_concept_bank: AbeConceptBank | None = None,
+        abe_patch_cache: AbePatchCache | None = None,
     ) -> None:
         self._encoder = encoder
         self._milvus_store = milvus_store
@@ -174,6 +178,11 @@ class SearchService:
         self._mongo_store = mongo_store
         self._query_translator = query_translator
         self._kis_config = kis_config or _load_kis_config()
+        self._abe_concept_bank = abe_concept_bank
+        self._abe_patch_cache = abe_patch_cache or AbePatchCache(
+            dtype=self._kis_config.abe_patch_cache_dtype
+        )
+        self._abe_scorer: AbeScorer | None = None
 
     async def search(self, query: str, mode: SearchMode, top_k: int) -> list[SearchHit]:
         if mode == "semantic":
@@ -219,6 +228,7 @@ class SearchService:
         text_candidate_ids: list[str] = []
         text_query_vector: np.ndarray | None = None
         if text_query:
+            _assert_kis_fg_clip_encoder(self._encoder)
             text_inputs = await self._prepare_text_inputs([text_query])
             text_vectors = await asyncio.to_thread(self._encoder.encode_text, text_inputs)
             text_query_vector = np.asarray(text_vectors[0], dtype=np.float32)
@@ -466,7 +476,7 @@ class SearchService:
                 keyframe_id.strip() for keyframe_id in candidate_ids if keyframe_id.strip()
             )
         )
-        clean_queries = [q for q in queries if q.text.strip()]
+        clean_queries = [q for q in queries if _kis_query_is_active(q)]
         if not candidate_ids:
             raise SearchServiceError(
                 "Stage 2 requires a non-empty Stage 1 candidate pool",
@@ -488,12 +498,17 @@ class SearchService:
 
         text_queries = [q for q in clean_queries if q.type == QueryType.TEXT]
         ocr_queries = [q for q in clean_queries if q.type == QueryType.OCR]
+        abe_queries = [q for q in clean_queries if q.type == QueryType.ABE]
 
         text_vectors = np.empty((0, self._encoder.embedding_dim), dtype=np.float32)
         vector_rows_by_id: dict[str, dict] = {}
         if text_queries:
+            _assert_kis_fg_clip_encoder(self._encoder)
             text_inputs = await self._prepare_text_inputs([q.text for q in text_queries])
             text_vectors = await asyncio.to_thread(self._encoder.encode_text, text_inputs)
+        if abe_queries:
+            _assert_kis_fg_clip_encoder(self._encoder)
+        if text_queries or abe_queries:
             vector_rows_by_id = await asyncio.to_thread(
                 self._milvus_store.get_vectors_by_ids, candidate_ids
             )
@@ -551,15 +566,37 @@ class SearchService:
                 config=self._kis_config,
             )
 
+        abe_ranked_by_query: dict[int, AbeRankedQuery] = {}
+        if abe_queries:
+            try:
+                abe_ranked_by_query = await asyncio.to_thread(
+                    self._rank_abe_queries,
+                    candidate_pool_ids,
+                    abe_queries,
+                    mongo_docs,
+                    vector_rows_by_id,
+                )
+            except AbeError as exc:
+                raise SearchServiceError(
+                    str(exc), error_code="abe_unavailable", status_code=503
+                ) from exc
+
         scored_hits: list[SearchHit] = []
         for keyframe_id in candidate_pool_ids:
             metadata = metadata_by_id[keyframe_id]
-            modalities: dict[str, TextModalityScore | OcrModalityScore] = {}
+            modalities: dict[str, TextModalityScore | OcrModalityScore | AbeModalityScore] = {}
             if text_queries:
                 modalities["text"] = _build_text_modality_score(
                     keyframe_id=keyframe_id,
                     text_queries=text_queries,
                     text_rankings=text_rankings,
+                    config=self._kis_config,
+                )
+            if abe_queries:
+                modalities["abe"] = _build_abe_modality_score(
+                    keyframe_id=keyframe_id,
+                    abe_queries=abe_queries,
+                    abe_ranked_by_query=abe_ranked_by_query,
                     config=self._kis_config,
                 )
             if ocr_queries:
@@ -594,6 +631,78 @@ class SearchService:
             reverse=True,
         )
         return scored_hits[:final_top_k]
+
+    def _rank_abe_queries(
+        self,
+        candidate_pool_ids: Sequence[str],
+        abe_queries: Sequence[KisQuery],
+        mongo_docs: dict[str, dict],
+        vector_rows_by_id: dict[str, dict],
+    ) -> dict[int, AbeRankedQuery]:
+        missing_image_ids = [
+            keyframe_id
+            for keyframe_id in candidate_pool_ids
+            if not (mongo_docs.get(keyframe_id) or {}).get("image_path")
+        ]
+        if missing_image_ids:
+            raise AbeError(
+                "ABE requires Mongo image_path for every candidate; "
+                f"missing ids include {missing_image_ids[:5]}"
+            )
+
+        image_paths_by_id = {
+            keyframe_id: Path(mongo_docs[keyframe_id]["image_path"])
+            for keyframe_id in candidate_pool_ids
+        }
+        global_vectors_by_id = {
+            keyframe_id: np.asarray(vector_rows_by_id[keyframe_id]["embedding"], dtype=np.float32)
+            for keyframe_id in candidate_pool_ids
+            if keyframe_id in vector_rows_by_id
+        }
+        return self._get_abe_scorer().score_queries(
+            candidate_ids=candidate_pool_ids,
+            queries=abe_queries,
+            image_paths_by_id=image_paths_by_id,
+            global_image_vectors_by_id=global_vectors_by_id,
+            patch_cache=self._abe_patch_cache,
+        )
+
+    def _get_abe_scorer(self) -> AbeScorer:
+        if self._abe_scorer is None:
+            self._abe_scorer = AbeScorer(
+                encoder=self._encoder,
+                concept_bank=self._get_abe_concept_bank(),
+                config=self._kis_config,
+            )
+        return self._abe_scorer
+
+    def _get_abe_concept_bank(self) -> AbeConceptBank:
+        expected_checkpoint = getattr(self._encoder, "checkpoint_id", None)
+        if self._abe_concept_bank is not None:
+            self._abe_concept_bank.validate_compatibility(
+                expected_model_id=self._encoder.model_id,
+                expected_embedding_dim=self._encoder.embedding_dim,
+                expected_encoder_kind=_EXPECTED_KIS_ENCODER_KIND,
+                expected_checkpoint=expected_checkpoint,
+            )
+            return self._abe_concept_bank
+
+        path = Path(self._kis_config.abe_concept_bank_path)
+        if not path.is_absolute():
+            path = _REPO_ROOT / path
+        try:
+            self._abe_concept_bank = AbeConceptBank.load(
+                path,
+                expected_model_id=self._encoder.model_id,
+                expected_embedding_dim=self._encoder.embedding_dim,
+                expected_encoder_kind=_EXPECTED_KIS_ENCODER_KIND,
+                expected_checkpoint=expected_checkpoint,
+            )
+        except FileNotFoundError as exc:
+            raise AbeError(f"ABE concept bank not found: {path}") from exc
+        except ValueError as exc:
+            raise AbeError(str(exc)) from exc
+        return self._abe_concept_bank
 
     async def _search_semantic(self, query: str, top_k: int) -> list[SearchHit]:
         if self._query_translator is not None:
@@ -699,6 +808,36 @@ class SearchService:
 def _load_kis_config() -> KisConfig:
     with _SEARCH_CONFIG_PATH.open(encoding="utf-8") as f:
         return KisConfig.from_mapping(yaml.safe_load(f))
+
+
+def _assert_kis_fg_clip_encoder(encoder: MultimodalEncoder) -> None:
+    model_id = str(getattr(encoder, "model_id", ""))
+    encoder_kind = getattr(encoder, "encoder_kind", None)
+    if encoder_kind is not None:
+        if str(encoder_kind).lower() == _EXPECTED_KIS_ENCODER_KIND:
+            return
+        raise SearchServiceError(
+            "KIS semantic encoder must be FG-CLIP Base ViT-B/16; "
+            f"got encoder_kind={encoder_kind!r}, model_id={model_id!r}",
+            error_code="kis_encoder_mismatch",
+            status_code=503,
+        )
+
+    normalized_model_id = model_id.lower().replace("_", "")
+    if "fgclip" in normalized_model_id or normalized_model_id.startswith("fake"):
+        return
+    raise SearchServiceError(
+        "KIS semantic encoder must be FG-CLIP Base ViT-B/16; "
+        f"could not verify model_id={model_id!r} as FG-CLIP",
+        error_code="kis_encoder_mismatch",
+        status_code=503,
+    )
+
+
+def _kis_query_is_active(query: KisQuery) -> bool:
+    if query.type == QueryType.ABE:
+        return any(pair.attribute.strip() and pair.object.strip() for pair in query.pairs)
+    return bool(query.text.strip())
 
 
 def _union_candidate_ids(
@@ -975,6 +1114,37 @@ def _build_ocr_modality_score(
 
     score = geometric_mean_score([detail.rank_percentile for detail in details], config)
     return OcrModalityScore(geometric_mean=score, score=score, queries=details)
+
+
+def _build_abe_modality_score(
+    keyframe_id: str,
+    abe_queries: Sequence[KisQuery],
+    abe_ranked_by_query: dict[int, AbeRankedQuery],
+    config: KisConfig,
+) -> AbeModalityScore:
+    details: list[AbeQueryScore] = []
+    for query in abe_queries:
+        ranked_query = abe_ranked_by_query[query.query_index]
+        components = ranked_query.components_by_id[keyframe_id]
+        ranked = ranked_query.rankings[keyframe_id]
+        details.append(
+            AbeQueryScore(
+                query_index=query.query_index,
+                pairs=components.pairs,
+                base_local=components.base_local,
+                refined_local=components.refined_local,
+                binding_delta=components.binding_delta,
+                local_score=components.local_score,
+                global_abe=components.global_abe,
+                raw_score=components.raw_score,
+                rank=ranked.rank,
+                rank_percentile=ranked.rank_percentile,
+                patch_heatmap=components.patch_heatmap,
+            )
+        )
+
+    score = geometric_mean_score([detail.rank_percentile for detail in details], config)
+    return AbeModalityScore(geometric_mean=score, score=score, queries=details)
 
 
 def _reciprocal_rank_fusion(

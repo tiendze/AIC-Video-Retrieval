@@ -1,11 +1,11 @@
-"""MultimodalEncoder Protocol — the risk-R1 firewall around BEiT-3.
+"""MultimodalEncoder Protocol for vision-language retrieval encoders.
 
 Every caller in the pipeline talks to this interface only, never to a concrete
-encoder implementation directly. Swapping BEiT3Encoder for SigLIPEncoder (fallback
-if BEiT-3 setup blows the 1-day timebox) must not require touching call sites.
+encoder implementation directly. Swapping the active semantic encoder must not
+require touching store/search call sites.
 
 Contract every implementation must satisfy (enforced by tests, see
-tests/test_beit3_encoder.py):
+tests/test_*_encoder.py):
 - encode_image / encode_text return np.ndarray, shape (N, embedding_dim), dtype float32
 - rows are L2-normalized inside the encoder — callers never normalize themselves
 - same input -> same output vector (deterministic inference)

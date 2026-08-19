@@ -25,13 +25,21 @@ except ImportError:  # pragma: no cover - exercised only in dependency-light env
 class QueryType(str, Enum):
     TEXT = "text"
     OCR = "ocr"
+    ABE = "abe"
+
+
+@dataclass(frozen=True)
+class AbePair:
+    attribute: str
+    object: str
 
 
 @dataclass(frozen=True)
 class KisQuery:
     query_index: int
     type: QueryType
-    text: str
+    text: str = ""
+    pairs: tuple[AbePair, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -45,6 +53,12 @@ class KisConfig:
     ocr_short_token_threshold: float = 0.95
     ocr_long_token_threshold: float = 0.8
     ocr_ngram_max_tokens: int = 2
+    abe_concept_bank_path: str = "data/abe/concept_bank_fgclip_b16.pt"
+    abe_concept_top_p: int = 5
+    abe_patch_top_k: int = 5
+    abe_global_weight: float = 0.3
+    abe_patch_cache_dtype: str = "float16"
+    abe_patch_batch_size: int = 16
 
     def __post_init__(self) -> None:
         if self.candidate_multiplier < 2:
@@ -67,6 +81,16 @@ class KisConfig:
             raise ValueError("kis_ocr_short_token_max_length must be positive")
         if self.ocr_ngram_max_tokens < 1:
             raise ValueError("kis_ocr_ngram_max_tokens must be positive")
+        if self.abe_concept_top_p < 1:
+            raise ValueError("abe_concept_top_p must be positive")
+        if self.abe_patch_top_k < 1:
+            raise ValueError("abe_patch_top_k must be positive")
+        if not 0 <= self.abe_global_weight <= 1:
+            raise ValueError("abe_global_weight must be in [0, 1]")
+        if self.abe_patch_cache_dtype not in {"float16", "float32"}:
+            raise ValueError("abe_patch_cache_dtype must be float16 or float32")
+        if self.abe_patch_batch_size < 1:
+            raise ValueError("abe_patch_batch_size must be positive")
 
     @classmethod
     def from_mapping(cls, config: Mapping[str, object]) -> KisConfig:
@@ -80,6 +104,14 @@ class KisConfig:
             ocr_short_token_threshold=float(config.get("kis_ocr_short_token_threshold", 0.95)),
             ocr_long_token_threshold=float(config.get("kis_ocr_long_token_threshold", 0.8)),
             ocr_ngram_max_tokens=int(config.get("kis_ocr_ngram_max_tokens", 2)),
+            abe_concept_bank_path=str(
+                config.get("abe_concept_bank_path", "data/abe/concept_bank_fgclip_b16.pt")
+            ),
+            abe_concept_top_p=int(config.get("abe_concept_top_p", 5)),
+            abe_patch_top_k=int(config.get("abe_patch_top_k", 5)),
+            abe_global_weight=float(config.get("abe_global_weight", 0.3)),
+            abe_patch_cache_dtype=str(config.get("abe_patch_cache_dtype", "float16")),
+            abe_patch_batch_size=int(config.get("abe_patch_batch_size", 16)),
         )
 
 
@@ -106,6 +138,45 @@ class OcrQueryScore:
 
 
 @dataclass(frozen=True)
+class AbePairScore:
+    attribute: str
+    object: str
+    positive_attributes: list[str]
+    negative_attributes: list[str]
+
+
+@dataclass(frozen=True)
+class AbePatchHit:
+    label: str
+    patch_index: int
+    score: float
+
+
+@dataclass(frozen=True)
+class AbePatchHeatmap:
+    patch_count: int
+    grid_width: int
+    grid_height: int
+    base_top_patches: list[AbePatchHit]
+    refined_top_patches: list[AbePatchHit]
+
+
+@dataclass(frozen=True)
+class AbeQueryScore:
+    query_index: int
+    pairs: list[AbePairScore]
+    base_local: float
+    refined_local: float
+    binding_delta: float
+    local_score: float
+    global_abe: float
+    raw_score: float
+    rank: int
+    rank_percentile: float
+    patch_heatmap: AbePatchHeatmap | None = None
+
+
+@dataclass(frozen=True)
 class TextModalityScore:
     geometric_mean: float
     score: float
@@ -117,6 +188,13 @@ class OcrModalityScore:
     geometric_mean: float
     score: float
     queries: list[OcrQueryScore]
+
+
+@dataclass(frozen=True)
+class AbeModalityScore:
+    geometric_mean: float
+    score: float
+    queries: list[AbeQueryScore]
 
 
 @dataclass(frozen=True)

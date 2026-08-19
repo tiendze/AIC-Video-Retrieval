@@ -36,6 +36,18 @@ kis_ocr_short_token_threshold: 0.95
 kis_ocr_long_token_threshold: 0.8
 kis_ocr_ngram_max_tokens: 2
 
+# ABE Stage 2 attribute-object binding reranker. The concept bank is built
+# offline from SPLiCE-style concept strings with scripts/build_abe_concept_bank.py
+# and must match the active FG-CLIP model_id. `abe_concept_top_p` is a documented
+# fallback because no local paper/reference implementation in this repository
+# pins P; tune after reproducing the original ABE setting.
+abe_concept_bank_path: data/abe/concept_bank_fgclip_b16.pt
+abe_concept_top_p: 5
+abe_patch_top_k: 5
+abe_global_weight: 0.3
+abe_patch_cache_dtype: float16
+abe_patch_batch_size: 16
+
 # POST /api/search/image upload guard (plan §P1.1, CLAUDE.md §7: validate
 # size + MIME on any uploaded image, never store it permanently).
 max_upload_size_bytes: 10485760  # 10 MiB

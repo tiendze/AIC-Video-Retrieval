@@ -35,17 +35,42 @@ class SearchRequest(BaseModel):
     top_k: int = Field(default=DEFAULT_TOP_K, ge=1, le=MAX_TOP_K)
 
 
-class KisQueryRequest(BaseModel):
-    type: Literal["text", "ocr"]
-    text: str = Field(min_length=1)
+class AbePairRequest(BaseModel):
+    attribute: str = Field(min_length=1)
+    object: str = Field(min_length=1)
 
-    @field_validator("text")
+    @field_validator("attribute", "object")
     @classmethod
-    def text_must_not_be_blank(cls, value: str) -> str:
+    def pair_fields_must_not_be_blank(cls, value: str) -> str:
         stripped = value.strip()
         if not stripped:
-            raise ValueError("query text must not be blank")
+            raise ValueError("ABE pair fields must not be blank")
         return stripped
+
+
+class KisQueryRequest(BaseModel):
+    type: Literal["text", "ocr", "abe"]
+    text: str | None = None
+    pairs: list[AbePairRequest] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_by_query_type(self) -> KisQueryRequest:
+        if self.type in {"text", "ocr"}:
+            stripped = (self.text or "").strip()
+            if not stripped:
+                raise ValueError("query text must not be blank")
+            self.text = stripped
+            self.pairs = []
+            return self
+
+        valid_pairs = [
+            pair for pair in self.pairs if pair.attribute.strip() and pair.object.strip()
+        ]
+        if not valid_pairs:
+            raise ValueError("ABE query requires at least one valid attribute-object pair")
+        self.text = ""
+        self.pairs = valid_pairs
+        return self
 
 
 class KisSearchRequest(BaseModel):

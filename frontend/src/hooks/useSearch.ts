@@ -33,6 +33,10 @@ export interface UseSearchResult {
   stage2Queries: KisQueryRow[]
   setStage2QueryText: (id: string, text: string) => void
   setStage2QueryType: (id: string, type: KisQueryType) => void
+  setAbePairAttribute: (queryId: string, pairId: string, value: string) => void
+  setAbePairObject: (queryId: string, pairId: string, value: string) => void
+  addAbePair: (queryId: string) => void
+  removeAbePair: (queryId: string, pairId: string) => void
   addStage2Query: () => void
   removeStage2Query: (id: string) => void
   finalTopK: number
@@ -82,10 +86,32 @@ function nextKisRowId(): string {
   return `kis-${kisRowIdCounter}`
 }
 
+let abePairIdCounter = 0
+function nextAbePairId(): string {
+  abePairIdCounter += 1
+  return `abe-pair-${abePairIdCounter}`
+}
+
+function emptyAbePair() {
+  return { id: nextAbePairId(), attribute: '', object: '' }
+}
+
 function activePayload(rows: KisQueryRow[]): KisQueryPayload[] {
   return rows
-    .map((row) => ({ type: row.type, text: row.text.trim() }))
-    .filter((row) => row.text.length > 0)
+    .map((row): KisQueryPayload | null => {
+      if (row.type === 'abe') {
+        const pairs = row.pairs
+          .map((pair) => ({
+            attribute: pair.attribute.trim(),
+            object: pair.object.trim(),
+          }))
+          .filter((pair) => pair.attribute.length > 0 && pair.object.length > 0)
+        return pairs.length > 0 ? { type: 'abe', pairs } : null
+      }
+      const text = row.text.trim()
+      return text.length > 0 ? { type: row.type, text } : null
+    })
+    .filter((row): row is KisQueryPayload => row !== null)
 }
 
 export function useSearch(): UseSearchResult {
@@ -136,15 +162,74 @@ export function useSearch(): UseSearchResult {
   }, [])
 
   const setStage2QueryType = useCallback((id: string, type: KisQueryType) => {
-    setStage2Queries((prev) => prev.map((row) => (row.id === id ? { ...row, type } : row)))
+    setStage2Queries((prev) =>
+      prev.map((row) => {
+        if (row.id !== id) return row
+        if (type === 'abe' && row.pairs.length === 0) {
+          return { ...row, type, text: '', pairs: [emptyAbePair()] }
+        }
+        return { ...row, type }
+      }),
+    )
   }, [])
 
   const addStage2Query = useCallback(() => {
-    setStage2Queries((prev) => [...prev, { id: nextKisRowId(), type: 'text', text: '' }])
+    setStage2Queries((prev) => [
+      ...prev,
+      { id: nextKisRowId(), type: 'text', text: '', pairs: [] },
+    ])
   }, [])
 
   const removeStage2Query = useCallback((id: string) => {
     setStage2Queries((prev) => prev.filter((row) => row.id !== id))
+  }, [])
+
+  const setAbePairAttribute = useCallback((queryId: string, pairId: string, value: string) => {
+    setStage2Queries((prev) =>
+      prev.map((row) =>
+        row.id === queryId
+          ? {
+              ...row,
+              pairs: row.pairs.map((pair) =>
+                pair.id === pairId ? { ...pair, attribute: value } : pair,
+              ),
+            }
+          : row,
+      ),
+    )
+  }, [])
+
+  const setAbePairObject = useCallback((queryId: string, pairId: string, value: string) => {
+    setStage2Queries((prev) =>
+      prev.map((row) =>
+        row.id === queryId
+          ? {
+              ...row,
+              pairs: row.pairs.map((pair) =>
+                pair.id === pairId ? { ...pair, object: value } : pair,
+              ),
+            }
+          : row,
+      ),
+    )
+  }, [])
+
+  const addAbePair = useCallback((queryId: string) => {
+    setStage2Queries((prev) =>
+      prev.map((row) =>
+        row.id === queryId ? { ...row, pairs: [...row.pairs, emptyAbePair()] } : row,
+      ),
+    )
+  }, [])
+
+  const removeAbePair = useCallback((queryId: string, pairId: string) => {
+    setStage2Queries((prev) =>
+      prev.map((row) => {
+        if (row.id !== queryId) return row
+        const remaining = row.pairs.filter((pair) => pair.id !== pairId)
+        return { ...row, pairs: remaining.length > 0 ? remaining : [emptyAbePair()] }
+      }),
+    )
   }, [])
 
   const setQuery = useCallback((text: string) => {
@@ -287,6 +372,10 @@ export function useSearch(): UseSearchResult {
     stage2Queries,
     setStage2QueryText,
     setStage2QueryType,
+    setAbePairAttribute,
+    setAbePairObject,
+    addAbePair,
+    removeAbePair,
     addStage2Query,
     removeStage2Query,
     finalTopK,

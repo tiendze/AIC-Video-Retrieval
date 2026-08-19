@@ -25,6 +25,9 @@ from app.api.errors import APIError, register_error_handling
 from app.dependencies import get_search_service
 from app.schemas.request.search import MAX_UPLOAD_SIZE_BYTES
 from app.services.kis_scoring import (
+    AbeModalityScore,
+    AbePairScore,
+    AbeQueryScore,
     OcrModalityScore,
     OcrQueryScore,
     Stage1RetrievalScore,
@@ -80,6 +83,7 @@ class _FakeSearchService:
         self.rerank_kis_candidates_calls: list[
             tuple[list[str], list[tuple[int, str, str]], int]
         ] = []
+        self.rerank_kis_query_objects = []
         self.search_by_image_calls: list[int] = []
 
     async def search(self, query: str, mode: str, top_k: int) -> list[SearchHit]:
@@ -110,6 +114,7 @@ class _FakeSearchService:
                 final_top_k,
             )
         )
+        self.rerank_kis_query_objects.append(list(queries))
         if self._error is not None:
             raise self._error
         return self._hits
@@ -399,6 +404,37 @@ def test_kis_rerank_accepts_candidate_pool_subqueries_and_final_top_k():
     assert response.json()["final_top_k"] == 2
 
 
+def test_kis_rerank_accepts_abe_pair_subqueries():
+    service = _FakeSearchService(hits=_ONE_KIS_HIT)
+    client = _client(service)
+
+    response = client.post(
+        "/api/search/kis/rerank",
+        json={
+            "candidate_ids": ["A", "B"],
+            "subqueries": [
+                {
+                    "type": "abe",
+                    "pairs": [
+                        {"attribute": " red ", "object": " seasoning packet "},
+                        {"attribute": "white", "object": "chef uniform"},
+                    ],
+                }
+            ],
+            "final_top_k": 2,
+        },
+    )
+
+    assert response.status_code == 200
+    query = service.rerank_kis_query_objects[0][0]
+    assert query.type.value == "abe"
+    assert query.text == ""
+    assert [(pair.attribute, pair.object) for pair in query.pairs] == [
+        ("red", "seasoning packet"),
+        ("white", "chef uniform"),
+    ]
+
+
 def test_kis_rerank_returns_nested_score_breakdown():
     service = _FakeSearchService(hits=_ONE_KIS_HIT)
     client = _client(service)
@@ -428,6 +464,73 @@ def test_kis_rerank_returns_nested_score_breakdown():
         "rank": 1,
         "rank_percentile": 1.0,
     }
+
+
+def test_kis_rerank_returns_nested_abe_score_breakdown():
+    hit = SearchHit(
+        keyframe_id="L21_V001_f10",
+        video_id="L21_V001",
+        score=1.0,
+        frame_idx=10,
+        timestamp=0.4,
+        thumbnail_path="t.jpg",
+        final_score=1.0,
+        active_modalities=1,
+        modalities={
+            "abe": AbeModalityScore(
+                geometric_mean=1.0,
+                score=1.0,
+                queries=[
+                    AbeQueryScore(
+                        query_index=0,
+                        pairs=[
+                            AbePairScore(
+                                attribute="red",
+                                object="packet",
+                                positive_attributes=["red"],
+                                negative_attributes=["white"],
+                            )
+                        ],
+                        base_local=0.2,
+                        refined_local=0.4,
+                        binding_delta=0.2,
+                        local_score=0.6,
+                        global_abe=0.7,
+                        raw_score=0.63,
+                        rank=1,
+                        rank_percentile=1.0,
+                    )
+                ],
+            )
+        },
+    )
+    service = _FakeSearchService(hits=[hit])
+    client = _client(service)
+
+    response = client.post(
+        "/api/search/kis/rerank",
+        json={
+            "candidate_ids": ["L21_V001_f10"],
+            "subqueries": [{"type": "abe", "pairs": [{"attribute": "red", "object": "packet"}]}],
+            "final_top_k": 1,
+        },
+    )
+
+    assert response.status_code == 200
+    query = response.json()["results"][0]["modalities"]["abe"]["queries"][0]
+    assert query["pairs"][0] == {
+        "attribute": "red",
+        "object": "packet",
+        "positive_attributes": ["red"],
+        "negative_attributes": ["white"],
+    }
+    assert query["base_local"] == 0.2
+    assert query["refined_local"] == 0.4
+    assert query["binding_delta"] == 0.2
+    assert query["local_score"] == 0.6
+    assert query["global_abe"] == 0.7
+    assert query["raw_score"] == 0.63
+    assert query["rank_percentile"] == 1.0
 
 
 def test_kis_rerank_rejects_final_top_k_above_candidate_pool_before_reaching_service():

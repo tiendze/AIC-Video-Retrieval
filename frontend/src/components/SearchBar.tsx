@@ -19,6 +19,10 @@ export interface SearchBarProps {
   onOcrCandidateKChange: (value: number) => void
   onStage2QueryTextChange: (id: string, value: string) => void
   onStage2QueryTypeChange: (id: string, type: KisQueryType) => void
+  onAbePairAttributeChange: (queryId: string, pairId: string, value: string) => void
+  onAbePairObjectChange: (queryId: string, pairId: string, value: string) => void
+  onAddAbePair: (queryId: string) => void
+  onRemoveAbePair: (queryId: string, pairId: string) => void
   onAddStage2Query: () => void
   onRemoveStage2Query: (id: string) => void
   onFinalTopKChange: (value: number) => void
@@ -46,6 +50,10 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
     onOcrCandidateKChange,
     onStage2QueryTextChange,
     onStage2QueryTypeChange,
+    onAbePairAttributeChange,
+    onAbePairObjectChange,
+    onAddAbePair,
+    onRemoveAbePair,
     onAddStage2Query,
     onRemoveStage2Query,
     onFinalTopKChange,
@@ -58,7 +66,11 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
   ref,
 ) {
   const hasStage1Input = globalTextQuery.trim().length > 0 || ocrQuery.trim().length > 0
-  const activeStage2Queries = stage2Queries.filter((row) => row.text.trim().length > 0)
+  const activeStage2Queries = stage2Queries.filter((row) =>
+    row.type === 'abe'
+      ? row.pairs.some((pair) => pair.attribute.trim() && pair.object.trim())
+      : row.text.trim().length > 0,
+  )
   const canRerank =
     candidatePoolSize !== null &&
     candidatePoolSize > 0 &&
@@ -77,14 +89,14 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
         }}
       >
         <div className={styles.stageHeader}>
-          <span>Stage 1 — Global Retrieval</span>
+          <span>Stage 1 - Candidate Retrieval</span>
           {candidatePoolSize !== null && (
             <strong>Candidate Pool: {candidatePoolSize} unique images</strong>
           )}
         </div>
         <div className={styles.stageGrid}>
           <label className={styles.fieldWide}>
-            <span>Text Q0</span>
+            <span>Text Q0 (FG-CLIP)</span>
             <input
               ref={ref}
               aria-label="text q0"
@@ -167,22 +179,81 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
                   <option value="ocr" disabled={ocrDisabled}>
                     OCR
                   </option>
+                  <option value="abe">ABE</option>
                 </select>
-                <input
-                  aria-label={`stage 2 query ${index + 1}`}
-                  className={styles.input}
-                  type="text"
-                  placeholder={
-                    row.type === 'ocr'
-                      ? 'Text visible in the frame...'
-                      : 'Constraint to rerank the candidate pool...'
-                  }
-                  value={row.text}
-                  onChange={(event) => onStage2QueryTextChange(row.id, event.target.value)}
-                />
+                {row.type === 'abe' ? (
+                  <div className={styles.abeGroup}>
+                    <div className={styles.abeHeader} aria-hidden="true">
+                      <span>Attribute</span>
+                      <span>Object</span>
+                      <span />
+                    </div>
+                    {row.pairs.map((pair, pairIndex) => (
+                      <div className={styles.abePair} key={pair.id}>
+                        <label className={styles.abeField}>
+                          <span className={styles.visuallyHidden}>Attribute {pairIndex + 1}</span>
+                          <input
+                            aria-label={`abe attribute ${index + 1}.${pairIndex + 1}`}
+                            className={styles.input}
+                            type="text"
+                            placeholder="red"
+                            value={pair.attribute}
+                            onChange={(event) =>
+                              onAbePairAttributeChange(row.id, pair.id, event.target.value)
+                            }
+                          />
+                        </label>
+                        <label className={styles.abeField}>
+                          <span className={styles.visuallyHidden}>Object {pairIndex + 1}</span>
+                          <input
+                            aria-label={`abe object ${index + 1}.${pairIndex + 1}`}
+                            className={styles.input}
+                            type="text"
+                            placeholder="seasoning packet"
+                            value={pair.object}
+                            onChange={(event) =>
+                              onAbePairObjectChange(row.id, pair.id, event.target.value)
+                            }
+                          />
+                        </label>
+                        <button
+                          type="button"
+                          className={`${styles.remove} ${styles.removePair}`}
+                          aria-label={`remove abe pair ${index + 1}.${pairIndex + 1}`}
+                          title="Remove pair"
+                          onClick={() => onRemoveAbePair(row.id, pair.id)}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                    <div className={styles.abeActions}>
+                      <button
+                        type="button"
+                        className={styles.addPairButton}
+                        onClick={() => onAddAbePair(row.id)}
+                      >
+                        + Add pair
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <input
+                    aria-label={`stage 2 query ${index + 1}`}
+                    className={styles.input}
+                    type="text"
+                    placeholder={
+                      row.type === 'ocr'
+                        ? 'Text visible in the frame...'
+                        : 'Constraint to rerank the candidate pool...'
+                    }
+                    value={row.text}
+                    onChange={(event) => onStage2QueryTextChange(row.id, event.target.value)}
+                  />
+                )}
                 <button
                   type="button"
-                  className={styles.remove}
+                  className={`${styles.remove} ${styles.removeQuery}`}
                   aria-label={`remove stage 2 query ${index + 1}`}
                   title="Remove query"
                   onClick={() => onRemoveStage2Query(row.id)}

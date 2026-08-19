@@ -6,11 +6,32 @@
 export type SearchMode = 'semantic' | 'ocr'
 
 // app/schemas/request/search.py: KisSearchRequest
-export type KisQueryType = 'text' | 'ocr'
+export type KisQueryType = 'text' | 'ocr' | 'abe'
 
-export interface KisQueryPayload {
-  type: KisQueryType
+export interface AbePairPayload {
+  attribute: string
+  object: string
+}
+
+export type KisQueryPayload =
+  | {
+      type: 'text' | 'ocr'
+      text: string
+    }
+  | {
+      type: 'abe'
+      pairs: AbePairPayload[]
+    }
+
+export interface AbePairRow extends AbePairPayload {
+  id: string
+}
+
+export interface KisQueryRow {
+  id: string
   text: string
+  type: KisQueryType
+  pairs: AbePairRow[]
 }
 
 export interface KisCandidatePayload {
@@ -24,11 +45,6 @@ export interface KisRerankPayload {
   candidate_ids: string[]
   subqueries: KisQueryPayload[]
   final_top_k: number
-}
-
-// UI state for the editable KIS Stage 2 subquery list.
-export interface KisQueryRow extends KisQueryPayload {
-  id: string
 }
 
 // UI-only: KIS uses the two-stage /api/search/kis/* flow, while TRAKE/DANTE
@@ -67,9 +83,51 @@ export interface OcrModalityScore {
   queries: OcrQueryScore[]
 }
 
+export interface AbePairScore {
+  attribute: string
+  object: string
+  positive_attributes: string[]
+  negative_attributes: string[]
+}
+
+export interface AbePatchHit {
+  label: string
+  patch_index: number
+  score: number
+}
+
+export interface AbePatchHeatmap {
+  patch_count: number
+  grid_width: number
+  grid_height: number
+  base_top_patches: AbePatchHit[]
+  refined_top_patches: AbePatchHit[]
+}
+
+export interface AbeQueryScore {
+  query_index: number
+  pairs: AbePairScore[]
+  base_local: number
+  refined_local: number
+  binding_delta: number
+  local_score: number
+  global_abe: number
+  raw_score: number
+  rank: number
+  rank_percentile: number
+  patch_heatmap?: AbePatchHeatmap
+}
+
+export interface AbeModalityScore {
+  geometric_mean: number
+  score: number
+  queries: AbeQueryScore[]
+}
+
 export interface SearchModalities {
   text?: TextModalityScore
   ocr?: OcrModalityScore
+  abe?: AbeModalityScore
 }
 
 export interface Stage1TextScore {

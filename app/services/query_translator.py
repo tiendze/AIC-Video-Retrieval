@@ -1,14 +1,10 @@
 """QueryTranslator — VI->EN query-time translation for the `semantic` search
 channel.
 
-BEiT-3's image-text contrastive stage was trained on English pairs, so a
-Vietnamese query is off-distribution for the text tower even though the image
-tower is untouched (plan §P0.9). Confirmed 2026-08-11 by scoring the SAME
-Milvus collection with English queries (eval/query_translation.py's
-`semantic@en` sidecar channel): AIC Final Score went from 0.0451 (Vietnamese)
-to 0.6208 (English) on the same 173 queries. Translating the query at search
-time, not swapping the encoder, keeps the existing collection valid -- no
-re-embedding, no new `model_id` (CLAUDE.md §3).
+The production vision-language text tower is English-caption oriented, so a
+Vietnamese query is off-distribution for semantic retrieval even though the
+image tower is unchanged. Translating the query at search time keeps the
+existing collection valid -- no re-embedding, no new `model_id` (CLAUDE.md §3).
 
 Shared by two callers so a sidecar generated for the eval diagnostic and a
 live production query are translated identically: `app.services.search_service`
@@ -57,8 +53,7 @@ class LocalNmtTranslator:
 
     Default is `VietAI/envit5-translation` (EnViT5, trained on MTet + PhoMT):
     a T5-base-sized seq2seq that reports state-of-the-art en<->vi BLEU while
-    staying small enough to run on CPU, so it does not compete with BEiT-3 for
-    the 8GB of VRAM (CLAUDE.md §1.4). Greedy decoding (no sampling) keeps
+    staying small enough to run on CPU. Greedy decoding (no sampling) keeps
     translation deterministic -- the same query must translate identically on
     every call, otherwise the same search issued twice could return different
     results.

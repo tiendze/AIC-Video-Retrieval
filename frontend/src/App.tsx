@@ -45,6 +45,10 @@ function App() {
     stage2Queries,
     setStage2QueryText,
     setStage2QueryType,
+    setAbePairAttribute,
+    setAbePairObject,
+    addAbePair,
+    removeAbePair,
     addStage2Query,
     removeStage2Query,
     finalTopK,
@@ -162,6 +166,10 @@ function App() {
                 onOcrCandidateKChange={setOcrCandidateK}
                 onStage2QueryTextChange={setStage2QueryText}
                 onStage2QueryTypeChange={setStage2QueryType}
+                onAbePairAttributeChange={setAbePairAttribute}
+                onAbePairObjectChange={setAbePairObject}
+                onAddAbePair={addAbePair}
+                onRemoveAbePair={removeAbePair}
                 onAddStage2Query={addStage2Query}
                 onRemoveStage2Query={removeStage2Query}
                 onFinalTopKChange={setFinalTopK}

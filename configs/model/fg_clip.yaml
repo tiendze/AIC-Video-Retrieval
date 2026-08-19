@@ -1,0 +1,14 @@
+# FG-CLIP Base ViT-B/16 config. Paths are relative to repo root.
+#
+# model_id is embedded in the Milvus collection name. Your existing FG-CLIP
+# corpus vectors live in keyframes_fgclip_base, so do not change model_id unless
+# you intentionally create a new collection.
+kind: fg_clip
+model_id: fgclip_base
+embedding_dim: 512
+local_model_path: models/fgclip_base
+device: cuda
+batch_size: 16
+image_size: 224
+max_text_tokens: 77
+variant: FG-CLIP Base ViT-B/16

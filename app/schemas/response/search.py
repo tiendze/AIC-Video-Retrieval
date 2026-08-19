@@ -35,6 +35,41 @@ class OcrQueryScoreResponse(BaseModel):
     rank_percentile: float
 
 
+class AbePairScoreResponse(BaseModel):
+    attribute: str
+    object: str
+    positive_attributes: list[str]
+    negative_attributes: list[str]
+
+
+class AbePatchHitResponse(BaseModel):
+    label: str
+    patch_index: int
+    score: float
+
+
+class AbePatchHeatmapResponse(BaseModel):
+    patch_count: int
+    grid_width: int
+    grid_height: int
+    base_top_patches: list[AbePatchHitResponse]
+    refined_top_patches: list[AbePatchHitResponse]
+
+
+class AbeQueryScoreResponse(BaseModel):
+    query_index: int
+    pairs: list[AbePairScoreResponse]
+    base_local: float
+    refined_local: float
+    binding_delta: float
+    local_score: float
+    global_abe: float
+    raw_score: float
+    rank: int
+    rank_percentile: float
+    patch_heatmap: AbePatchHeatmapResponse | None = None
+
+
 class TextModalityScoreResponse(BaseModel):
     geometric_mean: float
     score: float
@@ -47,9 +82,16 @@ class OcrModalityScoreResponse(BaseModel):
     queries: list[OcrQueryScoreResponse]
 
 
+class AbeModalityScoreResponse(BaseModel):
+    geometric_mean: float
+    score: float
+    queries: list[AbeQueryScoreResponse]
+
+
 class SearchModalitiesResponse(BaseModel):
     text: TextModalityScoreResponse | None = None
     ocr: OcrModalityScoreResponse | None = None
+    abe: AbeModalityScoreResponse | None = None
 
 
 class Stage1TextScoreResponse(BaseModel):

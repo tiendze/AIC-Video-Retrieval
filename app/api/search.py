@@ -42,6 +42,11 @@ from app.schemas.request.search import (
 )
 from app.schemas.response.error import ErrorResponse
 from app.schemas.response.search import (
+    AbeModalityScoreResponse,
+    AbePairScoreResponse,
+    AbePatchHeatmapResponse,
+    AbePatchHitResponse,
+    AbeQueryScoreResponse,
     KisCandidateHitResponse,
     KisCandidateResponse,
     KisRerankResponse,
@@ -59,6 +64,8 @@ from app.schemas.response.search import (
     TextQueryScoreResponse,
 )
 from app.services.kis_scoring import (
+    AbeModalityScore,
+    AbePair,
     KisQuery,
     OcrModalityScore,
     QueryType,
@@ -196,12 +203,13 @@ def _to_stage1_response(stage1: Stage1RetrievalScore | None) -> Stage1RetrievalR
 
 
 def _to_modalities_response(
-    modalities: dict[str, TextModalityScore | OcrModalityScore] | None,
+    modalities: dict[str, TextModalityScore | OcrModalityScore | AbeModalityScore] | None,
 ) -> SearchModalitiesResponse | None:
     if modalities is None:
         return None
     text = modalities.get("text")
     ocr = modalities.get("ocr")
+    abe = modalities.get("abe")
     return SearchModalitiesResponse(
         text=(
             TextModalityScoreResponse(
@@ -241,6 +249,62 @@ def _to_modalities_response(
                 ],
             )
             if isinstance(ocr, OcrModalityScore)
+            else None
+        ),
+        abe=(
+            AbeModalityScoreResponse(
+                geometric_mean=abe.geometric_mean,
+                score=abe.score,
+                queries=[
+                    AbeQueryScoreResponse(
+                        query_index=query.query_index,
+                        pairs=[
+                            AbePairScoreResponse(
+                                attribute=pair.attribute,
+                                object=pair.object,
+                                positive_attributes=pair.positive_attributes,
+                                negative_attributes=pair.negative_attributes,
+                            )
+                            for pair in query.pairs
+                        ],
+                        base_local=query.base_local,
+                        refined_local=query.refined_local,
+                        binding_delta=query.binding_delta,
+                        local_score=query.local_score,
+                        global_abe=query.global_abe,
+                        raw_score=query.raw_score,
+                        rank=query.rank,
+                        rank_percentile=query.rank_percentile,
+                        patch_heatmap=(
+                            AbePatchHeatmapResponse(
+                                patch_count=query.patch_heatmap.patch_count,
+                                grid_width=query.patch_heatmap.grid_width,
+                                grid_height=query.patch_heatmap.grid_height,
+                                base_top_patches=[
+                                    AbePatchHitResponse(
+                                        label=patch.label,
+                                        patch_index=patch.patch_index,
+                                        score=patch.score,
+                                    )
+                                    for patch in query.patch_heatmap.base_top_patches
+                                ],
+                                refined_top_patches=[
+                                    AbePatchHitResponse(
+                                        label=patch.label,
+                                        patch_index=patch.patch_index,
+                                        score=patch.score,
+                                    )
+                                    for patch in query.patch_heatmap.refined_top_patches
+                                ],
+                            )
+                            if query.patch_heatmap is not None
+                            else None
+                        ),
+                    )
+                    for query in abe.queries
+                ],
+            )
+            if isinstance(abe, AbeModalityScore)
             else None
         ),
     )
@@ -320,7 +384,14 @@ async def rerank_kis_candidates(
 ) -> KisRerankResponse:
     start = time.perf_counter()
     subqueries = [
-        KisQuery(query_index=index, type=QueryType(query.type), text=query.text)
+        KisQuery(
+            query_index=index,
+            type=QueryType(query.type),
+            text=query.text or "",
+            pairs=tuple(
+                AbePair(attribute=pair.attribute, object=pair.object) for pair in query.pairs
+            ),
+        )
         for index, query in enumerate(body.subqueries)
     ]
     try:

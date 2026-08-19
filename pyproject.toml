@@ -53,6 +53,14 @@ beit3 = [
     "transformers==4.44.2",
     "sentencepiece==0.2.2",
 ]
+fg-clip = [
+    "torch==2.4.1",
+    "torchvision==0.19.1",
+    "transformers==4.44.2",
+    "pillow==11.0.0",
+    "safetensors",
+    "einops==0.8.1",
+]
 ingest = [
     "aic-video-retrieval[beit3]",
     "opencv-python-headless==4.10.0.84",
@@ -193,7 +201,7 @@ asyncio_mode = "auto"
 addopts = "-m 'not integration and not model'"
 markers = [
     "integration: requires the docker-compose stack (Milvus/Elasticsearch/MongoDB) running",
-    "model: requires torch/timm/torchscale (pip install -e '.[beit3]') and a downloaded checkpoint",
+    "model: requires optional encoder dependencies and downloaded/local checkpoints",
 ]
 
 [tool.coverage.run]
