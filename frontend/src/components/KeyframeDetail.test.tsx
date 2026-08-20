@@ -2,7 +2,7 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { getVideoKeyframes } from '../api/client'
-import { KeyframeDetail } from './KeyframeDetail'
+import { KeyframeDetail, type DetailFrame } from './KeyframeDetail'
 import type { SearchHit } from '../api/types'
 
 // RED reproducer: user found that clicking "Find Similar Images" inside the
@@ -151,5 +151,48 @@ describe('KeyframeDetail', () => {
     await user.click(screen.getByRole('button', { name: /find similar images/i }))
 
     expect(onFindSimilar).toHaveBeenCalledWith('/api/keyframes/L21_V001_f20/image')
+  })
+
+  it('highlights TRAKE event frames while keeping the clicked frame active', () => {
+    const eventFrames: DetailFrame[] = [
+      {
+        keyframe_id: HIT.keyframe_id,
+        video_id: HIT.video_id,
+        frame_idx: HIT.frame_idx,
+        timestamp: HIT.timestamp,
+        thumbnail_url: HIT.thumbnail_url,
+        image_url: HIT.image_url,
+      },
+      {
+        keyframe_id: 'L21_V001_f20',
+        video_id: HIT.video_id,
+        frame_idx: 20,
+        timestamp: 50,
+        thumbnail_url: '/api/keyframes/L21_V001_f20/thumbnail',
+        image_url: '/api/keyframes/L21_V001_f20/image',
+      },
+    ]
+
+    render(
+      <KeyframeDetail
+        hit={HIT}
+        highlightedFrames={eventFrames}
+        onClose={vi.fn()}
+        onFindSimilar={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByRole('button', { name: /show frame 10/i })).toHaveAttribute(
+      'data-highlighted',
+      'true',
+    )
+    expect(screen.getByRole('button', { name: /show frame 10/i })).toHaveAttribute(
+      'aria-current',
+      'true',
+    )
+    expect(screen.getByRole('button', { name: /show frame 20/i })).toHaveAttribute(
+      'data-highlighted',
+      'true',
+    )
   })
 })

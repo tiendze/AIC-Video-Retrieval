@@ -74,9 +74,9 @@ score_clip_baseline: false
 # needs the full N∈{3,5,7} breakdown and will have to solve this first.
 #
 # trake_top_k=10 mirrors TrakeService's own configs/search/trake.yaml
-# default_top_k. trake_lambda_penalty: null uses configs/search/dante.yaml's
-# configured value (P2.4's ablation sweep is a SEPARATE config surface, not
-# this file -- see plan §P2.4).
+# default_top_k. trake_lambda_penalty: null uses app/services/
+# dante_service.py:LAMBDA_TIME. P2.4's ablation sweep is a SEPARATE config
+# surface, not this file -- see plan §P2.4.
 score_trake: true
 trake_sequence_lengths: [3, 5]
 trake_top_k: 10

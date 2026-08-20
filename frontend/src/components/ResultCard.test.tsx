@@ -1,4 +1,5 @@
 import { render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { ResultCard } from './ResultCard'
 import type { SearchHit } from '../api/types'
@@ -35,5 +36,25 @@ describe('ResultCard', () => {
     screen.getByRole('button', { name: /L21_V001/i }).click()
 
     expect(onSelect).toHaveBeenCalledWith(HIT)
+  })
+
+  it('toggles manual selection without triggering the card selection action', async () => {
+    const user = userEvent.setup()
+    const onSelect = vi.fn()
+    const onToggleManualSelection = vi.fn()
+    render(
+      <ResultCard
+        hit={HIT}
+        onSelect={onSelect}
+        onFindSimilar={vi.fn()}
+        onToggleManualSelection={onToggleManualSelection}
+        manualSelectionLabel="Select KIS"
+      />,
+    )
+
+    await user.click(screen.getByText('Select KIS'))
+
+    expect(onToggleManualSelection).toHaveBeenCalledWith(HIT)
+    expect(onSelect).not.toHaveBeenCalled()
   })
 })

@@ -17,16 +17,22 @@ import pytest
 
 from app.services.dante_service import (
     DEFAULT_LAMBDA_PENALTY,
+    LAMBDA_TIME,
     DanteResult,
     DanteServiceError,
     compute_similarity_matrix,
     dante_search,
     dante_search_sequences,
+    temporal_gap_seconds,
 )
 
 
 def _similarity(rows: list[list[float]]) -> np.ndarray:
     return np.array(rows, dtype=np.float64)
+
+
+def _timestamps_for(similarity: np.ndarray) -> np.ndarray:
+    return np.arange(similarity.shape[1], dtype=np.float64)
 
 
 class TestDanteNeverReturnsOutOfOrderSequence:
@@ -42,7 +48,12 @@ class TestDanteNeverReturnsOutOfOrderSequence:
             ]
         )
 
-        result = dante_search(similarity, s_v=100, lambda_penalty=0.0)
+        result = dante_search(
+            similarity,
+            s_v=100,
+            timestamps=_timestamps_for(similarity),
+            lambda_penalty=0.0,
+        )
 
         indices = result.global_indices
         assert list(indices) == sorted(indices), "sequence must be strictly increasing"
@@ -52,7 +63,12 @@ class TestDanteNeverReturnsOutOfOrderSequence:
         rng = np.random.default_rng(42)
         for _seed in range(20):
             similarity = rng.standard_normal((4, 12))
-            result = dante_search(similarity, s_v=0, lambda_penalty=0.005)
+            result = dante_search(
+                similarity,
+                s_v=0,
+                timestamps=_timestamps_for(similarity),
+                lambda_penalty=0.005,
+            )
             indices = result.global_indices
             assert list(indices) == sorted(indices)
             assert len(set(indices)) == len(indices)
@@ -64,14 +80,24 @@ class TestDanteReturnsExactlyNKeyframes:
         rng = np.random.default_rng(n_events)
         similarity = rng.standard_normal((n_events, 15))
 
-        result = dante_search(similarity, s_v=0, lambda_penalty=0.001)
+        result = dante_search(
+            similarity,
+            s_v=0,
+            timestamps=_timestamps_for(similarity),
+            lambda_penalty=0.001,
+        )
 
         assert len(result.global_indices) == n_events
 
     def test_indices_are_offset_by_s_v(self) -> None:
         similarity = _similarity([[0.5, 0.1, 0.2], [0.1, 0.5, 0.9]])
 
-        result = dante_search(similarity, s_v=1000, lambda_penalty=0.0)
+        result = dante_search(
+            similarity,
+            s_v=1000,
+            timestamps=_timestamps_for(similarity),
+            lambda_penalty=0.0,
+        )
 
         assert all(1000 <= idx <= 1002 for idx in result.global_indices)
 
@@ -101,7 +127,12 @@ def _time_dante_search(n_events: int, n_frames: int, lambda_penalty: float, seed
     rng = np.random.default_rng(seed)
     similarity = rng.standard_normal((n_events, n_frames))
     start = time.perf_counter()
-    dante_search(similarity, s_v=0, lambda_penalty=lambda_penalty)
+    dante_search(
+        similarity,
+        s_v=0,
+        timestamps=_timestamps_for(similarity),
+        lambda_penalty=lambda_penalty,
+    )
     return time.perf_counter() - start
 
 
@@ -114,7 +145,12 @@ class TestLambdaZeroReducesToPureOrderConstraint:
             ]
         )
 
-        result = dante_search(similarity, s_v=0, lambda_penalty=0.0)
+        result = dante_search(
+            similarity,
+            s_v=0,
+            timestamps=_timestamps_for(similarity),
+            lambda_penalty=0.0,
+        )
 
         expected_score, expected_pair = _brute_force_best_ordered_pair(similarity)
         assert result.score == pytest.approx(expected_score)
@@ -131,10 +167,75 @@ class TestLambdaZeroReducesToPureOrderConstraint:
             ]
         )
 
-        result = dante_search(similarity, s_v=0, lambda_penalty=0.0)
+        result = dante_search(
+            similarity,
+            s_v=0,
+            timestamps=_timestamps_for(similarity),
+            lambda_penalty=0.0,
+        )
 
         assert tuple(result.global_indices) == (0, 5)
         assert result.score == pytest.approx(1.8)
+
+
+class TestTimestampGapPenalty:
+    def test_uses_timestamp_gap_not_keyframe_index_gap(self) -> None:
+        similarity = _similarity(
+            [
+                [1.0, float("-inf")],
+                [float("-inf"), 1.0],
+            ]
+        )
+        timestamps = np.array([10.0, 20.0], dtype=np.float64)
+
+        result = dante_search(
+            similarity,
+            s_v=100,
+            timestamps=timestamps,
+            lambda_penalty=LAMBDA_TIME,
+        )
+
+        assert result.global_indices == (100, 101)
+        assert result.score == pytest.approx(1.9)
+        assert temporal_gap_seconds(10.0, 20.0) == pytest.approx(10.0)
+        assert result.debug_steps[1].gap_seconds == pytest.approx(10.0)
+        assert result.debug_steps[1].temporal_penalty == pytest.approx(0.1)
+
+    def test_rejects_reverse_timestamp_order(self) -> None:
+        similarity = _similarity(
+            [
+                [float("-inf"), 1.0],
+                [1.0, float("-inf")],
+            ]
+        )
+        timestamps = np.array([10.0, 20.0], dtype=np.float64)
+
+        with pytest.raises(DanteServiceError, match="no valid strictly-ordered sequence"):
+            dante_search(
+                similarity,
+                s_v=0,
+                timestamps=timestamps,
+                lambda_penalty=0.0,
+            )
+
+    def test_semantic_scores_are_preserved_in_debug_steps(self) -> None:
+        similarity = _similarity(
+            [
+                [0.42, float("-inf")],
+                [float("-inf"), 0.45],
+            ]
+        )
+        timestamps = np.array([10.0, 13.0], dtype=np.float64)
+
+        result = dante_search(
+            similarity,
+            s_v=0,
+            timestamps=timestamps,
+            lambda_penalty=LAMBDA_TIME,
+        )
+
+        assert [step.semantic_score for step in result.debug_steps] == pytest.approx([0.42, 0.45])
+        assert result.score == pytest.approx(0.42 + 0.45 - 0.01 * 3.0)
 
 
 def _brute_force_best_ordered_pair(similarity: np.ndarray) -> tuple[float, tuple[int, int]]:
@@ -164,6 +265,7 @@ class TestDanteSearchSequences:
             s_v=100,
             threshold=1.55,
             top_k=10,
+            timestamps=_timestamps_for(similarity),
             lambda_penalty=0.0,
         )
 
@@ -185,6 +287,7 @@ class TestDanteSearchSequences:
             s_v=0,
             threshold=0.0,
             top_k=2,
+            timestamps=_timestamps_for(similarity),
             lambda_penalty=0.0,
         )
 
@@ -199,6 +302,7 @@ class TestDanteSearchSequences:
             s_v=0,
             threshold=10.0,
             top_k=10,
+            timestamps=_timestamps_for(similarity),
             lambda_penalty=0.0,
         )
 
@@ -210,7 +314,12 @@ class TestDanteSearchErrors:
         similarity = _similarity([[0.5, 0.5], [0.5, 0.5], [0.5, 0.5]])  # 3 events, 2 frames
 
         with pytest.raises(DanteServiceError, match="not enough frames") as exc_info:
-            dante_search(similarity, s_v=0, lambda_penalty=0.001)
+            dante_search(
+                similarity,
+                s_v=0,
+                timestamps=_timestamps_for(similarity),
+                lambda_penalty=0.001,
+            )
 
         # error_code/status_code mirror SearchServiceError (app/services/
         # search_service.py) so a future POST /api/trake can map this to an
@@ -222,7 +331,12 @@ class TestDanteSearchErrors:
         similarity = np.array([0.1, 0.2, 0.3])
 
         with pytest.raises(DanteServiceError, match="2D") as exc_info:
-            dante_search(similarity, s_v=0, lambda_penalty=0.001)
+            dante_search(
+                similarity,
+                s_v=0,
+                timestamps=np.array([0.0, 1.0, 2.0]),
+                lambda_penalty=0.001,
+            )
 
         assert exc_info.value.error_code == "invalid_similarity_shape"
         assert exc_info.value.status_code == 400
@@ -236,7 +350,12 @@ class TestDanteSearchErrors:
         similarity = np.empty((0, 5))
 
         with pytest.raises(DanteServiceError, match="at least one event") as exc_info:
-            dante_search(similarity, s_v=0, lambda_penalty=0.001)
+            dante_search(
+                similarity,
+                s_v=0,
+                timestamps=_timestamps_for(similarity),
+                lambda_penalty=0.001,
+            )
 
         assert exc_info.value.error_code == "invalid_similarity_shape"
         assert exc_info.value.status_code == 400
@@ -252,7 +371,12 @@ class TestDanteSearchErrors:
         with pytest.raises(
             DanteServiceError, match="no valid strictly-ordered sequence"
         ) as exc_info:
-            dante_search(similarity, s_v=0, lambda_penalty=0.001)
+            dante_search(
+                similarity,
+                s_v=0,
+                timestamps=_timestamps_for(similarity),
+                lambda_penalty=0.001,
+            )
 
         assert exc_info.value.error_code == "no_valid_sequence"
         assert exc_info.value.status_code == 422
@@ -271,24 +395,25 @@ class TestComputeSimilarityMatrix:
         assert similarity[1, 2] == pytest.approx(0.70710678, rel=1e-4)
 
 
-class TestDefaultLambdaFromConfig:
-    def test_default_lambda_penalty_is_loaded_from_config_not_hardcoded(self) -> None:
-        # Regression guard against re-introducing a hardcoded lambda
-        # (CLAUDE.md §6): this must equal configs/search/dante.yaml's value.
-        import yaml
-
-        from app.services.dante_service import _CONFIG_PATH
-
-        with _CONFIG_PATH.open(encoding="utf-8") as f:
-            config = yaml.safe_load(f)
-
-        assert DEFAULT_LAMBDA_PENALTY == config["lambda_penalty"]
+class TestDefaultLambda:
+    def test_lambda_time_is_the_fixed_timestamp_penalty(self) -> None:
+        assert LAMBDA_TIME == pytest.approx(0.01)
+        assert DEFAULT_LAMBDA_PENALTY == pytest.approx(LAMBDA_TIME)
 
     def test_dante_search_uses_default_lambda_when_not_passed(self) -> None:
         similarity = _similarity([[0.5, 0.1, 0.2], [0.1, 0.5, 0.9]])
 
-        with_default = dante_search(similarity, s_v=0)
-        with_explicit = dante_search(similarity, s_v=0, lambda_penalty=DEFAULT_LAMBDA_PENALTY)
+        with_default = dante_search(
+            similarity,
+            s_v=0,
+            timestamps=_timestamps_for(similarity),
+        )
+        with_explicit = dante_search(
+            similarity,
+            s_v=0,
+            timestamps=_timestamps_for(similarity),
+            lambda_penalty=DEFAULT_LAMBDA_PENALTY,
+        )
 
         assert with_default == with_explicit
 

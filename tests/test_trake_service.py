@@ -1,13 +1,8 @@
-"""RED reproducer for TrakeService (plan §P2.2, PRD §F6, architecture.md
-§3.5) -- the end-to-end bridge from `POST /api/trake`'s N event
-descriptions to `dante_service.dante_search`'s per-video DP.
+"""TrakeService tests.
 
-Follows tests/test_search_service.py's Fake pattern: Fakes stand in for the
-encoder/stores so this runs without Docker/GPU; DANTE itself (the DP math)
-is exercised for real (not mocked) since the whole point of these tests is
-that TrakeService wires real vectors into a real dante_search() call
-correctly -- mocking dante_search would only prove the wiring calls
-*something*, not that the something is right.
+The service no longer fetches vectors from Milvus per request. It receives a
+loaded TRAKE embedding cache, scores the full cached corpus once, then slices
+that score matrix by video for the real DANTE DP.
 """
 
 from __future__ import annotations
@@ -16,13 +11,19 @@ from typing import Any
 
 import numpy as np
 
+import app.services.trake_service as trake_module
+from app.services.trake_embedding_cache import (
+    TrakeCachedKeyframe,
+    TrakeEmbeddingCacheStats,
+    TrakeVideoSlice,
+)
 from app.services.trake_service import TrakeService
 
 _DIM = 4
 
 
-def _unit(*, hot: int) -> np.ndarray:
-    v = np.zeros(_DIM, dtype=np.float32)
+def _unit(*, hot: int, dim: int = _DIM) -> np.ndarray:
+    v = np.zeros(dim, dtype=np.float32)
     v[hot] = 1.0
     return v
 
@@ -39,26 +40,97 @@ class _FakeEncoder:
         return self._vectors
 
 
-class _FakeMilvusStore:
-    def __init__(self, rows_by_video: dict[str, list[dict[str, Any]]]) -> None:
-        self._rows_by_video = rows_by_video
-        self.calls: list[tuple[str, int, int]] = []
+class _FakeTrakeEmbeddingCache:
+    def __init__(
+        self,
+        rows_by_video: dict[str, list[dict[str, Any]]],
+        videos: list[dict[str, Any]],
+        embedding_dim: int,
+    ) -> None:
+        self.ensure_ready_calls = 0
+        self.load_count = 1
+        embedding_chunks: list[np.ndarray] = []
+        timestamps: list[float] = []
+        metadata: list[TrakeCachedKeyframe] = []
+        video_slices: list[TrakeVideoSlice] = []
 
-    def get_vectors_for_video(self, video_id: str, s_v: int, e_v: int) -> list[dict[str, Any]]:
-        self.calls.append((video_id, s_v, e_v))
-        # Mirrors MilvusStore.get_vectors_for_video's own contract: rows
-        # sorted ascending by global_index (tests/test_milvus_client.py).
-        rows = self._rows_by_video.get(video_id, [])
-        return sorted(rows, key=lambda r: r["global_index"])
+        for video in videos:
+            if video.get("ingest_status") != "complete":
+                continue
+            rows = sorted(rows_by_video.get(video["video_id"], []), key=lambda r: r["global_index"])
+            if not rows:
+                continue
+            start = len(metadata)
+            embedding_chunks.append(
+                np.stack([row["embedding"] for row in rows]).astype(np.float32, copy=False)
+            )
+            for row in rows:
+                timestamps.append(float(row["timestamp"]))
+                metadata.append(
+                    TrakeCachedKeyframe(
+                        keyframe_id=row["keyframe_id"],
+                        video_id=video["video_id"],
+                        global_index=row["global_index"],
+                        frame_idx=row["frame_idx"],
+                        timestamp=float(row["timestamp"]),
+                    )
+                )
+            video_slices.append(
+                TrakeVideoSlice(
+                    video_id=video["video_id"],
+                    s_v=video["s_v"],
+                    e_v=video["e_v"],
+                    start=start,
+                    stop=len(metadata),
+                )
+            )
 
+        self._embeddings = (
+            np.concatenate(embedding_chunks, axis=0)
+            if embedding_chunks
+            else np.zeros((0, embedding_dim), dtype=np.float32)
+        )
+        self._timestamps = np.asarray(timestamps, dtype=np.float64)
+        self._metadata = tuple(metadata)
+        self._video_slices = tuple(video_slices)
+        self._stats = TrakeEmbeddingCacheStats(
+            num_keyframes=self._embeddings.shape[0],
+            num_videos=len(self._video_slices),
+            embedding_dim=embedding_dim,
+            dtype=str(self._embeddings.dtype),
+            embedding_memory_bytes=int(self._embeddings.nbytes),
+            load_time_ms=0.0,
+            source="test-cache",
+        )
 
-class _FakeMongoStore:
-    def __init__(self, videos: list[dict[str, Any]]) -> None:
-        self._videos = videos
+    def ensure_ready(self) -> None:
+        self.ensure_ready_calls += 1
 
-    async def scroll_all_videos(self):
-        for v in self._videos:
-            yield v
+    @property
+    def embeddings(self) -> np.ndarray:
+        return self._embeddings
+
+    @property
+    def timestamps(self) -> np.ndarray:
+        return self._timestamps
+
+    @property
+    def metadata(self) -> tuple[TrakeCachedKeyframe, ...]:
+        return self._metadata
+
+    @property
+    def video_slices(self) -> tuple[TrakeVideoSlice, ...]:
+        return self._video_slices
+
+    @property
+    def stats(self) -> TrakeEmbeddingCacheStats:
+        return self._stats
+
+    def keyframe_for_global_index(
+        self, video_slice: TrakeVideoSlice, global_index: int
+    ) -> TrakeCachedKeyframe:
+        local_index = global_index - video_slice.s_v
+        return self._metadata[video_slice.start + local_index]
 
 
 def _video_doc(video_id: str, s_v: int, e_v: int, status: str = "complete") -> dict[str, Any]:
@@ -92,21 +164,19 @@ class _FakeQueryTranslator:
 
 def _service(rows_by_video, videos, vectors, query_translator=None):
     encoder = _FakeEncoder(vectors)
-    milvus = _FakeMilvusStore(rows_by_video)
-    mongo = _FakeMongoStore(videos)
+    cache = _FakeTrakeEmbeddingCache(rows_by_video, videos, embedding_dim=vectors.shape[1])
     service = TrakeService(
-        encoder=encoder, milvus_store=milvus, mongo_store=mongo, query_translator=query_translator
+        encoder=encoder, trake_cache=cache, query_translator=query_translator
     )
-    return service, encoder, milvus
+    return service, encoder, cache
 
 
 async def test_trake_search_translates_every_event_when_a_translator_is_given():
     # Regression 2026-08-14 (real eval/run.py run against production data):
     # TrakeService encoded raw Vietnamese captions directly, the exact VI/EN
     # mismatch already diagnosed and fixed for SearchService._search_semantic
-    # (BEiT-3's text tower is English-trained) -- video_level_recall_at_k was
-    # 0.0000 across every TRAKE query. Must translate each event BEFORE
-    # encode_text, same as SearchService.
+    # (English-trained text tower) -- video_level_recall_at_k was 0.0000
+    # across every TRAKE query. Must translate each event BEFORE encode_text.
     events_vectors = np.stack([_unit(hot=0)])
     rows = {"video_a": [_frame_row("video_a_f0", 0, 0, 0.0, hot=0)]}
     videos = [_video_doc("video_a", 0, 0)]
@@ -130,6 +200,35 @@ async def test_trake_search_does_not_translate_when_no_translator_is_given():
     assert encoder.encode_text_calls == [["su kien tieng viet"]]
 
 
+async def test_trake_search_scores_the_full_cached_corpus_before_video_slices(monkeypatch):
+    events_vectors = np.stack([_unit(hot=0)])
+    rows = {
+        "video_a": [
+            _frame_row("video_a_f0", 0, 0, 0.0, hot=0),
+            _frame_row("video_a_f1", 1, 1, 1.0, hot=1),
+        ],
+        "video_b": [
+            _frame_row("video_b_f0", 100, 0, 0.0, hot=2),
+            _frame_row("video_b_f1", 101, 1, 1.0, hot=3),
+        ],
+    }
+    videos = [_video_doc("video_a", 0, 1), _video_doc("video_b", 100, 101)]
+    service, _, cache = _service(rows, videos, events_vectors)
+    frame_counts_seen: list[int] = []
+    real_compute_similarity_matrix = trake_module.compute_similarity_matrix
+
+    def spy_compute_similarity_matrix(event_vectors, frame_vectors):
+        frame_counts_seen.append(frame_vectors.shape[0])
+        return real_compute_similarity_matrix(event_vectors, frame_vectors)
+
+    monkeypatch.setattr(trake_module, "compute_similarity_matrix", spy_compute_similarity_matrix)
+
+    await service.search(["a"], top_k=10)
+
+    assert cache.stats.num_keyframes == 4
+    assert frame_counts_seen == [4]
+
+
 async def test_trake_search_returns_the_higher_scoring_video_first():
     # Two events, in order. video_a's frames match the events perfectly and
     # in order (hot=0 then hot=1); video_b's frames are a worse match.
@@ -145,7 +244,7 @@ async def test_trake_search_returns_the_higher_scoring_video_first():
         ],
     }
     videos = [_video_doc("video_a", 0, 1), _video_doc("video_b", 100, 101)]
-    service, encoder, milvus = _service(rows, videos, events_vectors)
+    service, encoder, _ = _service(rows, videos, events_vectors)
 
     results = await service.search(["su kien 1", "su kien 2"], top_k=10, threshold=-1.0)
 
@@ -192,8 +291,8 @@ async def test_trake_search_skips_a_video_with_fewer_frames_than_events():
 async def test_trake_search_skips_a_video_when_dante_finds_no_finite_ordered_sequence():
     # Mirrors tests/test_dante_service.py's forced-diagonal -inf case (a
     # buggy encoder leaking -inf/NaN): TrakeService must catch
-    # DanteServiceError from dante_search itself, not just its own
-    # pre-checks (frame count / density), and skip+log rather than crash.
+    # DanteServiceError from dante_search itself and skip+log rather than
+    # crash.
     events_vectors = np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
     rows = {
         "video_a": [
@@ -221,35 +320,42 @@ async def test_trake_search_skips_a_video_when_dante_finds_no_finite_ordered_seq
     assert results == []
 
 
-async def test_trake_search_skips_a_video_whose_fetched_rows_have_a_global_index_gap():
-    # Regression: dante_search reconstructs global_index as s_v + column, so
-    # a gap (missing keyframe row inside [s_v, e_v]) would silently point the
-    # DP's answer at the wrong keyframe_id if not caught first.
+async def test_trake_search_never_links_candidates_from_different_videos():
     events_vectors = np.stack([_unit(hot=0), _unit(hot=1)])
     rows = {
         "video_a": [
             _frame_row("video_a_f0", 0, 0, 0.0, hot=0),
-            _frame_row("video_a_f9", 9, 9, 9.0, hot=1),  # gap: 1..8 missing
-        ]
+            _frame_row("video_a_f1", 1, 1, 1.0, hot=2),
+        ],
+        "video_b": [
+            _frame_row("video_b_f0", 100, 0, 0.0, hot=2),
+            _frame_row("video_b_f1", 101, 1, 1.0, hot=1),
+        ],
     }
-    videos = [_video_doc("video_a", 0, 9)]
+    videos = [_video_doc("video_a", 0, 1), _video_doc("video_b", 100, 101)]
     service, _, _ = _service(rows, videos, events_vectors)
 
-    results = await service.search(["a", "b"], top_k=10)
+    results = await service.search(["a", "b"], top_k=10, lambda_penalty=0.0, threshold=1.5)
 
     assert results == []
 
 
-async def test_trake_search_skips_videos_whose_ingest_status_is_not_complete():
+async def test_trake_search_only_uses_complete_videos_already_present_in_the_cache():
     events_vectors = np.stack([_unit(hot=0)])
-    rows = {"video_a": [_frame_row("video_a_f0", 0, 0, 0.0, hot=0)]}
-    videos = [_video_doc("video_a", 0, 0, status="in_progress")]
-    service, _, milvus = _service(rows, videos, events_vectors)
+    rows = {
+        "video_a": [_frame_row("video_a_f0", 0, 0, 0.0, hot=0)],
+        "video_b": [_frame_row("video_b_f0", 10, 0, 0.0, hot=0)],
+    }
+    videos = [
+        _video_doc("video_a", 0, 0, status="in_progress"),
+        _video_doc("video_b", 10, 10, status="complete"),
+    ]
+    service, _, cache = _service(rows, videos, events_vectors)
 
     results = await service.search(["a"], top_k=10)
 
-    assert results == []
-    assert milvus.calls == []  # never even queried -- filtered before the Milvus round trip
+    assert [result.video_id for result in results] == ["video_b"]
+    assert [video_slice.video_id for video_slice in cache.video_slices] == ["video_b"]
 
 
 async def test_trake_search_limits_results_to_top_k():
@@ -297,21 +403,30 @@ async def test_trake_search_returns_top_k_sequences_not_one_best_sequence_per_vi
     ]
 
 
+async def test_trake_search_repeated_requests_reuse_the_same_loaded_cache():
+    events_vectors = np.stack([_unit(hot=0)])
+    rows = {"video_a": [_frame_row("video_a_f0", 0, 0, 0.0, hot=0)]}
+    videos = [_video_doc("video_a", 0, 0)]
+    service, _, cache = _service(rows, videos, events_vectors)
+
+    await service.search(["a"], top_k=10)
+    await service.search(["a"], top_k=10)
+
+    assert cache.load_count == 1
+    assert cache.ensure_ready_calls == 2
+
+
 def _dense_video_rows(
     video_id: str, length: int, hot_at: dict[int, int], filler_hot: int
 ) -> list[dict]:
-    """`length` CONSECUTIVE global_index rows (0..length-1) -- global_index
-    is assigned continuously per video (CLAUDE.md §3), so every real
-    `[s_v, e_v]` range is dense; `hot_at` overrides specific positions to
-    match an event, everything else is `filler_hot` (irrelevant to either
-    event, orthogonal one-hot dim)."""
+    """`length` CONSECUTIVE global_index rows (0..length-1)."""
     return [
         _frame_row(f"{video_id}_f{i}", i, i, float(i), hot=hot_at.get(i, filler_hot))
         for i in range(length)
     ]
 
 
-async def test_trake_search_uses_the_dante_config_default_lambda_when_none_given():
+async def test_trake_search_uses_the_dante_timestamp_default_lambda_when_none_given():
     from app.services.dante_service import DEFAULT_LAMBDA_PENALTY, dante_search
 
     events_vectors = np.stack([_unit(hot=0), _unit(hot=1)])
@@ -325,7 +440,12 @@ async def test_trake_search_uses_the_dante_config_default_lambda_when_none_given
     similarity = np.array(
         [[events_vectors[i] @ video_rows[t]["embedding"] for t in range(6)] for i in range(2)]
     )
-    expected = dante_search(similarity, s_v=0, lambda_penalty=DEFAULT_LAMBDA_PENALTY)
+    expected = dante_search(
+        similarity,
+        s_v=0,
+        timestamps=np.array([row["timestamp"] for row in video_rows], dtype=np.float64),
+        lambda_penalty=DEFAULT_LAMBDA_PENALTY,
+    )
     assert results[0].score == expected.score
 
 

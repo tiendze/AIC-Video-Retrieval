@@ -26,6 +26,8 @@ describe('EventSequenceInput', () => {
   it('renders one labeled textbox per event, in order', () => {
     renderInput({ events: ['người đàn ông mở cửa', 'xe máy chạy qua'] })
 
+    expect(screen.getByText('Event 1')).toBeInTheDocument()
+    expect(screen.getByText('Event 2')).toBeInTheDocument()
     expect(screen.getByLabelText('event 1')).toHaveValue('người đàn ông mở cửa')
     expect(screen.getByLabelText('event 2')).toHaveValue('xe máy chạy qua')
   })
@@ -45,7 +47,7 @@ describe('EventSequenceInput', () => {
     const onAddEvent = vi.fn()
     renderInput({ onAddEvent })
 
-    await user.click(screen.getByRole('button', { name: /thêm sự kiện/i }))
+    await user.click(screen.getByRole('button', { name: /\+ Add event/i }))
 
     expect(onAddEvent).toHaveBeenCalledTimes(1)
   })
@@ -55,7 +57,7 @@ describe('EventSequenceInput', () => {
     const onRemoveEvent = vi.fn()
     renderInput({ events: ['a', 'b', 'c'], onRemoveEvent })
 
-    await user.click(screen.getAllByRole('button', { name: /xoá sự kiện/i })[1] as HTMLElement)
+    await user.click(screen.getAllByRole('button', { name: /remove event/i })[1] as HTMLElement)
 
     expect(onRemoveEvent).toHaveBeenCalledWith(1)
   })
@@ -63,7 +65,7 @@ describe('EventSequenceInput', () => {
   it('hides the remove button when only one event row remains', () => {
     renderInput({ events: ['a'] })
 
-    expect(screen.queryByRole('button', { name: /xoá sự kiện/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /remove event/i })).not.toBeInTheDocument()
   })
 
   it('renders and edits the score threshold input', async () => {
@@ -99,7 +101,7 @@ describe('EventSequenceInput', () => {
     const onSubmit = vi.fn()
     renderInput({ events: ['a', 'b'], onSubmit })
 
-    await user.click(screen.getByRole('button', { name: /tìm chuỗi/i }))
+    await user.click(screen.getByRole('button', { name: /Search TRAKE/i }))
 
     expect(onSubmit).toHaveBeenCalledTimes(1)
   })
@@ -107,6 +109,6 @@ describe('EventSequenceInput', () => {
   it('disables the submit button while a search is in flight', () => {
     renderInput({ events: ['a', 'b'], isLoading: true })
 
-    expect(screen.getByRole('button', { name: /tìm chuỗi/i })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /Search TRAKE/i })).toBeDisabled()
   })
 })

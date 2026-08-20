@@ -1,9 +1,11 @@
 import { useState } from 'react'
+import type { ReactNode } from 'react'
 import type { AbePatchHeatmap, SearchHit } from '../api/types'
 import styles from './KisScoreInspector.module.css'
 
 export interface KisScoreInspectorProps {
   hit: SearchHit | null
+  embedded?: boolean
 }
 
 function formatScore(value: number | undefined, digits = 3): string {
@@ -11,23 +13,23 @@ function formatScore(value: number | undefined, digits = 3): string {
   return value.toFixed(digits)
 }
 
-export function KisScoreInspector({ hit }: KisScoreInspectorProps) {
+export function KisScoreInspector({ hit, embedded = false }: KisScoreInspectorProps) {
   const displayScore = hit?.final_score ?? hit?.score
   const [heatmapOpen, setHeatmapOpen] = useState<Record<number, boolean>>({})
 
   if (!hit) {
     return (
-      <aside className={styles.panel} aria-label="KIS score details">
+      <ScoreContainer embedded={embedded}>
         <div className={styles.header}>
           <span>KIS Score</span>
           <span>-</span>
         </div>
-      </aside>
+      </ScoreContainer>
     )
   }
 
   return (
-    <aside className={styles.panel} aria-label="KIS score details">
+    <ScoreContainer embedded={embedded}>
       <div className={styles.header}>
         <span>{hit.final_score === undefined ? 'Stage 1 Candidate' : 'Final Geometric Mean'}</span>
         <span>{hit.final_score === undefined ? formatScore(displayScore) : formatScore(hit.final_score)}</span>
@@ -178,6 +180,23 @@ export function KisScoreInspector({ hit }: KisScoreInspectorProps) {
           </div>
         </section>
       )}
+    </ScoreContainer>
+  )
+}
+
+function ScoreContainer({
+  embedded,
+  children,
+}: {
+  embedded: boolean
+  children: ReactNode
+}) {
+  if (embedded) {
+    return <div className={styles.embedded}>{children}</div>
+  }
+  return (
+    <aside className={styles.panel} aria-label="KIS score details">
+      {children}
     </aside>
   )
 }

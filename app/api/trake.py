@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
+from app.api.errors import APIError
 from app.dependencies import get_trake_service
 from app.schemas.request.trake import TrakeRequest
 from app.schemas.response.trake import (
@@ -15,6 +16,7 @@ from app.schemas.response.trake import (
     TrakeResponse,
     TrakeVideoResultResponse,
 )
+from app.services.trake_embedding_cache import TrakeEmbeddingCacheError
 from app.services.trake_service import TrakeService, TrakeVideoResult
 
 router = APIRouter()
@@ -46,10 +48,15 @@ def _to_response(results: list[TrakeVideoResult]) -> TrakeResponse:
 async def trake(
     body: TrakeRequest, service: TrakeService = Depends(get_trake_service)
 ) -> TrakeResponse:
-    results = await service.search(
-        body.events,
-        top_k=body.top_k,
-        lambda_penalty=body.lambda_penalty,
-        threshold=body.threshold,
-    )
+    try:
+        results = await service.search(
+            body.events,
+            top_k=body.top_k,
+            lambda_penalty=body.lambda_penalty,
+            threshold=body.threshold,
+        )
+    except TrakeEmbeddingCacheError as exc:
+        raise APIError(
+            detail=str(exc), error_code=exc.error_code, status_code=exc.status_code
+        ) from exc
     return _to_response(results)

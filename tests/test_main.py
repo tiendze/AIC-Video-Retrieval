@@ -57,6 +57,16 @@ class _FakeMongoStore:
         self.closed = True
 
 
+class _FakeTrakeEmbeddingCache:
+    def __init__(self) -> None:
+        self.load_called = False
+        self.load_count = 0
+
+    async def load(self) -> None:
+        self.load_called = True
+        self.load_count += 1
+
+
 class _FakeEsStoreDown(_FakeEsStore):
     """Simulates Elasticsearch unreachable at startup (plan §P1.8, PRD T5:
     'hệ thống chuyển sang semantic-only' -- ensure_index failing must not
@@ -86,6 +96,11 @@ def _stub_real_infra(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(main_module, "_build_es_store", lambda settings: _FakeEsStore())
     monkeypatch.setattr(main_module, "_build_mongo_store", lambda settings: _FakeMongoStore())
     monkeypatch.setattr(main_module, "_build_query_translator", lambda: _FakeQueryTranslator())
+    monkeypatch.setattr(
+        main_module,
+        "_build_trake_embedding_cache",
+        lambda milvus_store, mongo_store, encoder: _FakeTrakeEmbeddingCache(),
+    )
 
 
 def test_create_app_returns_configured_fastapi_instance(
@@ -161,8 +176,10 @@ def test_lifespan_builds_encoder_and_all_three_stores_onto_app_state(
         assert isinstance(state.es_store, _FakeEsStore)
         assert isinstance(state.mongo_store, _FakeMongoStore)
         assert isinstance(state.query_translator, _FakeQueryTranslator)
+        assert isinstance(state.trake_embedding_cache, _FakeTrakeEmbeddingCache)
         assert state.mongo_store.ensure_indexes_called is True
         assert state.es_store.ensure_index_called is True
+        assert state.trake_embedding_cache.load_called is True
 
 
 def test_lifespan_survives_es_unreachable_at_startup(
@@ -181,6 +198,11 @@ def test_lifespan_survives_es_unreachable_at_startup(
     monkeypatch.setattr(main_module, "_build_es_store", lambda settings: _FakeEsStoreDown())
     monkeypatch.setattr(main_module, "_build_mongo_store", lambda settings: _FakeMongoStore())
     monkeypatch.setattr(main_module, "_build_query_translator", lambda: _FakeQueryTranslator())
+    monkeypatch.setattr(
+        main_module,
+        "_build_trake_embedding_cache",
+        lambda milvus_store, mongo_store, encoder: _FakeTrakeEmbeddingCache(),
+    )
 
     app = create_app()
 
@@ -203,6 +225,11 @@ def test_search_endpoint_still_works_when_es_was_unreachable_at_startup(
     monkeypatch.setattr(main_module, "_build_es_store", lambda settings: _FakeEsStoreDown())
     monkeypatch.setattr(main_module, "_build_mongo_store", lambda settings: _FakeMongoStore())
     monkeypatch.setattr(main_module, "_build_query_translator", lambda: _FakeQueryTranslator())
+    monkeypatch.setattr(
+        main_module,
+        "_build_trake_embedding_cache",
+        lambda milvus_store, mongo_store, encoder: _FakeTrakeEmbeddingCache(),
+    )
 
     class _FakeSearchService:
         async def search(self, query, mode, top_k):

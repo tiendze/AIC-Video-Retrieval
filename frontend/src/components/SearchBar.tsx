@@ -1,6 +1,7 @@
 import { forwardRef } from 'react'
 import { MAX_CANDIDATE_K, MAX_TOP_K, MIN_TOP_K } from '../api/constants'
 import type { KisQueryRow, KisQueryType } from '../api/types'
+import { QueryInput } from './QueryInput'
 import styles from './SearchBar.module.css'
 
 export interface SearchBarProps {
@@ -97,14 +98,13 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
         <div className={styles.stageGrid}>
           <label className={styles.fieldWide}>
             <span>Text Q0 (FG-CLIP)</span>
-            <input
+            <QueryInput
               ref={ref}
               aria-label="text q0"
-              className={styles.input}
               type="text"
               placeholder="Five men sitting on a boat at night..."
               value={globalTextQuery}
-              onChange={(event) => onGlobalTextQueryChange(event.target.value)}
+              onValueChange={onGlobalTextQueryChange}
             />
           </label>
           <NumberField
@@ -117,14 +117,13 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
           />
           <label className={styles.fieldWide}>
             <span>Optional OCR</span>
-            <input
+            <QueryInput
               aria-label="stage 1 ocr"
-              className={styles.input}
               type="text"
               placeholder="SAIGON"
               value={ocrQuery}
               disabled={ocrDisabled}
-              onChange={(event) => onOcrQueryChange(event.target.value)}
+              onValueChange={onOcrQueryChange}
             />
           </label>
           <NumberField
@@ -192,27 +191,25 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
                       <div className={styles.abePair} key={pair.id}>
                         <label className={styles.abeField}>
                           <span className={styles.visuallyHidden}>Attribute {pairIndex + 1}</span>
-                          <input
+                          <QueryInput
                             aria-label={`abe attribute ${index + 1}.${pairIndex + 1}`}
-                            className={styles.input}
                             type="text"
                             placeholder="red"
                             value={pair.attribute}
-                            onChange={(event) =>
-                              onAbePairAttributeChange(row.id, pair.id, event.target.value)
+                            onValueChange={(value) =>
+                              onAbePairAttributeChange(row.id, pair.id, value)
                             }
                           />
                         </label>
                         <label className={styles.abeField}>
                           <span className={styles.visuallyHidden}>Object {pairIndex + 1}</span>
-                          <input
+                          <QueryInput
                             aria-label={`abe object ${index + 1}.${pairIndex + 1}`}
-                            className={styles.input}
                             type="text"
                             placeholder="seasoning packet"
                             value={pair.object}
-                            onChange={(event) =>
-                              onAbePairObjectChange(row.id, pair.id, event.target.value)
+                            onValueChange={(value) =>
+                              onAbePairObjectChange(row.id, pair.id, value)
                             }
                           />
                         </label>
@@ -238,9 +235,8 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
                     </div>
                   </div>
                 ) : (
-                  <input
+                  <QueryInput
                     aria-label={`stage 2 query ${index + 1}`}
-                    className={styles.input}
                     type="text"
                     placeholder={
                       row.type === 'ocr'
@@ -248,7 +244,7 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
                         : 'Constraint to rerank the candidate pool...'
                     }
                     value={row.text}
-                    onChange={(event) => onStage2QueryTextChange(row.id, event.target.value)}
+                    onValueChange={(value) => onStage2QueryTextChange(row.id, value)}
                   />
                 )}
                 <button

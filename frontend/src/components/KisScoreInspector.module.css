@@ -13,6 +13,36 @@
   box-sizing: border-box;
 }
 
+.embedded {
+  min-height: 0;
+}
+
+.tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #333;
+}
+
+.tab {
+  min-width: 0;
+  padding: 6px 8px;
+  background: #1b1b21;
+  color: #cbd5e1;
+  border: 1px solid #333;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.tabActive {
+  background: #2563eb;
+  color: #fff;
+  border-color: #3b82f6;
+}
+
 .header,
 .sectionHeader,
 .row {

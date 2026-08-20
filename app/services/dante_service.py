@@ -1,54 +1,32 @@
-"""DanteService — DANTE dynamic programming for TRAKE (plan §P2.1, PRD §F6,
-architecture.md §3.5).
+"""DANTE dynamic programming for TRAKE.
 
-Finds the highest-scoring STRICTLY ORDERED sequence of N events inside one
-video's keyframe range `[s_v, e_v]`. This is the paper's Eq (1)-(5):
+Finds the highest-scoring strictly ordered sequence of N events inside one
+video. The temporal term now uses real keyframe timestamps in seconds, not
+keyframe/global-index distance:
 
-    (1)  S[i,t]      = cosine_similarity(u_i, E[t])
-    (2)  DP[i,t]     = S[i,t] + max_{tau in [s_v, t-1]} ( DP[i-1,tau] - lambda*(t-tau) )
-    (3)  running_max = max( running_max, DP[i-1,t-1] + lambda*(t-1) )
-    (4)  DP[i,t]     = S[i,t] + running_max - lambda*t
-    (5)  DANTE[v]    = max_{t in [s_v, e_v]} DP[N,t]
+    S[i,t]    = cosine_similarity(u_i, E[t])
+    DP[i,t]   = S[i,t] + max_tau(DP[i-1,tau] - lambda_time*(time[t]-time[tau]))
+    DANTE[v]  = max_t DP[N,t]
 
-Eq (2) is O(N*T^2) if implemented literally (a fresh max-scan over every
-tau < t for every t). Eq (3)-(4) is the algebraic rewrite the paper gives to
-avoid that: split lambda*(t-tau) into lambda*t - lambda*tau, move lambda*tau
-into the max (so it only depends on tau, not t) and lambda*t out of it (so it
-only depends on t). That turns the max into a single running accumulator
-scanned left-to-right once per event row -- O(N*T) total, which is what
-test_dante_service.py's runtime test empirically checks (the paper itself
-never demonstrates this with numbers, plan §P2.1).
+The implementation keeps the original O(N*T) running-max shape. For each
+event row, it accumulates prefixes as `DP[i-1,tau] + lambda_time*time[tau]`
+and scores the current frame as
+`S[i,t] + running_max - lambda_time*time[t]`.
 
-`tau < t` is enforced structurally, not by a post-hoc check: the running max
-used to compute DP[i, t] is only ever updated using DP[i-1, t-1] (updated
-strictly BEFORE reading it for column t), so a later event can never be
-matched to an earlier-or-equal frame than the event before it (CLAUDE.md §4:
-"DANTE giu rang buoc thu tu tau < t. Chuoi tra ve khong bao gio dao thu tu
-thoi gian.").
-
-`i=1` (index 0 here) is the base case: the first event has no predecessor to
-respect an order constraint against, so DP[0, t] = S[0, t] directly, with no
-lambda penalty applied.
+Only candidates with `time[tau] < time[t]` are eligible, preserving DANTE's
+strict forward temporal ordering on the timestamp axis. The first event has
+no predecessor, so DP[0,t] = S[0,t].
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from pathlib import Path
 
 import numpy as np
-import yaml
 
-_CONFIG_PATH = Path(__file__).resolve().parent.parent.parent / "configs" / "search" / "dante.yaml"
-
-
-def _load_config() -> dict:
-    with _CONFIG_PATH.open(encoding="utf-8") as f:
-        return yaml.safe_load(f)
-
-
-_config = _load_config()
-DEFAULT_LAMBDA_PENALTY: float = _config["lambda_penalty"]
+LAMBDA_TIME: float = 0.01
+DEFAULT_LAMBDA_PENALTY: float = LAMBDA_TIME
 
 
 class DanteServiceError(Exception):
@@ -69,14 +47,22 @@ class DanteServiceError(Exception):
 
 
 @dataclass(frozen=True)
+class DanteStepDebug:
+    event_index: int
+    timestamp: float
+    semantic_score: float
+    gap_seconds: float | None
+    temporal_penalty: float | None
+
+
+@dataclass(frozen=True)
 class DanteResult:
-    """`global_indices` has exactly N entries (one per event, in event
-    order) and is strictly increasing -- CLAUDE.md §4's ordering invariant,
-    expressed as a type-level guarantee callers can rely on rather than a
-    convention they have to re-check."""
+    """`global_indices` has exactly N entries, one per event. `debug_steps`
+    keeps timestamp gaps and penalties inspectable without production logs."""
 
     score: float
     global_indices: tuple[int, ...]
+    debug_steps: tuple[DanteStepDebug, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -130,8 +116,47 @@ def _validate_similarity(similarity: np.ndarray) -> tuple[int, int]:
     return n_events, n_frames
 
 
+def _validate_timestamps(
+    timestamps: Sequence[float] | np.ndarray,
+    n_frames: int,
+) -> np.ndarray:
+    timestamp_array = np.asarray(timestamps, dtype=np.float64)
+    if timestamp_array.ndim != 1:
+        raise DanteServiceError(
+            f"timestamps must be a 1D array of seconds, got shape {timestamp_array.shape}",
+            error_code="invalid_timestamps",
+            status_code=400,
+        )
+    if timestamp_array.shape[0] != n_frames:
+        raise DanteServiceError(
+            "timestamps must contain one value per frame "
+            f"({n_frames}), got {timestamp_array.shape[0]}",
+            error_code="invalid_timestamps",
+            status_code=400,
+        )
+    if not np.all(np.isfinite(timestamp_array)):
+        raise DanteServiceError(
+            "timestamps must be finite seconds",
+            error_code="invalid_timestamps",
+            status_code=400,
+        )
+    if np.any(np.diff(timestamp_array) < 0):
+        raise DanteServiceError(
+            "timestamps must be sorted in nondecreasing temporal order",
+            error_code="invalid_timestamps",
+            status_code=400,
+        )
+    return timestamp_array
+
+
+def temporal_gap_seconds(prev_timestamp: float, curr_timestamp: float) -> float:
+    return float(curr_timestamp - prev_timestamp)
+
+
 def _compute_best_path_dp(
-    similarity: np.ndarray, lambda_penalty: float
+    similarity: np.ndarray,
+    timestamps: np.ndarray,
+    lambda_penalty: float,
 ) -> tuple[np.ndarray, np.ndarray]:
     n_events, n_frames = similarity.shape
     dp = np.full((n_events, n_frames), -np.inf, dtype=np.float64)
@@ -141,19 +166,20 @@ def _compute_best_path_dp(
     for i in range(1, n_events):
         running_max = -np.inf
         running_max_idx = -1
+        next_prefix_idx = 0
         for t in range(n_frames):
-            if t > 0:
-                # Eq (3): fold in tau=t-1 before computing DP[i,t], so the
-                # running max only ever reflects tau values strictly less
-                # than the t being computed this iteration.
-                candidate = dp[i - 1, t - 1] + lambda_penalty * (t - 1)
+            curr_timestamp = timestamps[t]
+            while next_prefix_idx < t and timestamps[next_prefix_idx] < curr_timestamp:
+                candidate = (
+                    dp[i - 1, next_prefix_idx] + lambda_penalty * timestamps[next_prefix_idx]
+                )
                 if candidate > running_max:
                     running_max = candidate
-                    running_max_idx = t - 1
+                    running_max_idx = next_prefix_idx
+                next_prefix_idx += 1
             if running_max_idx == -1:
-                continue  # no valid tau < t yet (only possible at t == 0)
-            # Eq (4).
-            dp[i, t] = similarity[i, t] + running_max - lambda_penalty * t
+                continue
+            dp[i, t] = similarity[i, t] + running_max - lambda_penalty * curr_timestamp
             predecessor[i, t] = running_max_idx
 
     return dp, predecessor
@@ -173,24 +199,52 @@ def _backtrack_best_path(predecessor: np.ndarray, n_events: int, best_t: int) ->
     return tuple(local_indices)
 
 
+def _build_debug_steps(
+    similarity: np.ndarray,
+    timestamps: np.ndarray,
+    local_indices: tuple[int, ...],
+    lambda_penalty: float,
+) -> tuple[DanteStepDebug, ...]:
+    steps: list[DanteStepDebug] = []
+    previous_timestamp: float | None = None
+    for event_index, local_index in enumerate(local_indices):
+        timestamp = float(timestamps[local_index])
+        gap = (
+            None
+            if previous_timestamp is None
+            else temporal_gap_seconds(previous_timestamp, timestamp)
+        )
+        steps.append(
+            DanteStepDebug(
+                event_index=event_index,
+                timestamp=timestamp,
+                semantic_score=float(similarity[event_index, local_index]),
+                gap_seconds=gap,
+                temporal_penalty=None if gap is None else float(lambda_penalty * gap),
+            )
+        )
+        previous_timestamp = timestamp
+    return tuple(steps)
+
+
 def dante_search(
     similarity: np.ndarray,
     s_v: int,
+    *,
+    timestamps: Sequence[float] | np.ndarray,
     lambda_penalty: float = DEFAULT_LAMBDA_PENALTY,
 ) -> DanteResult:
-    """Run the DANTE DP (Eq 2-5) over a precomputed similarity matrix for one
-    video and return the best strictly-ordered N-event sequence.
+    """Run DANTE over a precomputed similarity matrix for one video.
 
     similarity: shape (N, T), row i = event i's similarity to every frame in
     `[s_v, e_v]` (column t corresponds to `global_index = s_v + t`).
-    s_v: the video's start `global_index` (MongoDB `VideoDocument.s_v`,
-    CLAUDE.md §3) -- used only to translate local column indices back to the
-    `global_index` values callers submit.
-    lambda_penalty: config-driven time penalty (`configs/search/dante.yaml`,
-    CLAUDE.md §6 -- never hardcoded); defaults to that file's value.
+    timestamps: shape (T,), seconds for each frame column, sorted ascending.
+    lambda_penalty: temporal penalty coefficient in seconds; defaults to
+    `LAMBDA_TIME == 0.01`.
     """
-    n_events, _ = _validate_similarity(similarity)
-    dp, predecessor = _compute_best_path_dp(similarity, lambda_penalty)
+    n_events, n_frames = _validate_similarity(similarity)
+    timestamp_array = _validate_timestamps(timestamps, n_frames)
+    dp, predecessor = _compute_best_path_dp(similarity, timestamp_array, lambda_penalty)
 
     last_row = dp[n_events - 1, :]
     best_t = int(np.argmax(last_row))
@@ -202,8 +256,13 @@ def dante_search(
             status_code=422,
         )
 
-    global_indices = _globalize(s_v, _backtrack_best_path(predecessor, n_events, best_t))
-    return DanteResult(score=best_score, global_indices=global_indices)
+    local_indices = _backtrack_best_path(predecessor, n_events, best_t)
+    global_indices = _globalize(s_v, local_indices)
+    return DanteResult(
+        score=best_score,
+        global_indices=global_indices,
+        debug_steps=_build_debug_steps(similarity, timestamp_array, local_indices, lambda_penalty),
+    )
 
 
 def _append_descending_top_k(
@@ -221,17 +280,21 @@ def dante_search_sequences(
     s_v: int,
     threshold: float,
     top_k: int,
+    *,
+    timestamps: Sequence[float] | np.ndarray,
     lambda_penalty: float = DEFAULT_LAMBDA_PENALTY,
 ) -> list[DanteResult]:
     """Return top strictly-ordered DANTE sequences whose score is >= threshold.
 
     This is the k-best version of the same recurrence used by `dante_search`.
     For each possible end frame `t`, it keeps the top prefixes by
-    `score + lambda*tau`; extending those prefixes by `t` gives the best
-    sequences ending at `t`. Keeping only `top_k` prefixes is sufficient
-    because TRAKE only needs the global top-k sequences after thresholding.
+    `score + lambda_time*timestamp[tau]`; extending those prefixes by `t`
+    gives the best sequences ending at `t`. Keeping only `top_k` prefixes is
+    sufficient because TRAKE only needs the global top-k sequences after
+    thresholding.
     """
     n_events, n_frames = _validate_similarity(similarity)
+    timestamp_array = _validate_timestamps(timestamps, n_frames)
     if top_k < 1:
         raise DanteServiceError(
             "top_k must be at least 1",
@@ -249,15 +312,18 @@ def dante_search_sequences(
     for i in range(1, n_events):
         next_by_end: list[list[_LocalCandidate]] = []
         running_top: list[_AdjustedCandidate] = []
+        next_prefix_idx = 0
         for t in range(n_frames):
-            if t > 0:
-                for prefix in by_end[t - 1]:
-                    adjusted = prefix.score + lambda_penalty * (t - 1)
+            curr_timestamp = timestamp_array[t]
+            while next_prefix_idx < t and timestamp_array[next_prefix_idx] < curr_timestamp:
+                for prefix in by_end[next_prefix_idx]:
+                    adjusted = prefix.score + lambda_penalty * timestamp_array[next_prefix_idx]
                     _append_descending_top_k(
                         running_top,
                         _AdjustedCandidate(adjusted_score=adjusted, candidate=prefix),
                         top_k,
                     )
+                next_prefix_idx += 1
 
             similarity_score = float(similarity[i, t])
             if not running_top or not np.isfinite(similarity_score):
@@ -266,7 +332,9 @@ def dante_search_sequences(
 
             end_candidates = [
                 _LocalCandidate(
-                    score=similarity_score + prefix.adjusted_score - lambda_penalty * t,
+                    score=similarity_score
+                    + prefix.adjusted_score
+                    - lambda_penalty * curr_timestamp,
                     local_indices=prefix.candidate.local_indices + (t,),
                 )
                 for prefix in running_top
@@ -287,6 +355,15 @@ def dante_search_sequences(
     filtered = [candidate for candidate in all_candidates if candidate.score >= threshold]
     filtered.sort(key=lambda candidate: (-candidate.score, candidate.local_indices))
     return [
-        DanteResult(score=candidate.score, global_indices=_globalize(s_v, candidate.local_indices))
+        DanteResult(
+            score=candidate.score,
+            global_indices=_globalize(s_v, candidate.local_indices),
+            debug_steps=_build_debug_steps(
+                similarity,
+                timestamp_array,
+                candidate.local_indices,
+                lambda_penalty,
+            ),
+        )
         for candidate in filtered[:top_k]
     ]

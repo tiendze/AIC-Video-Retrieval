@@ -7,9 +7,10 @@ export interface KeyframeDetailProps {
   hit: SearchHit
   onClose: () => void
   onFindSimilar: (imageUrl: string) => void
+  highlightedFrames?: DetailFrame[]
 }
 
-interface DetailFrame {
+export interface DetailFrame {
   keyframe_id: string
   video_id: string
   frame_idx: number
@@ -45,7 +46,12 @@ function frameFromVideoKeyframe(videoId: string, keyframe: VideoKeyframe): Detai
 // Textual KIS top-1 hit is often a few shots off from the real answer, and
 // it reuses GET /api/videos/{id}/keyframes as-is (plan §P1.6 backend gap
 // 1.4). Cut on request; it costs nothing extra to keep for now.
-export function KeyframeDetail({ hit, onClose, onFindSimilar }: KeyframeDetailProps) {
+export function KeyframeDetail({
+  hit,
+  highlightedFrames = [],
+  onClose,
+  onFindSimilar,
+}: KeyframeDetailProps) {
   const [video, setVideo] = useState<VideoInfo | null>(null)
   const [neighbors, setNeighbors] = useState<VideoKeyframe[]>([])
   const [currentFrame, setCurrentFrame] = useState<DetailFrame>(() => frameFromHit(hit))
@@ -76,11 +82,17 @@ export function KeyframeDetail({ hit, onClose, onFindSimilar }: KeyframeDetailPr
 
   const stripFrames = useMemo(() => {
     const videoFrames = neighbors.map((keyframe) => frameFromVideoKeyframe(hit.video_id, keyframe))
-    if (videoFrames.some((frame) => frame.keyframe_id === currentFrame.keyframe_id)) {
-      return videoFrames
+    const framesById = new Map<string, DetailFrame>()
+    for (const frame of [...videoFrames, ...highlightedFrames, currentFrame]) {
+      framesById.set(frame.keyframe_id, frame)
     }
-    return [currentFrame, ...videoFrames]
-  }, [currentFrame, hit.video_id, neighbors])
+    return Array.from(framesById.values()).sort((a, b) => a.timestamp - b.timestamp)
+  }, [currentFrame, highlightedFrames, hit.video_id, neighbors])
+
+  const highlightedKeyframeIds = useMemo(
+    () => new Set(highlightedFrames.map((frame) => frame.keyframe_id)),
+    [highlightedFrames],
+  )
 
   const currentIndex = stripFrames.findIndex(
     (frame) => frame.keyframe_id === currentFrame.keyframe_id,
@@ -155,13 +167,21 @@ export function KeyframeDetail({ hit, onClose, onFindSimilar }: KeyframeDetailPr
             <div className={styles.neighbors} ref={stripRef}>
               {stripFrames.map((frame) => {
                 const active = frame.keyframe_id === currentFrame.keyframe_id
+                const highlighted = highlightedKeyframeIds.has(frame.keyframe_id)
                 return (
                   <button
                     type="button"
                     key={frame.keyframe_id}
-                    className={active ? styles.neighborActive : styles.neighbor}
+                    className={[
+                      styles.neighbor,
+                      highlighted ? styles.neighborHighlighted : '',
+                      active ? styles.neighborActive : '',
+                    ]
+                      .filter(Boolean)
+                      .join(' ')}
                     onClick={() => setCurrentFrame(frame)}
                     data-active={active}
+                    data-highlighted={highlighted || undefined}
                     aria-current={active ? 'true' : undefined}
                     aria-label={`Show frame ${frame.frame_idx}`}
                     title={`${frame.timestamp}s`}

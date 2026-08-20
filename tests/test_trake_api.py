@@ -15,16 +15,24 @@ from fastapi.testclient import TestClient
 from app.api import trake as trake_api
 from app.api.errors import register_error_handling
 from app.dependencies import get_trake_service
+from app.services.trake_embedding_cache import TrakeEmbeddingCacheError
 from app.services.trake_service import TrakeKeyframe, TrakeVideoResult
 
 
 class _FakeTrakeService:
-    def __init__(self, results: list[TrakeVideoResult] | None = None) -> None:
+    def __init__(
+        self,
+        results: list[TrakeVideoResult] | None = None,
+        error: Exception | None = None,
+    ) -> None:
         self._results = results or []
+        self._error = error
         self.search_calls: list[tuple[list[str], int, float | None, float]] = []
 
     async def search(self, events, top_k, lambda_penalty=None, threshold=0.0):
         self.search_calls.append((list(events), top_k, lambda_penalty, threshold))
+        if self._error is not None:
+            raise self._error
         return self._results
 
 
@@ -136,3 +144,13 @@ def test_trake_returns_an_empty_results_list_when_no_video_matches():
 
     assert response.status_code == 200
     assert response.json() == {"results": []}
+
+
+def test_trake_cache_unavailable_error_maps_to_a_503():
+    service = _FakeTrakeService(error=TrakeEmbeddingCacheError("TRAKE cache unavailable"))
+    client = _client(service)
+
+    response = client.post("/api/trake", json={"events": ["a"]})
+
+    assert response.status_code == 503
+    assert response.json()["error_code"] == "trake_cache_unavailable"

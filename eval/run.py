@@ -161,7 +161,7 @@ class EvalRunConfig:
     score_trake: bool = False
     trake_sequence_lengths: tuple[int, ...] = (3, 5, 7)
     trake_top_k: int = 10
-    # None = use configs/search/dante.yaml's configured lambda_penalty
+    # None = use app/services/dante_service.py:LAMBDA_TIME
     # (same "None means default" contract as TrakeService.search()).
     trake_lambda_penalty: float | None = None
     # P2.4 (PRD §6.4): scores an EXTRA λ-ablation grid -- every λ in

@@ -14,6 +14,7 @@ export interface UseTrakeResult {
   results: TrakeVideoResultItem[]
   isLoading: boolean
   error: string | null
+  latencyMs: number | null
   search: () => void
 }
 
@@ -32,6 +33,7 @@ export function useTrake(topK: number): UseTrakeResult {
   const [results, setResults] = useState<TrakeVideoResultItem[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [latencyMs, setLatencyMs] = useState<number | null>(null)
   const abortRef = useRef<AbortController | null>(null)
 
   const setEvent = useCallback((index: number, value: string) => {
@@ -59,9 +61,14 @@ export function useTrake(topK: number): UseTrakeResult {
     abortRef.current = controller
     setIsLoading(true)
     setError(null)
+    setLatencyMs(null)
+    const start = performance.now()
 
     trakeSearch(trimmed, topK, null, parsedThreshold, controller.signal)
-      .then((response) => setResults(response.results))
+      .then((response) => {
+        setResults(response.results)
+        setLatencyMs(performance.now() - start)
+      })
       .catch((err: unknown) => {
         if (isAbortError(err)) return
         setError(messageFor(err, 'TRAKE search failed'))
@@ -81,6 +88,7 @@ export function useTrake(topK: number): UseTrakeResult {
     results,
     isLoading,
     error,
+    latencyMs,
     search,
   }
 }

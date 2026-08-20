@@ -7,9 +7,12 @@ import styles from './ResultGrid.module.css'
 export interface ResultGridProps {
   hits: SearchHit[]
   selectedKeyframeId?: string | null
+  manuallySelectedKeys?: Set<string>
+  manualSelectionLabel?: string
   scrollElementRef?: RefObject<HTMLDivElement | null>
   onSelect: (hit: SearchHit) => void
   onFindSimilar: (hit: SearchHit) => void
+  onToggleManualSelection?: (hit: SearchHit) => void
   onOpenDetail?: (hit: SearchHit) => void
 }
 
@@ -26,9 +29,12 @@ const GAP_PX = 4
 export function ResultGrid({
   hits,
   selectedKeyframeId = null,
+  manuallySelectedKeys,
+  manualSelectionLabel,
   scrollElementRef,
   onSelect,
   onFindSimilar,
+  onToggleManualSelection,
   onOpenDetail,
 }: ResultGridProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -87,8 +93,11 @@ export function ResultGrid({
                   <ResultCard
                     hit={hit}
                     selected={hit.keyframe_id === selectedKeyframeId}
+                    manuallySelected={manuallySelectedKeys?.has(`${hit.video_id}:${hit.frame_idx}`)}
+                    manualSelectionLabel={manualSelectionLabel}
                     onSelect={onSelect}
                     onFindSimilar={onFindSimilar}
+                    onToggleManualSelection={onToggleManualSelection}
                     onOpenDetail={onOpenDetail}
                   />
                 </div>

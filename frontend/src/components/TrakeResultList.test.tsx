@@ -1,7 +1,8 @@
 import { render, screen } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import userEvent from '@testing-library/user-event'
+import { describe, expect, it, vi } from 'vitest'
 import type { TrakeVideoResultItem } from '../api/types'
-import { TrakeResultList } from './TrakeResultList'
+import { formatTrakeTimestamp, TrakeResultList } from './TrakeResultList'
 
 // RED reproducer for DANTE/TRAKE's results UI (plan §P2.2, PRD §F6/US-4 +
 // F9(C): "Trả về top-k video, mỗi video kèm đúng N keyframe, thứ tự thời
@@ -87,15 +88,47 @@ describe('TrakeResultList', () => {
 
     const images = screen.getAllByRole('img')
     expect(images.map((img) => img.getAttribute('alt'))).toEqual([
-      'frame 10',
-      'frame 50',
+      'event 1 at 00:01.0',
+      'event 2 at 00:05.0',
     ])
+  })
+
+  it('shows timestamps as the primary per-event temporal label', () => {
+    render(<TrakeResultList results={RESULTS} />)
+
+    expect(screen.getByText('Event 1 - 00:01.0')).toBeInTheDocument()
+    expect(screen.getByText('Event 2 - 00:05.0')).toBeInTheDocument()
+    expect(screen.getByText('frame 10')).toBeInTheDocument()
+  })
+
+  it('formats hour-long timestamps without losing precision', () => {
+    expect(formatTrakeTimestamp(3672.4)).toBe('01:01:12.4')
   })
 
   it('shows the frame_idx submission string in video_id, frame order', () => {
     render(<TrakeResultList results={RESULTS} />)
 
     expect(screen.getByText('L21_V001, 10, 50')).toBeInTheDocument()
+  })
+
+  it('opens the clicked keyframe detail from a TRAKE sequence', async () => {
+    const user = userEvent.setup()
+    const onOpenDetail = vi.fn()
+    render(<TrakeResultList results={RESULTS} onOpenDetail={onOpenDetail} />)
+
+    await user.click(screen.getByRole('button', { name: /open event 2 frame 50/i }))
+
+    expect(onOpenDetail).toHaveBeenCalledWith(RESULTS[0], 1)
+  })
+
+  it('selects a whole TRAKE sequence without mixing individual event frames', async () => {
+    const user = userEvent.setup()
+    const onToggleSequence = vi.fn()
+    render(<TrakeResultList results={RESULTS} onToggleSequence={onToggleSequence} />)
+
+    await user.click(screen.getByRole('button', { name: 'Select' }))
+
+    expect(onToggleSequence).toHaveBeenCalledWith(RESULTS[0], 0)
   })
 
   it('groups duplicate video ids and separates their sequences', () => {

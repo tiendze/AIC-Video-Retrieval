@@ -16,6 +16,7 @@ from app.services.health_service import HealthService
 from app.services.query_translator import QueryTranslator
 from app.services.search_service import SearchService
 from app.services.thumbnail_service import ThumbnailService
+from app.services.trake_embedding_cache import TrakeEmbeddingCache
 from app.services.trake_service import TrakeService
 from app.services.vqa_service import QaService
 from app.stores.es_client import EsStore
@@ -50,6 +51,10 @@ def get_thumbnail_service(request: Request) -> ThumbnailService:
     return request.app.state.thumbnail_service
 
 
+def get_trake_embedding_cache(request: Request) -> TrakeEmbeddingCache:
+    return request.app.state.trake_embedding_cache
+
+
 def get_quest_service(request: Request) -> QuestService:
     return request.app.state.quest_service
 
@@ -72,14 +77,12 @@ def get_health_service(
 
 def get_trake_service(
     encoder: MultimodalEncoder = Depends(get_encoder),
-    milvus_store: MilvusStore = Depends(get_milvus_store),
-    mongo_store: MongoStore = Depends(get_mongo_store),
+    trake_cache: TrakeEmbeddingCache = Depends(get_trake_embedding_cache),
     query_translator: QueryTranslator = Depends(get_query_translator),
 ) -> TrakeService:
     return TrakeService(
         encoder=encoder,
-        milvus_store=milvus_store,
-        mongo_store=mongo_store,
+        trake_cache=trake_cache,
         query_translator=query_translator,
     )
 

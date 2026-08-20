@@ -167,11 +167,65 @@ describe('App', () => {
     await user.click(screen.getByRole('radio', { name: /TRAKE/i }))
 
     expect(screen.getByLabelText('event 1')).toBeInTheDocument()
+    expect(screen.getByLabelText('TRAKE selection export')).toBeInTheDocument()
     expect(screen.queryByLabelText('text q0')).not.toBeInTheDocument()
+  })
+
+  it('adds a selected KIS result to the sidebar selection tab', async () => {
+    const user = userEvent.setup()
+    const restoreViewportSize = stubViewportSizeGlobally(600)
+    vi.mocked(retrieveKisCandidates).mockResolvedValue({
+      candidate_ids: ['L21_V001_f10'],
+      candidate_pool_size: 1,
+      text_candidate_count: 1,
+      ocr_candidate_count: 0,
+      results: [
+        {
+          keyframe_id: 'L21_V001_f10',
+          video_id: 'L21_V001',
+          score: 0.9,
+          frame_idx: 10,
+          timestamp: 1.0,
+          thumbnail_path: 't.jpg',
+          thumbnail_url: '/api/keyframes/L21_V001_f10/thumbnail',
+          image_url: '/api/keyframes/L21_V001_f10/image',
+        },
+      ],
+    })
+    try {
+      render(<App />)
+
+      await user.type(screen.getByLabelText('text q0'), 'boat')
+      await user.click(screen.getByRole('button', { name: 'Retrieve Candidates' }))
+      await waitFor(() => expect(screen.getByText('Select KIS')).toBeInTheDocument())
+
+      await user.click(screen.getByText('Select KIS'))
+      await user.click(screen.getByRole('tab', { name: 'Selection' }))
+
+      expect(screen.getByLabelText('KIS selection export')).toBeInTheDocument()
+      expect(screen.getByText('Selected Results')).toBeInTheDocument()
+      expect(screen.getByText('frame 10')).toBeInTheDocument()
+      expect(screen.getByText('Will export: query-1-kis.csv')).toBeInTheDocument()
+    } finally {
+      restoreViewportSize()
+    }
   })
 
   it('shows TRAKE results after searching in TRAKE mode', async () => {
     const user = userEvent.setup()
+    vi.mocked(getVideo).mockResolvedValue({
+      video_id: 'L21_V001',
+      watch_url: 'https://youtube.com/watch?v=abc',
+      title: 'Ban tin',
+      author: 'VTV',
+      publish_date: '01/01/2026',
+      duration: 600,
+      fps: 25,
+      num_keyframes: 1,
+      s_v: 0,
+      e_v: 0,
+    })
+    vi.mocked(getVideoKeyframes).mockResolvedValue({ keyframes: [] })
     vi.mocked(trakeSearch).mockResolvedValue({
       results: [
         {
@@ -194,9 +248,21 @@ describe('App', () => {
     await user.type(screen.getByLabelText('event 1'), 'người đàn ông mở cửa')
     await user.type(screen.getByLabelText('event 2'), 'xe máy chạy qua')
 
-    await user.click(screen.getByRole('button', { name: /tìm chuỗi/i }))
+    await user.click(screen.getByRole('button', { name: /Search TRAKE/i }))
 
     await waitFor(() => expect(screen.getByText('L21_V001')).toBeInTheDocument())
+    expect(screen.getByText(/1 result · \d+ms/)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /open event 1 frame 10/i }))
+
+    expect(screen.getByRole('dialog', { name: /keyframe detail/i })).toBeInTheDocument()
+    expect(screen.getByAltText('L21_V001 @ 1s')).toHaveAttribute(
+      'src',
+      '/api/keyframes/L21_V001_f10/image',
+    )
+    expect(screen.getByRole('button', { name: /show frame 10/i })).toHaveAttribute(
+      'data-highlighted',
+      'true',
+    )
   })
 
   it('shows the KIS score inspector for the selected result', async () => {

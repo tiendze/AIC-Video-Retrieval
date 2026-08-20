@@ -47,6 +47,7 @@ describe('useTrake', () => {
     expect(result.current.isLoading).toBe(false)
     expect(result.current.error).toBeNull()
     expect(result.current.threshold).toBe('0')
+    expect(result.current.latencyMs).toBeNull()
   })
 
   it('updates only the targeted event row', () => {
@@ -146,6 +147,8 @@ describe('useTrake', () => {
     await waitFor(() => expect(result.current.isLoading).toBe(false))
 
     expect(result.current.results).toEqual([RESULT])
+    expect(result.current.latencyMs).not.toBeNull()
+    expect(result.current.latencyMs).toBeGreaterThanOrEqual(0)
     // Order preserved exactly as the backend returned it -- no client-side
     // re-sort of the keyframes array anywhere in this hook.
     expect(result.current.results[0]?.keyframes.map((k) => k.frame_idx)).toEqual([10, 50])

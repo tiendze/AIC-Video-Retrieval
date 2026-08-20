@@ -4,8 +4,11 @@ import styles from './ResultCard.module.css'
 export interface ResultCardProps {
   hit: SearchHit
   selected?: boolean
+  manuallySelected?: boolean
+  manualSelectionLabel?: string
   onSelect: (hit: SearchHit) => void
   onFindSimilar: (hit: SearchHit) => void
+  onToggleManualSelection?: (hit: SearchHit) => void
   onOpenDetail?: (hit: SearchHit) => void
 }
 
@@ -15,8 +18,11 @@ export interface ResultCardProps {
 export function ResultCard({
   hit,
   selected = false,
+  manuallySelected = false,
+  manualSelectionLabel = 'Select',
   onSelect,
   onFindSimilar,
+  onToggleManualSelection,
   onOpenDetail,
 }: ResultCardProps) {
   const score = hit.final_score ?? hit.score
@@ -24,7 +30,9 @@ export function ResultCard({
   return (
     <button
       type="button"
-      className={`${styles.card} ${selected ? styles.selected : ''}`}
+      className={`${styles.card} ${selected ? styles.selected : ''} ${
+        manuallySelected ? styles.manualSelectedCard : ''
+      }`}
       aria-label={`${hit.video_id} at ${hit.timestamp}s`}
       onClick={() => onSelect(hit)}
     >
@@ -58,6 +66,27 @@ export function ResultCard({
           }}
         >
           Details
+        </span>
+      )}
+      {onToggleManualSelection && (
+        <span
+          role="button"
+          tabIndex={0}
+          className={`${styles.manualSelect} ${
+            manuallySelected ? styles.manualSelectActive : ''
+          }`}
+          onClick={(event) => {
+            event.stopPropagation()
+            onToggleManualSelection(hit)
+          }}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.stopPropagation()
+              onToggleManualSelection(hit)
+            }
+          }}
+        >
+          {manuallySelected ? '✓ Selected' : manualSelectionLabel}
         </span>
       )}
       <span
