@@ -59,13 +59,16 @@ export function KeyframeDetail({
   const stripRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
+    setCurrentFrame(frameFromHit(hit))
+  }, [hit])
+
+  useEffect(() => {
     let cancelled = false
     setVideo(null)
     setNeighbors([])
     setError(null)
-    setCurrentFrame(frameFromHit(hit))
 
-    Promise.all([getVideo(hit.video_id), getVideoKeyframes(hit.video_id)])
+    Promise.all([getVideo(currentFrame.video_id), getVideoKeyframes(currentFrame.video_id)])
       .then(([videoInfo, keyframes]) => {
         if (cancelled) return
         setVideo(videoInfo)
@@ -78,16 +81,18 @@ export function KeyframeDetail({
     return () => {
       cancelled = true
     }
-  }, [hit])
+  }, [currentFrame.video_id])
 
   const stripFrames = useMemo(() => {
-    const videoFrames = neighbors.map((keyframe) => frameFromVideoKeyframe(hit.video_id, keyframe))
+    const videoFrames = neighbors.map((keyframe) =>
+      frameFromVideoKeyframe(currentFrame.video_id, keyframe),
+    )
     const framesById = new Map<string, DetailFrame>()
     for (const frame of [...videoFrames, ...highlightedFrames, currentFrame]) {
       framesById.set(frame.keyframe_id, frame)
     }
     return Array.from(framesById.values()).sort((a, b) => a.timestamp - b.timestamp)
-  }, [currentFrame, highlightedFrames, hit.video_id, neighbors])
+  }, [currentFrame, highlightedFrames, neighbors])
 
   const highlightedKeyframeIds = useMemo(
     () => new Set(highlightedFrames.map((frame) => frame.keyframe_id)),
@@ -99,7 +104,10 @@ export function KeyframeDetail({
   )
   const canGoPrev = currentIndex > 0
   const canGoNext = currentIndex >= 0 && currentIndex < stripFrames.length - 1
-  const youtubeUrl = video ? `${video.watch_url}&t=${Math.floor(currentFrame.timestamp)}s` : null
+  const youtubeUrl =
+    video && video.video_id === currentFrame.video_id
+      ? `${video.watch_url}&t=${Math.floor(currentFrame.timestamp)}s`
+      : null
 
   useEffect(() => {
     const active = stripRef.current?.querySelector('[data-active="true"]') as HTMLElement | null

@@ -79,6 +79,7 @@ from app.stores.mongo_client import MongoStore
 from datasets.aic2026 import AIC2026Adapter
 from datasets.base import VideoRef
 from pipelines.import_embed_out import (
+    align_metadata_to_video_ids,
     build_imported_keyframes,
     build_vectors_only_rows,
     build_video_document,
@@ -400,6 +401,7 @@ async def _import_video(
     embed_out_dir: Path,
     shot_index: dict,
     video_map: dict[str, VideoRef],
+    metadata_map: dict[str, dict],
     adapter: AIC2026Adapter,
     image_dir: Path,
     milvus: MilvusStore,
@@ -419,12 +421,11 @@ async def _import_video(
     organiser's `map-keyframes`.
 
     `video_map` (built from `adapter.iter_videos("all")`, which requires the
-    `.mp4` to exist) still supplies title/author/publish_date/... when
-    available. When it doesn't have this `video_id` -- no local `.mp4` --
-    this falls back to a metadata-less `VideoRef` (title/author/... left
-    `None`, which `build_video_document` already treats as optional) rather
-    than raising: `frame_idx`/`global_index`/`shot_id` never depended on the
-    `.mp4` in the first place, only `fps` did, and that now comes from
+    `.mp4` to exist) supplies the full `VideoRef` when raw videos are local.
+    Metadata comes from `metadata_map`, which already compensates for the
+    known one-row offset in the current AIC metadata dump when that duplicate
+    signature is present. `frame_idx`/`global_index`/`shot_id` never depended
+    on the `.mp4` in the first place, only `fps` did, and that now comes from
     map-keyframes."""
     shot_ranges = shot_index.get(video_id)
     if shot_ranges is None:
@@ -435,8 +436,20 @@ async def _import_video(
         raise ValueError(f"{video_id}: data/map-keyframes/{video_id}.csv has no rows")
     fps = reference_keyframes[0].fps
 
+    metadata = metadata_map.get(video_id)
     video_ref = video_map.get(video_id)
-    if video_ref is None:
+    if metadata is not None:
+        video_ref = VideoRef(
+            video_id=video_id,
+            source_path=video_ref.source_path if video_ref is not None else "",
+            duration_sec=float(metadata["length"]),
+            category=metadata.get("author"),
+            title=metadata.get("title"),
+            publish_date=metadata.get("publish_date"),
+            watch_url=metadata.get("watch_url"),
+            channel_id=metadata.get("channel_id"),
+        )
+    elif video_ref is None:
         video_ref = VideoRef(
             video_id=video_id,
             source_path="",
@@ -516,6 +529,14 @@ async def _run_primary_import(
     _main() body verbatim, so --encoder beit3's behavior is identical)."""
     adapter = AIC2026Adapter(dataset_root=args.dataset_root, eval_set_path=Path("/dev/null"))
     video_map = {v.video_id: v for v in adapter.iter_videos("all")}
+    metadata_map = align_metadata_to_video_ids(
+        video_ids,
+        {
+            video_id: metadata
+            for video_id in video_ids
+            if (metadata := adapter.load_metadata(video_id)) is not None
+        },
+    )
     shot_index = load_shot_index(args.shots_json)
 
     global_index_start = await next_global_index_start(mongo)
@@ -537,6 +558,7 @@ async def _run_primary_import(
                 embed_out_dir=embed_out_dir,
                 shot_index=shot_index,
                 video_map=video_map,
+                metadata_map=metadata_map,
                 adapter=adapter,
                 image_dir=args.image_dir,
                 milvus=milvus,

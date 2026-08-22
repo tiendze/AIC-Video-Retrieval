@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { getVideoKeyframes } from '../api/client'
+import { getVideo, getVideoKeyframes } from '../api/client'
 import { KeyframeDetail, type DetailFrame } from './KeyframeDetail'
 import type { SearchHit } from '../api/types'
 
@@ -41,6 +41,20 @@ const HIT: SearchHit = {
 
 describe('KeyframeDetail', () => {
   beforeEach(() => {
+    vi.mocked(getVideo).mockImplementation((videoId: string) =>
+      Promise.resolve({
+        video_id: videoId,
+        watch_url: `https://youtube.com/watch?v=${videoId}`,
+        title: `Title ${videoId}`,
+        author: 'VTV',
+        publish_date: '01/01/2026',
+        duration: 600,
+        fps: 25,
+        num_keyframes: 1,
+        s_v: 0,
+        e_v: 0,
+      }),
+    )
     vi.mocked(getVideoKeyframes).mockResolvedValue({ keyframes: [] })
   })
 
@@ -193,6 +207,43 @@ describe('KeyframeDetail', () => {
     expect(screen.getByRole('button', { name: /show frame 20/i })).toHaveAttribute(
       'data-highlighted',
       'true',
+    )
+  })
+
+  it('uses the currently displayed frame video for the YouTube link', async () => {
+    const user = userEvent.setup()
+    const otherFrame: DetailFrame = {
+      keyframe_id: 'L21_V029_f11591',
+      video_id: 'L21_V029',
+      frame_idx: 11591,
+      timestamp: 386.36,
+      thumbnail_url: '/api/keyframes/L21_V029_f11591/thumbnail',
+      image_url: '/api/keyframes/L21_V029_f11591/image',
+    }
+
+    render(
+      <KeyframeDetail
+        hit={HIT}
+        highlightedFrames={[otherFrame]}
+        onClose={vi.fn()}
+        onFindSimilar={vi.fn()}
+      />,
+    )
+
+    await waitFor(() =>
+      expect(screen.getByRole('link', { name: /play youtube/i })).toHaveAttribute(
+        'href',
+        'https://youtube.com/watch?v=L21_V001&t=42s',
+      ),
+    )
+
+    await user.click(screen.getByRole('button', { name: /show frame 11591/i }))
+
+    await waitFor(() =>
+      expect(screen.getByRole('link', { name: /play youtube/i })).toHaveAttribute(
+        'href',
+        'https://youtube.com/watch?v=L21_V029&t=386s',
+      ),
     )
   })
 })
