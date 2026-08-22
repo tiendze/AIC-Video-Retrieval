@@ -59,7 +59,9 @@ from app.schemas.response.search import (
     SearchResponse,
     Stage1OcrScoreResponse,
     Stage1RetrievalResponse,
+    Stage1TextQueryScoreResponse,
     Stage1TextScoreResponse,
+    Stage1TitleScoreResponse,
     TextModalityScoreResponse,
     TextQueryScoreResponse,
 )
@@ -103,6 +105,9 @@ def _to_response(hits: list[SearchHit]) -> SearchResponse:
                 keyframe_id=hit.keyframe_id,
                 video_id=hit.video_id,
                 score=hit.score,
+                fused_image_score=hit.fused_image_score,
+                fused_image_rank=hit.fused_image_rank,
+                video_title=hit.video_title,
                 frame_idx=hit.frame_idx,
                 timestamp=hit.timestamp,
                 thumbnail_path=hit.thumbnail_path,
@@ -123,6 +128,9 @@ def _to_kis_response(hits: list[SearchHit]) -> KisSearchResponse:
                 keyframe_id=hit.keyframe_id,
                 video_id=hit.video_id,
                 score=hit.score,
+                fused_image_score=hit.fused_image_score,
+                fused_image_rank=hit.fused_image_rank,
+                video_title=hit.video_title,
                 frame_idx=hit.frame_idx,
                 timestamp=hit.timestamp,
                 thumbnail_path=hit.thumbnail_path,
@@ -145,11 +153,16 @@ def _to_kis_candidate_response(pool: KisCandidatePool) -> KisCandidateResponse:
         candidate_pool_size=pool.candidate_pool_size,
         text_candidate_count=pool.text_candidate_count,
         ocr_candidate_count=pool.ocr_candidate_count,
+        title_candidate_count=pool.title_candidate_count,
+        rrf_k=pool.rrf_k,
         results=[
             KisCandidateHitResponse(
                 keyframe_id=hit.keyframe_id,
                 video_id=hit.video_id,
                 score=hit.score,
+                fused_image_score=hit.fused_image_score,
+                fused_image_rank=hit.fused_image_rank,
+                video_title=hit.video_title,
                 frame_idx=hit.frame_idx,
                 timestamp=hit.timestamp,
                 thumbnail_path=hit.thumbnail_path,
@@ -177,6 +190,8 @@ def _to_stage1_response(stage1: Stage1RetrievalScore | None) -> Stage1RetrievalR
         return Stage1RetrievalResponse(source_modalities=[])
     return Stage1RetrievalResponse(
         source_modalities=stage1.source_modalities,
+        fused_image_score=stage1.fused_image_score,
+        fused_image_rank=stage1.fused_image_rank,
         text=(
             Stage1TextScoreResponse(
                 query=stage1.text.query,
@@ -184,6 +199,20 @@ def _to_stage1_response(stage1: Stage1RetrievalScore | None) -> Stage1RetrievalR
                 rank=stage1.text.rank,
             )
             if stage1.text is not None
+            else None
+        ),
+        text_queries=(
+            [
+                Stage1TextQueryScoreResponse(
+                    query_index=query.query_index,
+                    query=query.query,
+                    raw_cosine=query.raw_cosine,
+                    original_rank=query.original_rank,
+                    rank=query.rank,
+                )
+                for query in stage1.text_queries
+            ]
+            if stage1.text_queries
             else None
         ),
         ocr=(
@@ -197,6 +226,16 @@ def _to_stage1_response(stage1: Stage1RetrievalScore | None) -> Stage1RetrievalR
                 rank=stage1.ocr.rank,
             )
             if stage1.ocr is not None
+            else None
+        ),
+        title=(
+            Stage1TitleScoreResponse(
+                query=stage1.title.query,
+                video_title=stage1.title.video_title,
+                title_score=stage1.title.title_score,
+                rank=stage1.title.rank,
+            )
+            if stage1.title is not None
             else None
         ),
     )
@@ -353,9 +392,12 @@ async def retrieve_kis_candidates(
     try:
         pool = await service.retrieve_kis_candidates(
             text_query=body.text_query,
+            text_queries=body.text_queries,
             text_top_k=body.text_top_k,
             ocr_query=body.ocr_query,
             ocr_top_k=body.ocr_top_k,
+            title_query=body.title_query,
+            title_top_k=body.title_top_k,
         )
     except SearchServiceError as exc:
         raise APIError(
@@ -365,11 +407,12 @@ async def retrieve_kis_candidates(
     latency_ms = (time.perf_counter() - start) * 1000
     logger.info(
         "search request completed: mode=kis_stage1 latency_ms=%.1f candidate_pool_size=%d "
-        "text_candidates=%d ocr_candidates=%d",
+        "text_candidates=%d ocr_candidates=%d title_candidates=%d",
         latency_ms,
         pool.candidate_pool_size,
         pool.text_candidate_count,
         pool.ocr_candidate_count,
+        pool.title_candidate_count,
     )
     return _to_kis_candidate_response(pool)
 

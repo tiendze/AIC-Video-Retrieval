@@ -11,6 +11,7 @@ max_top_k: 100
 # only after the pool is visible.
 default_text_candidate_k: 300
 default_ocr_candidate_k: 100
+default_title_candidate_k: 100
 max_candidate_k: 1000
 
 # Textual KIS V1 candidate generation. Display top_k remains capped by the
@@ -23,6 +24,10 @@ kis_candidate_min: 100
 # used to rank candidates per query; rank percentiles are fused with a
 # geometric mean in log-space, using this epsilon only to avoid log(0).
 kis_geomean_epsilon: 0.00000001
+
+# Group-by-video cross-query Reciprocal Rank Fusion. This is used only for
+# video-level sorting from original per-query Stage 1 Text rankings.
+rrf_k: 60
 
 # Per-query OCR BM25 normalization. If fewer than this many positive BM25
 # scores are retrieved for a query, KIS uses max(score) instead of P95.

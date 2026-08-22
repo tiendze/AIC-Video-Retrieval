@@ -4,8 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { ResultCard } from './ResultCard'
 import type { SearchHit } from '../api/types'
 
-// RED reproducer for PRD §F9 / plan §P1.6 acceptance criterion:
-// "video_id + timestamp hiển thị NGAY TRÊN mỗi thumbnail, không cần hover."
+// Result labels prioritize the submission identity: video_id + raw frame_idx.
 
 const HIT: SearchHit = {
   keyframe_id: 'L21_V001_f10',
@@ -19,14 +18,14 @@ const HIT: SearchHit = {
 }
 
 describe('ResultCard', () => {
-  it('shows video_id and timestamp as always-visible text, not only on hover', () => {
+  it('shows video_id and frame as always-visible text, not only on hover', () => {
     render(<ResultCard hit={HIT} onSelect={vi.fn()} onFindSimilar={vi.fn()} />)
 
     // getByText fails on content hidden via CSS (e.g. opacity:0 shown only
     // on :hover) unless it is actually visible in the accessibility tree --
     // this is the behavioral check, not a class-name check.
     expect(screen.getByText('L21_V001')).toBeVisible()
-    expect(screen.getByText('42.5s')).toBeVisible()
+    expect(screen.getByText('frame 10')).toBeVisible()
   })
 
   it('calls onSelect with the hit when clicked', async () => {

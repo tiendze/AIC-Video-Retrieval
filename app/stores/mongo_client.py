@@ -12,6 +12,8 @@ duplicate-key error per row instead of creating a second record.
 from __future__ import annotations
 
 import logging
+import re
+import unicodedata
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -163,6 +165,33 @@ class MongoStore:
         async for doc in cursor:
             yield doc
 
+    async def search_videos_by_title(self, query_text: str, top_k: int) -> list[dict[str, Any]]:
+        """Lexical title search over existing video metadata.
+
+        The project has no title embedding/index today, and the video table is
+        small enough to score in process. This keeps Title independent from OCR
+        while avoiding a new retrieval subsystem.
+        """
+        query_tokens = _title_tokens(query_text)
+        if not query_tokens or top_k <= 0:
+            return []
+
+        scored: list[tuple[float, str, dict[str, Any]]] = []
+        async for doc in self.scroll_all_videos():
+            title = str(doc.get("title", ""))
+            normalized_title = _normalize_title(title)
+            if not normalized_title:
+                continue
+            token_hits = sum(1 for token in query_tokens if token in normalized_title)
+            if token_hits == 0:
+                continue
+            exact_bonus = 1.0 if _normalize_title(query_text) in normalized_title else 0.0
+            score = token_hits / len(query_tokens) + exact_bonus
+            scored.append((score, str(doc.get("video_id", "")), doc))
+
+        scored.sort(key=lambda item: (-item[0], item[1]))
+        return [{**doc, "score": score} for score, _, doc in scored[:top_k]]
+
     async def scroll_all_keyframes(self) -> AsyncIterator[dict[str, Any]]:
         """Every persisted keyframe row across the whole corpus, unfiltered
         -- the sampling pool `eval/baselines/random.py` (plan §P0.9) draws
@@ -239,3 +268,15 @@ def _video_document_to_dict(doc: VideoDocument) -> dict[str, Any]:
         "watch_url": doc.watch_url,
         "channel_id": doc.channel_id,
     }
+
+
+def _normalize_title(text: str) -> str:
+    normalized = unicodedata.normalize("NFKD", text).lower()
+    without_marks = "".join(
+        char for char in normalized if unicodedata.category(char) != "Mn"
+    ).replace("đ", "d")
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", without_marks)).strip()
+
+
+def _title_tokens(text: str) -> list[str]:
+    return [token for token in _normalize_title(text).split() if token]

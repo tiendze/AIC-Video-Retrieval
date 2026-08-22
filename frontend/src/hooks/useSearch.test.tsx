@@ -9,6 +9,8 @@ vi.mock('../api/client', () => ({
     candidate_pool_size: 0,
     text_candidate_count: 0,
     ocr_candidate_count: 0,
+    title_candidate_count: 0,
+    rrf_k: 60,
     results: [],
   }),
   rerankKisCandidates: vi.fn().mockResolvedValue({
@@ -27,6 +29,8 @@ describe('useSearch staged KIS flow', () => {
       candidate_pool_size: 0,
       text_candidate_count: 0,
       ocr_candidate_count: 0,
+      title_candidate_count: 0,
+      rrf_k: 60,
       results: [],
     })
     vi.mocked(rerankKisCandidates).mockResolvedValue({
@@ -40,9 +44,12 @@ describe('useSearch staged KIS flow', () => {
     const { result } = renderHook(() => useSearch())
 
     expect(result.current.globalTextQuery).toBe('')
+    expect(result.current.textQueries).toEqual([''])
     expect(result.current.ocrQuery).toBe('')
+    expect(result.current.titleQuery).toBe('')
     expect(result.current.textCandidateK).toBe(300)
     expect(result.current.ocrCandidateK).toBe(100)
+    expect(result.current.titleCandidateK).toBe(100)
     expect(result.current.stage2Queries).toEqual([])
     expect(result.current.candidatePool).toBeNull()
   })
@@ -83,9 +90,12 @@ describe('useSearch staged KIS flow', () => {
     expect(retrieveKisCandidates).toHaveBeenCalledWith(
       {
         text_query: 'people on a boat',
+        text_queries: ['people on a boat'],
         text_top_k: 300,
         ocr_query: 'SAIGON',
         ocr_top_k: 100,
+        title_query: null,
+        title_top_k: 100,
       },
       expect.any(AbortSignal),
     )
@@ -97,6 +107,8 @@ describe('useSearch staged KIS flow', () => {
       candidate_pool_size: 3,
       text_candidate_count: 2,
       ocr_candidate_count: 2,
+      title_candidate_count: 0,
+      rrf_k: 60,
       results: [
         {
           keyframe_id: 'A',
@@ -229,6 +241,8 @@ describe('useSearch staged KIS flow', () => {
       candidate_pool_size: 1,
       text_candidate_count: 1,
       ocr_candidate_count: 0,
+      title_candidate_count: 0,
+      rrf_k: 60,
       results: [
         {
           keyframe_id: 'A',
@@ -262,6 +276,8 @@ describe('useSearch staged KIS flow', () => {
       candidate_pool_size: 2,
       text_candidate_count: 2,
       ocr_candidate_count: 0,
+      title_candidate_count: 0,
+      rrf_k: 60,
       results: [
         {
           keyframe_id: 'A',

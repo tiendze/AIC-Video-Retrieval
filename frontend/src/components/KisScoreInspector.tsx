@@ -44,6 +44,13 @@ export function KisScoreInspector({ hit, embedded = false }: KisScoreInspectorPr
             <strong>Candidate retrieval only</strong>
           </div>
           <div className={styles.sourceList}>Source: {hit.stage1.source_modalities.join(' + ')}</div>
+          {hit.stage1.fused_image_score !== undefined && (
+            <div className={styles.queryBlock}>
+              <div className={styles.queryTitle}>Fused Image Rank</div>
+              <ScoreRow label="sum cosine" value={hit.stage1.fused_image_score} />
+              <ScoreRow label="global rank" value={hit.stage1.fused_image_rank} digits={0} />
+            </div>
+          )}
           {hit.stage1.text && (
             <div className={styles.queryBlock}>
               <div className={styles.queryTitle}>Global Text Q0 - FG-CLIP</div>
@@ -52,6 +59,24 @@ export function KisScoreInspector({ hit, embedded = false }: KisScoreInspectorPr
               </div>
               <ScoreRow label="FG-CLIP raw cosine" value={hit.stage1.text.raw_cosine} />
               <ScoreRow label="Text rank" value={hit.stage1.text.rank} digits={0} />
+            </div>
+          )}
+          {hit.stage1.text_queries && hit.stage1.text_queries.length > 1 && (
+            <div className={styles.queryBlock}>
+              <div className={styles.queryTitle}>Stage 1 Text Queries</div>
+              {hit.stage1.text_queries.map((query) => (
+                <div className={styles.pairBlock} key={`stage1-text-${query.query_index}`}>
+                  <div className={styles.queryText} title={query.query}>
+                    Q{query.query_index + 1}: "{query.query}"
+                  </div>
+                  <ScoreRow label="cosine" value={query.raw_cosine} />
+                  <ScoreRow label="rank in union" value={query.rank} digits={0} />
+                  <ScoreTextRow
+                    label="original Top-K rank"
+                    value={query.original_rank === null ? '-' : `#${query.original_rank}`}
+                  />
+                </div>
+              ))}
             </div>
           )}
           {hit.stage1.ocr && (
@@ -65,6 +90,16 @@ export function KisScoreInspector({ hit, embedded = false }: KisScoreInspectorPr
               <ScoreRow label="Coverage" value={hit.stage1.ocr.coverage} />
               <ScoreRow label="OCR query score" value={hit.stage1.ocr.query_score} />
               <ScoreRow label="OCR rank" value={hit.stage1.ocr.rank} digits={0} />
+            </div>
+          )}
+          {hit.stage1.title && (
+            <div className={styles.queryBlock}>
+              <div className={styles.queryTitle}>Stage 1 Title</div>
+              <div className={styles.queryText} title={hit.stage1.title.video_title}>
+                "{hit.stage1.title.video_title}"
+              </div>
+              <ScoreRow label="Title score" value={hit.stage1.title.title_score} />
+              <ScoreRow label="Title rank" value={hit.stage1.title.rank} digits={0} />
             </div>
           )}
         </section>
@@ -212,7 +247,7 @@ function ScoreRow({
   suffix = '',
 }: {
   label: string
-  value: number
+  value: number | undefined
   digits?: number
   suffix?: string
 }) {

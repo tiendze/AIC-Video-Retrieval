@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 import type { SearchHit } from '../api/types'
 import {
   buildKisFinalRanking,
+  buildRawFrameSweep,
   buildVqaFinalRows,
   suggestedFilename,
   validateCsvFilename,
@@ -30,6 +31,10 @@ export interface KisSelectionPanelProps {
   onClearVqaSelection: () => void
   onClearVqaAnswers: () => void
   onVqaAnswerChange: (key: string, answer: string) => void
+  kisFrameSweepStep: number
+  kisFrameSweepMargin: number
+  onKisFrameSweepStepChange: (value: number) => void
+  onKisFrameSweepMarginChange: (value: number) => void
   onExportKis: () => void
   onExportVqa: () => void
 }
@@ -52,12 +57,25 @@ export function KisSelectionPanel({
   onClearVqaSelection,
   onClearVqaAnswers,
   onVqaAnswerChange,
+  kisFrameSweepStep,
+  kisFrameSweepMargin,
+  onKisFrameSweepStepChange,
+  onKisFrameSweepMarginChange,
   onExportKis,
   onExportVqa,
 }: KisSelectionPanelProps) {
   const activeName = mode === 'kis' ? kisExportName : vqaExportName
   const validation = validateCsvFilename(activeName, mode)
   const finalKisRows = buildKisFinalRanking(results, kisSelection)
+  const finalKisSubmissionRowCount = finalKisRows.reduce(
+    (count, hit) =>
+      count +
+      buildRawFrameSweep(hit.frame_idx, {
+        step: kisFrameSweepStep,
+        marginCount: kisFrameSweepMargin,
+      }).length,
+    0,
+  )
   const finalVqaRows = buildVqaFinalRows(vqaSelection)
   const missingAnswers = vqaSelection.filter((item) => item.answer.length === 0)
   const overLimitAnswers = vqaSelection.filter((item) => item.answer.length > 100)
@@ -135,6 +153,11 @@ export function KisSelectionPanel({
         <KisSelectedList
           selection={kisSelection}
           finalCount={finalKisRows.length}
+          submissionRowCount={finalKisSubmissionRowCount}
+          frameSweepStep={kisFrameSweepStep}
+          frameSweepMargin={kisFrameSweepMargin}
+          onFrameSweepStepChange={onKisFrameSweepStepChange}
+          onFrameSweepMarginChange={onKisFrameSweepMarginChange}
           onMove={onMoveKisSelection}
           onRemove={onRemoveKisSelection}
           onClear={onClearKisSelection}
@@ -168,12 +191,22 @@ export function KisSelectionPanel({
 function KisSelectedList({
   selection,
   finalCount,
+  submissionRowCount,
+  frameSweepStep,
+  frameSweepMargin,
+  onFrameSweepStepChange,
+  onFrameSweepMarginChange,
   onMove,
   onRemove,
   onClear,
 }: {
   selection: SelectedSearchItem[]
   finalCount: number
+  submissionRowCount: number
+  frameSweepStep: number
+  frameSweepMargin: number
+  onFrameSweepStepChange: (value: number) => void
+  onFrameSweepMarginChange: (value: number) => void
   onMove: (index: number, direction: -1 | 1) => void
   onRemove: (key: string) => void
   onClear: () => void
@@ -184,7 +217,31 @@ function KisSelectedList({
         <span>Selected Results</span>
         <span>{selection.length}</span>
       </div>
-      <div className={styles.hint}>Final KIS export will contain {finalCount} row(s).</div>
+      <div className={styles.hint}>
+        Final KIS ranking has {finalCount} center frame(s); CSV writes {submissionRowCount} row(s).
+      </div>
+      <div className={styles.sweepGrid}>
+        <label className={styles.label}>
+          Raw step
+          <input
+            className={styles.input}
+            type="number"
+            min={1}
+            value={frameSweepStep}
+            onChange={(event) => onFrameSweepStepChange(Number(event.currentTarget.value))}
+          />
+        </label>
+        <label className={styles.label}>
+          Margin count
+          <input
+            className={styles.input}
+            type="number"
+            min={0}
+            value={frameSweepMargin}
+            onChange={(event) => onFrameSweepMarginChange(Number(event.currentTarget.value))}
+          />
+        </label>
+      </div>
       {selection.length === 0 ? (
         <div className={styles.empty}>Selected frames appear here.</div>
       ) : (

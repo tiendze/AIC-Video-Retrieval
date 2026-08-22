@@ -24,7 +24,7 @@
   display: block;
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
 }
 
 /* Always visible -- not a hover overlay (PRD §F9: video_id + timestamp
@@ -64,9 +64,23 @@
   pointer-events: none;
 }
 
+.rankBadge {
+  position: absolute;
+  left: 4px;
+  top: 4px;
+  padding: 2px 6px;
+  background: rgba(0, 0, 0, 0.78);
+  color: #fff;
+  border: 1px solid #555;
+  font-size: 11px;
+  font-family: monospace;
+  font-weight: 700;
+  pointer-events: none;
+}
+
 .openDetail {
   position: absolute;
-  top: 4px;
+  top: 28px;
   left: 4px;
   padding: 2px 6px;
   font-size: 10px;
@@ -90,7 +104,7 @@
 
 .manualSelect {
   position: absolute;
-  top: 28px;
+  top: 52px;
   right: 4px;
   max-width: calc(100% - 8px);
   padding: 2px 6px;

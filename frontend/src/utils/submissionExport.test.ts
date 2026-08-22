@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { SearchHit, TrakeVideoResultItem } from '../api/types'
 import {
   buildKisFinalRanking,
+  buildRawFrameSweep,
   buildTrakeFinalRanking,
   buildVqaFinalRows,
   normalizeCsvFilename,
@@ -62,6 +63,25 @@ describe('submissionExport', () => {
   it('exports KIS rows as video and integer frame without spaces or header', () => {
     expect(serializeKisCsv([hit(894), hit(1220, 'L30_V003')])).toBe(
       'L30_V006,894\nL30_V003,1220',
+    )
+  })
+
+  it('builds raw-frame sweep around a center frame and keeps the center', () => {
+    expect(buildRawFrameSweep(1000, { step: 10, marginCount: 3 })).toEqual([
+      970,
+      980,
+      990,
+      1000,
+      1010,
+      1020,
+      1030,
+    ])
+    expect(buildRawFrameSweep(15, { step: 10, marginCount: 3 })).toEqual([5, 15, 25, 35, 45])
+  })
+
+  it('expands KIS CSV rows with raw-frame sweep settings', () => {
+    expect(serializeKisCsv([hit(1000)], { step: 10, marginCount: 1 })).toBe(
+      'L30_V006,990\nL30_V006,1000\nL30_V006,1010',
     )
   })
 

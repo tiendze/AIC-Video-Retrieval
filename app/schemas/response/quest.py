@@ -11,25 +11,33 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from app.schemas.response.search import SearchHitResponse
-
-
 class ImageCandidateResponse(BaseModel):
     candidate_id: str
     thumbnail_url: str
     title: str
 
 
+class QuestSearchHitResponse(BaseModel):
+    keyframe_id: str
+    video_id: str
+    score: float
+    frame_idx: int
+    timestamp: float
+    thumbnail_path: str
+    thumbnail_url: str
+    image_url: str
+
+
 class ImageCandidatesResponse(BaseModel):
     status: Literal["candidates", "fallback"]
     candidate_set_id: str | None
     candidates: list[ImageCandidateResponse]
-    fallback_hits: list[SearchHitResponse]
+    fallback_hits: list[QuestSearchHitResponse]
 
 
 class ImageSearchResponse(BaseModel):
     status: Literal["ok", "fallback"]
-    hits: list[SearchHitResponse]
+    hits: list[QuestSearchHitResponse]
 
 
 class QueryRewriteResponse(BaseModel):

@@ -25,6 +25,7 @@ except ImportError:  # pragma: no cover - exercised only in dependency-light env
 class QueryType(str, Enum):
     TEXT = "text"
     OCR = "ocr"
+    TITLE = "title"
     ABE = "abe"
 
 
@@ -59,6 +60,7 @@ class KisConfig:
     abe_global_weight: float = 0.3
     abe_patch_cache_dtype: str = "float16"
     abe_patch_batch_size: int = 16
+    rrf_k: int = 60
 
     def __post_init__(self) -> None:
         if self.candidate_multiplier < 2:
@@ -91,6 +93,8 @@ class KisConfig:
             raise ValueError("abe_patch_cache_dtype must be float16 or float32")
         if self.abe_patch_batch_size < 1:
             raise ValueError("abe_patch_batch_size must be positive")
+        if self.rrf_k < 1:
+            raise ValueError("rrf_k must be positive")
 
     @classmethod
     def from_mapping(cls, config: Mapping[str, object]) -> KisConfig:
@@ -112,6 +116,7 @@ class KisConfig:
             abe_global_weight=float(config.get("abe_global_weight", 0.3)),
             abe_patch_cache_dtype=str(config.get("abe_patch_cache_dtype", "float16")),
             abe_patch_batch_size=int(config.get("abe_patch_batch_size", 16)),
+            rrf_k=int(config.get("rrf_k", 60)),
         )
 
 
@@ -205,6 +210,15 @@ class Stage1TextScore:
 
 
 @dataclass(frozen=True)
+class Stage1TextQueryScore:
+    query_index: int
+    query: str
+    raw_cosine: float
+    original_rank: int | None
+    rank: int
+
+
+@dataclass(frozen=True)
 class Stage1OcrScore:
     query: str
     raw_bm25: float
@@ -216,10 +230,22 @@ class Stage1OcrScore:
 
 
 @dataclass(frozen=True)
+class Stage1TitleScore:
+    query: str
+    video_title: str
+    title_score: float
+    rank: int
+
+
+@dataclass(frozen=True)
 class Stage1RetrievalScore:
     source_modalities: list[str]
     text: Stage1TextScore | None = None
     ocr: Stage1OcrScore | None = None
+    title: Stage1TitleScore | None = None
+    text_queries: tuple[Stage1TextQueryScore, ...] = ()
+    fused_image_score: float | None = None
+    fused_image_rank: int | None = None
 
 
 @dataclass(frozen=True)

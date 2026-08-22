@@ -8,19 +8,28 @@ import { SearchBar } from './SearchBar'
 describe('SearchBar', () => {
   function renderSearchBar(overrides: Partial<ComponentProps<typeof SearchBar>> = {}) {
     const props: ComponentProps<typeof SearchBar> = {
+      textQueries: [''],
+      onTextQueryChange: vi.fn(),
+      onAddTextQuery: vi.fn(),
+      onRemoveTextQuery: vi.fn(),
       globalTextQuery: '',
       textCandidateK: 300,
       ocrQuery: '',
       ocrCandidateK: 100,
+      titleQuery: '',
+      titleCandidateK: 100,
       candidatePoolSize: null,
       textCandidateCount: 0,
       ocrCandidateCount: 0,
+      titleCandidateCount: 0,
       stage2Queries: [],
       finalTopK: 20,
       onGlobalTextQueryChange: vi.fn(),
       onTextCandidateKChange: vi.fn(),
       onOcrQueryChange: vi.fn(),
       onOcrCandidateKChange: vi.fn(),
+      onTitleQueryChange: vi.fn(),
+      onTitleCandidateKChange: vi.fn(),
       onStage2QueryTextChange: vi.fn(),
       onStage2QueryTypeChange: vi.fn(),
       onAbePairAttributeChange: vi.fn(),
@@ -34,6 +43,9 @@ describe('SearchBar', () => {
       onRerankCandidates: vi.fn(),
       onEnhance: vi.fn(),
       ...overrides,
+    }
+    if (overrides.globalTextQuery !== undefined && overrides.textQueries === undefined) {
+      props.textQueries = [overrides.globalTextQuery]
     }
     render(<SearchBar {...props} />)
     return props
@@ -57,14 +69,29 @@ describe('SearchBar', () => {
     expect(props.onRetrieveCandidates).toHaveBeenCalledTimes(1)
   })
 
-  it('keeps Text and OCR candidate counts independent', () => {
+  it('keeps Text, OCR, and Title candidate counts independent', () => {
     const props = renderSearchBar()
 
     fireEvent.change(screen.getByLabelText('text candidates'), { target: { value: '250' } })
     fireEvent.change(screen.getByLabelText('ocr candidates'), { target: { value: '75' } })
+    fireEvent.change(screen.getByLabelText('title candidates'), { target: { value: '30' } })
 
     expect(props.onTextCandidateKChange).toHaveBeenLastCalledWith(250)
     expect(props.onOcrCandidateKChange).toHaveBeenLastCalledWith(75)
+    expect(props.onTitleCandidateKChange).toHaveBeenLastCalledWith(30)
+  })
+
+  it('adds and removes Stage 1 text query rows', async () => {
+    const user = userEvent.setup()
+    const props = renderSearchBar({ textQueries: ['dam', 'reservoir'] })
+
+    await user.type(screen.getByLabelText('text q2'), '!')
+    await user.click(screen.getByRole('button', { name: /\+ Add query/i }))
+    await user.click(screen.getByRole('button', { name: /remove text query 2/i }))
+
+    expect(props.onTextQueryChange).toHaveBeenCalledWith(1, 'reservoir!')
+    expect(props.onAddTextQuery).toHaveBeenCalledTimes(1)
+    expect(props.onRemoveTextQuery).toHaveBeenCalledWith(1)
   })
 
   it('calls onEnhance with Text Q0 when the AI enhancer button is clicked', async () => {

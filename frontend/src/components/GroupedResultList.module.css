@@ -1,0 +1,45 @@
+.groups {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #303038;
+}
+
+.header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  color: #d1d5db;
+  font-size: 12px;
+}
+
+.header strong {
+  color: #f8fafc;
+  font-family: monospace;
+  font-size: 13px;
+}
+
+.frames {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.cell {
+  width: 220px;
+  height: 160px;
+}
+
+.empty {
+  padding: 24px;
+  color: #888;
+  text-align: center;
+}

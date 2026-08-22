@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { fetchImageBlob } from './api/client'
+import { DEFAULT_RRF_K } from './api/constants'
 import type { AppMode, SearchHit, TrakeKeyframe, TrakeVideoResultItem } from './api/types'
 import { EventSequenceInput } from './components/EventSequenceInput'
 import { FilterPanel } from './components/FilterPanel'
+import { FrameChecker } from './components/FrameChecker'
+import { GroupedResultList } from './components/GroupedResultList'
 import { ImageCandidatePicker } from './components/ImageCandidatePicker'
 import { ImageUpload } from './components/ImageUpload'
 import { KeyframeDetail, type DetailFrame } from './components/KeyframeDetail'
@@ -10,6 +13,7 @@ import { KisSidebar, type KisSidebarTab } from './components/KisSidebar'
 import type { KisSelectionMode } from './components/KisSelectionPanel'
 import { ModeSelector } from './components/ModeSelector'
 import { QueryRewritePanel } from './components/QueryRewritePanel'
+import { ResultBrowserControls } from './components/ResultBrowserControls'
 import { ResultGrid } from './components/ResultGrid'
 import { SearchBar } from './components/SearchBar'
 import { StatusBar } from './components/StatusBar'
@@ -23,6 +27,11 @@ import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { useQueryRewrite } from './hooks/useQueryRewrite'
 import { useSearch } from './hooks/useSearch'
 import { useTrake } from './hooks/useTrake'
+import {
+  filterHitsByVideoIds,
+  type RetrievalViewMode,
+  type VideoGroupSortMode,
+} from './utils/retrievalView'
 import {
   buildKisFinalRanking,
   buildTrakeFinalRanking,
@@ -51,6 +60,10 @@ const MODE_ORDER: AppMode[] = ['kis', 'dante']
 
 function App() {
   const {
+    textQueries,
+    setTextQuery,
+    addTextQuery,
+    removeTextQuery,
     globalTextQuery,
     setGlobalTextQuery,
     textCandidateK,
@@ -59,6 +72,10 @@ function App() {
     setOcrQuery,
     ocrCandidateK,
     setOcrCandidateK,
+    titleQuery,
+    setTitleQuery,
+    titleCandidateK,
+    setTitleCandidateK,
     candidatePool,
     stage2Queries,
     setStage2QueryText,
@@ -92,6 +109,15 @@ function App() {
   const kisLeftScrollRef = useRef<HTMLDivElement>(null)
   const health = useHealth()
   const esDown = health?.elasticsearch_ok === false
+  const [viewMode, setViewMode] = useState<RetrievalViewMode>('ranked')
+  const [groupSortMode, setGroupSortMode] = useState<VideoGroupSortMode>('best')
+  const [videoFilter, setVideoFilter] = useState('')
+  const [kisFrameSweepStep, setKisFrameSweepStep] = useState(10)
+  const [kisFrameSweepMargin, setKisFrameSweepMargin] = useState(0)
+  const visibleResults = useMemo(
+    () => filterHitsByVideoIds(results, videoFilter),
+    [results, videoFilter],
+  )
 
   // QUEST (plan §P2.5, PRD §F5). Both branches push hits into the exact
   // same grid a regular search populates -- latencyMs resets to null
@@ -121,8 +147,8 @@ function App() {
   }
 
   useEffect(() => {
-    setSelectedHit(results[0] ?? null)
-  }, [results])
+    setSelectedHit(visibleResults[0] ?? null)
+  }, [visibleResults])
 
   useEffect(() => {
     setKisSelection((prev) => syncSearchSelectionWithResults(prev, results))
@@ -173,9 +199,15 @@ function App() {
   function exportKisCsv(): void {
     const validation = validateCsvFilename(kisExportName, 'kis')
     if (!validation.isValid) return
-    const rows = buildKisFinalRanking(results, kisSelection)
+    const rows = buildKisFinalRanking(visibleResults, kisSelection)
     if (rows.length === 0) return
-    downloadCsv(validation.filename, serializeKisCsv(rows))
+    downloadCsv(
+      validation.filename,
+      serializeKisCsv(rows, {
+        step: kisFrameSweepStep,
+        marginCount: kisFrameSweepMargin,
+      }),
+    )
   }
 
   function exportVqaCsv(): void {
@@ -288,19 +320,28 @@ function App() {
             <>
               <SearchBar
                 ref={queryInputRef}
+                textQueries={textQueries}
+                onTextQueryChange={setTextQuery}
+                onAddTextQuery={addTextQuery}
+                onRemoveTextQuery={removeTextQuery}
                 globalTextQuery={globalTextQuery}
                 textCandidateK={textCandidateK}
                 ocrQuery={ocrQuery}
                 ocrCandidateK={ocrCandidateK}
+                titleQuery={titleQuery}
+                titleCandidateK={titleCandidateK}
                 candidatePoolSize={candidatePool?.candidatePoolSize ?? null}
                 textCandidateCount={candidatePool?.textCandidateCount ?? 0}
                 ocrCandidateCount={candidatePool?.ocrCandidateCount ?? 0}
+                titleCandidateCount={candidatePool?.titleCandidateCount ?? 0}
                 stage2Queries={stage2Queries}
                 finalTopK={finalTopK}
                 onGlobalTextQueryChange={setGlobalTextQuery}
                 onTextCandidateKChange={setTextCandidateK}
                 onOcrQueryChange={setOcrQuery}
                 onOcrCandidateKChange={setOcrCandidateK}
+                onTitleQueryChange={setTitleQuery}
+                onTitleCandidateKChange={setTitleCandidateK}
                 onStage2QueryTextChange={setStage2QueryText}
                 onStage2QueryTypeChange={setStage2QueryType}
                 onAbePairAttributeChange={setAbePairAttribute}
@@ -346,10 +387,11 @@ function App() {
               {imageCandidates.error && (
                 <span className="quest-error">{imageCandidates.error}</span>
               )}
+              <FrameChecker onOpenDetail={openDetail} />
             </>
           )}
           <StatusBar
-            resultCount={activeMode === 'dante' ? trake.results.length : results.length}
+            resultCount={activeMode === 'dante' ? trake.results.length : visibleResults.length}
             latencyMs={activeMode === 'dante' ? trake.latencyMs : latencyMs}
             isLoading={activeMode === 'dante' ? trake.isLoading : isLoading}
             error={activeMode === 'dante' ? trake.error : error}
@@ -366,19 +408,46 @@ function App() {
             />
           ) : (
             <div className="result-area">
-              <ResultGrid
-                hits={results}
-                selectedKeyframeId={selectedHit?.keyframe_id}
-                manuallySelectedKeys={manualSearchSelectionKeys}
-                manualSelectionLabel={
-                  kisSelectionMode === 'kis' ? 'Select KIS' : 'Select VQA'
-                }
-                scrollElementRef={kisLeftScrollRef}
-                onSelect={setSelectedHit}
-                onFindSimilar={findSimilar}
-                onToggleManualSelection={toggleSearchManualSelection}
-                onOpenDetail={openDetail}
+              <ResultBrowserControls
+                viewMode={viewMode}
+                onViewModeChange={setViewMode}
+                groupSortMode={groupSortMode}
+                onGroupSortModeChange={setGroupSortMode}
+                videoFilter={videoFilter}
+                onVideoFilterChange={setVideoFilter}
+                filteredCount={visibleResults.length}
+                totalCount={results.length}
               />
+              {viewMode === 'ranked' ? (
+                <ResultGrid
+                  hits={visibleResults}
+                  selectedKeyframeId={selectedHit?.keyframe_id}
+                  manuallySelectedKeys={manualSearchSelectionKeys}
+                  manualSelectionLabel={
+                    kisSelectionMode === 'kis' ? 'Select KIS' : 'Select VQA'
+                  }
+                  scrollElementRef={kisLeftScrollRef}
+                  onSelect={setSelectedHit}
+                  onFindSimilar={findSimilar}
+                  onToggleManualSelection={toggleSearchManualSelection}
+                  onOpenDetail={openDetail}
+                />
+              ) : (
+                <GroupedResultList
+                  hits={visibleResults}
+                  sortMode={groupSortMode}
+                  rrfK={candidatePool?.rrfK ?? DEFAULT_RRF_K}
+                  selectedKeyframeId={selectedHit?.keyframe_id}
+                  manuallySelectedKeys={manualSearchSelectionKeys}
+                  manualSelectionLabel={
+                    kisSelectionMode === 'kis' ? 'Select KIS' : 'Select VQA'
+                  }
+                  onSelect={setSelectedHit}
+                  onFindSimilar={findSimilar}
+                  onToggleManualSelection={toggleSearchManualSelection}
+                  onOpenDetail={openDetail}
+                />
+              )}
             </div>
           )}
         </main>
@@ -390,7 +459,7 @@ function App() {
           hit={selectedHit}
           selectionMode={kisSelectionMode}
           onSelectionModeChange={setKisSelectionMode}
-          results={results}
+          results={visibleResults}
           kisSelection={kisSelection}
           vqaSelection={vqaSelection}
           kisExportName={kisExportName}
@@ -419,6 +488,10 @@ function App() {
               prev.map((item) => (item.key === key ? { ...item, answer } : item)),
             )
           }
+          kisFrameSweepStep={kisFrameSweepStep}
+          kisFrameSweepMargin={kisFrameSweepMargin}
+          onKisFrameSweepStepChange={setKisFrameSweepStep}
+          onKisFrameSweepMarginChange={setKisFrameSweepMargin}
           onExportKis={exportKisCsv}
           onExportVqa={exportVqaCsv}
         />

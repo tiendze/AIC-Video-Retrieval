@@ -24,6 +24,12 @@ export interface FilenameValidation {
   message: string | null
 }
 
+export interface RawFrameSweepOptions {
+  step: number
+  marginCount: number
+  maxFrameIdx?: number
+}
+
 const TASK_SUFFIX: Record<ExportTask, string> = {
   kis: '-kis',
   qa: '-qa',
@@ -112,8 +118,41 @@ export function buildTrakeFinalRanking(
   return [...selected, ...remaining].slice(0, MAX_SUBMISSION_ROWS)
 }
 
-export function serializeKisCsv(results: SearchHit[]): string {
-  return results.map((hit) => `${hit.video_id},${Math.trunc(hit.frame_idx)}`).join('\n')
+export function buildRawFrameSweep(
+  centerFrameIdx: number,
+  options: RawFrameSweepOptions,
+): number[] {
+  const center = Math.trunc(centerFrameIdx)
+  const step = Math.max(1, Math.trunc(options.step))
+  const marginCount = Math.max(0, Math.trunc(options.marginCount))
+  const frames: number[] = []
+  for (let offset = -marginCount; offset <= marginCount; offset += 1) {
+    const frame = center + offset * step
+    if (frame < 0) continue
+    if (options.maxFrameIdx !== undefined && frame > options.maxFrameIdx) continue
+    frames.push(frame)
+  }
+  if (!frames.includes(center) && center >= 0) {
+    frames.push(center)
+  }
+  return Array.from(new Set(frames)).sort((left, right) => left - right)
+}
+
+export function serializeKisCsv(
+  results: SearchHit[],
+  sweepOptions: RawFrameSweepOptions = { step: 1, marginCount: 0 },
+): string {
+  const seen = new Set<string>()
+  const rows: string[] = []
+  for (const hit of results) {
+    for (const frame of buildRawFrameSweep(hit.frame_idx, sweepOptions)) {
+      const key = `${hit.video_id}:${frame}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      rows.push(`${hit.video_id},${frame}`)
+    }
+  }
+  return rows.join('\n')
 }
 
 export function serializeVqaCsv(rows: SelectedVqaItem[]): string {

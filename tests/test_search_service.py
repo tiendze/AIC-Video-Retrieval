@@ -68,15 +68,21 @@ class _FakeEncoder:
 
 class _FakeMilvusStore:
     def __init__(
-        self, hits: list[dict[str, Any]], vector_rows: dict[str, dict[str, Any]] | None = None
+        self,
+        hits: list[dict[str, Any]],
+        vector_rows: dict[str, dict[str, Any]] | None = None,
+        hits_by_call: list[list[dict[str, Any]]] | None = None,
     ) -> None:
         self._hits = hits
         self._vector_rows = vector_rows or {}
+        self._hits_by_call = hits_by_call
         self.search_calls: list[tuple[np.ndarray, int]] = []
         self.get_vectors_by_ids_calls: list[list[str]] = []
 
     def search(self, query_vector: np.ndarray, top_k: int, filter_expr: str = "") -> list[dict]:
         self.search_calls.append((query_vector, top_k))
+        if self._hits_by_call is not None:
+            return self._hits_by_call[len(self.search_calls) - 1]
         return self._hits
 
     def get_vectors_by_ids(self, keyframe_ids) -> dict[str, dict[str, Any]]:
@@ -133,13 +139,30 @@ class _FakeEsStoreDown:
 
 
 class _FakeMongoStore:
-    def __init__(self, docs_by_id: dict[str, dict[str, Any]]) -> None:
+    def __init__(
+        self,
+        docs_by_id: dict[str, dict[str, Any]],
+        videos_by_title: list[dict[str, Any]] | None = None,
+        keyframes_by_video: dict[str, list[dict[str, Any]]] | None = None,
+    ) -> None:
         self._docs_by_id = docs_by_id
+        self._videos_by_title = videos_by_title or []
+        self._keyframes_by_video = keyframes_by_video or {}
         self.get_keyframes_by_ids_calls: list[list[str]] = []
+        self.search_videos_by_title_calls: list[tuple[str, int]] = []
+        self.get_keyframes_for_video_calls: list[str] = []
 
     async def get_keyframes_by_ids(self, keyframe_ids) -> dict[str, dict[str, Any]]:
         self.get_keyframes_by_ids_calls.append(list(keyframe_ids))
         return {kid: self._docs_by_id[kid] for kid in keyframe_ids if kid in self._docs_by_id}
+
+    async def search_videos_by_title(self, query_text: str, top_k: int) -> list[dict[str, Any]]:
+        self.search_videos_by_title_calls.append((query_text, top_k))
+        return self._videos_by_title[:top_k]
+
+    async def get_keyframes_for_video(self, video_id: str) -> list[dict[str, Any]]:
+        self.get_keyframes_for_video_calls.append(video_id)
+        return self._keyframes_by_video.get(video_id, [])
 
 
 class _FakeQueryTranslator:
@@ -167,6 +190,9 @@ def _service(
     bm25_scores_by_query: dict[str, dict[str, float]] | None = None,
     text_vectors_by_query: dict[str, np.ndarray] | None = None,
     model_id: str = "fake-encoder",
+    milvus_hits_by_call: list[list[dict[str, Any]]] | None = None,
+    title_video_hits: list[dict[str, Any]] | None = None,
+    keyframes_by_video: dict[str, list[dict[str, Any]]] | None = None,
 ) -> tuple[SearchService, _FakeEncoder, _FakeMilvusStore, _FakeEsStore, _FakeMongoStore]:
     default_vector = np.zeros((1, 4), dtype=np.float32)
     encoder = _FakeEncoder(
@@ -174,11 +200,15 @@ def _service(
         text_vectors_by_query=text_vectors_by_query,
         model_id=model_id,
     )
-    milvus_store = _FakeMilvusStore(milvus_hits or [], vector_rows=vector_rows)
+    milvus_store = _FakeMilvusStore(
+        milvus_hits or [], vector_rows=vector_rows, hits_by_call=milvus_hits_by_call
+    )
     es_store = _FakeEsStore(
         es_hits or [], texts_by_id=ocr_texts_by_id, scores_by_query=bm25_scores_by_query
     )
-    mongo_store = _FakeMongoStore(mongo_docs or {})
+    mongo_store = _FakeMongoStore(
+        mongo_docs or {}, videos_by_title=title_video_hits, keyframes_by_video=keyframes_by_video
+    )
     service = SearchService(
         encoder=encoder,
         milvus_store=milvus_store,
@@ -534,6 +564,190 @@ async def test_kis_stage1_text_and_ocr_use_independent_k_and_deduplicate_union()
     assert pool.results[0].stage1.source_modalities == ["text", "ocr"]
     assert pool.results[1].stage1.source_modalities == ["text"]
     assert pool.results[1].stage1.ocr.query_score == pytest.approx(0.0)
+
+
+async def test_kis_stage1_multi_text_queries_union_deduplicate_and_fuse_true_cosines():
+    hits_q1 = [
+        {
+            "keyframe_id": "A",
+            "distance": 1.0,
+            "entity": {"video_id": "VA", "frame_idx": 10, "timestamp": 0.4},
+        },
+        {
+            "keyframe_id": "B",
+            "distance": 0.9,
+            "entity": {"video_id": "VB", "frame_idx": 20, "timestamp": 0.8},
+        },
+        {
+            "keyframe_id": "C",
+            "distance": 0.2,
+            "entity": {"video_id": "VC", "frame_idx": 30, "timestamp": 1.2},
+        },
+    ]
+    hits_q2 = [
+        {
+            "keyframe_id": "B",
+            "distance": 0.1,
+            "entity": {"video_id": "VB", "frame_idx": 20, "timestamp": 0.8},
+        },
+        {
+            "keyframe_id": "C",
+            "distance": 0.8,
+            "entity": {"video_id": "VC", "frame_idx": 30, "timestamp": 1.2},
+        },
+        {
+            "keyframe_id": "D",
+            "distance": 1.0,
+            "entity": {"video_id": "VD", "frame_idx": 40, "timestamp": 1.6},
+        },
+    ]
+    vector_rows = {
+        "A": {
+            "keyframe_id": "A",
+            "embedding": np.array([1.0, 0.0], dtype=np.float32),
+            "video_id": "VA",
+            "frame_idx": 10,
+            "timestamp": 0.4,
+        },
+        "B": {
+            "keyframe_id": "B",
+            "embedding": np.array([1.0, 1.0], dtype=np.float32),
+            "video_id": "VB",
+            "frame_idx": 20,
+            "timestamp": 0.8,
+        },
+        "C": {
+            "keyframe_id": "C",
+            "embedding": np.array([0.0, 1.0], dtype=np.float32),
+            "video_id": "VC",
+            "frame_idx": 30,
+            "timestamp": 1.2,
+        },
+        "D": {
+            "keyframe_id": "D",
+            "embedding": np.array([0.5, 1.0], dtype=np.float32),
+            "video_id": "VD",
+            "frame_idx": 40,
+            "timestamp": 1.6,
+        },
+    }
+    mongo_docs = {
+        keyframe_id: {
+            "video_id": row["video_id"],
+            "frame_idx": row["frame_idx"],
+            "timestamp": row["timestamp"],
+            "thumbnail_path": f"{keyframe_id}.jpg",
+        }
+        for keyframe_id, row in vector_rows.items()
+    }
+    service, encoder, milvus_store, es_store, _ = _service(
+        mongo_docs=mongo_docs,
+        vector_rows=vector_rows,
+        milvus_hits_by_call=[hits_q1, hits_q2],
+        text_vectors_by_query={
+            "horizontal": np.array([1.0, 0.0], dtype=np.float32),
+            "vertical": np.array([0.0, 1.0], dtype=np.float32),
+        },
+    )
+
+    pool = await service.retrieve_kis_candidates(
+        text_query=None,
+        text_queries=["horizontal", "vertical"],
+        text_top_k=3,
+        ocr_query=None,
+        ocr_top_k=5,
+    )
+
+    assert encoder.encode_text_calls == [["horizontal", "vertical"]]
+    assert [call[1] for call in milvus_store.search_calls] == [3, 3]
+    assert es_store.search_calls == []
+    assert pool.candidate_ids == ["A", "B", "C", "D"]
+    assert pool.text_candidate_count == 4
+    assert len({(hit.video_id, hit.frame_idx) for hit in pool.results}) == 4
+    by_id = {hit.keyframe_id: hit for hit in pool.results}
+    assert by_id["A"].stage1.text_queries[0].original_rank == 1
+    assert by_id["A"].stage1.text_queries[1].original_rank is None
+    assert by_id["A"].stage1.text_queries[1].raw_cosine == pytest.approx(0.0)
+    assert by_id["B"].score == pytest.approx(2 * (0.5**0.5))
+    assert [hit.keyframe_id for hit in pool.results][:2] == ["B", "D"]
+
+
+async def test_kis_stage1_multi_text_deduplicates_identical_video_frame_identity():
+    hits_q1 = [
+        {
+            "keyframe_id": "A1",
+            "distance": 0.9,
+            "entity": {"video_id": "V1", "frame_idx": 10, "timestamp": 0.4},
+        },
+        {
+            "keyframe_id": "A2",
+            "distance": 0.8,
+            "entity": {"video_id": "V1", "frame_idx": 10, "timestamp": 0.4},
+        },
+        {
+            "keyframe_id": "B",
+            "distance": 0.7,
+            "entity": {"video_id": "V1", "frame_idx": 20, "timestamp": 0.8},
+        },
+    ]
+    mongo_docs = {
+        "A1": {"video_id": "V1", "frame_idx": 10, "timestamp": 0.4, "thumbnail_path": "a.jpg"},
+        "B": {"video_id": "V1", "frame_idx": 20, "timestamp": 0.8, "thumbnail_path": "b.jpg"},
+    }
+    service, *_ = _service(
+        mongo_docs=mongo_docs,
+        milvus_hits_by_call=[hits_q1],
+        text_vectors_by_query={"query": np.array([1.0, 0.0], dtype=np.float32)},
+    )
+
+    pool = await service.retrieve_kis_candidates(
+        text_query=None,
+        text_queries=["query"],
+        text_top_k=3,
+        ocr_query=None,
+        ocr_top_k=5,
+    )
+
+    assert pool.candidate_ids == ["A1", "B"]
+    assert [(hit.video_id, hit.frame_idx) for hit in pool.results] == [("V1", 10), ("V1", 20)]
+
+
+async def test_kis_stage1_title_query_uses_video_title_metadata_without_ocr_or_milvus():
+    keyframes_by_video = {
+        "V1": [
+            {
+                "keyframe_id": "A",
+                "video_id": "V1",
+                "frame_idx": 10,
+                "timestamp": 0.4,
+                "thumbnail_path": "a.jpg",
+            }
+        ]
+    }
+    mongo_docs = {
+        "A": {"video_id": "V1", "frame_idx": 10, "timestamp": 0.4, "thumbnail_path": "a.jpg"}
+    }
+    service, _, milvus_store, es_store, mongo_store = _service(
+        mongo_docs=mongo_docs,
+        title_video_hits=[{"video_id": "V1", "title": "Chicken soup recipe", "score": 2.0}],
+        keyframes_by_video=keyframes_by_video,
+    )
+
+    pool = await service.retrieve_kis_candidates(
+        text_query=None,
+        text_top_k=5,
+        ocr_query=None,
+        ocr_top_k=5,
+        title_query="chicken",
+        title_top_k=1,
+    )
+
+    assert milvus_store.search_calls == []
+    assert es_store.search_calls == []
+    assert mongo_store.search_videos_by_title_calls == [("chicken", 1)]
+    assert pool.title_candidate_count == 1
+    assert pool.results[0].stage1.source_modalities == ["title"]
+    assert pool.results[0].stage1.title.video_title == "Chicken soup recipe"
 
 
 async def test_kis_stage1_allows_ocr_only_candidate_retrieval():

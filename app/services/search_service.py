@@ -69,7 +69,9 @@ from app.services.kis_scoring import (
     RankedScore,
     Stage1OcrScore,
     Stage1RetrievalScore,
+    Stage1TextQueryScore,
     Stage1TextScore,
+    Stage1TitleScore,
     TextModalityScore,
     TextQueryScore,
     bm25_reference,
@@ -142,6 +144,9 @@ class SearchHit:
     frame_idx: int
     timestamp: float
     thumbnail_path: str
+    fused_image_score: float | None = None
+    fused_image_rank: int | None = None
+    video_title: str | None = None
     final_score: float | None = None
     active_modalities: int | None = None
     modalities: dict[str, TextModalityScore | OcrModalityScore | AbeModalityScore] | None = None
@@ -154,6 +159,8 @@ class KisCandidatePool:
     text_candidate_count: int
     ocr_candidate_count: int
     results: list[SearchHit]
+    title_candidate_count: int = 0
+    rrf_k: int = _DEFAULT_RRF_K
 
     @property
     def candidate_pool_size(self) -> int:
@@ -213,38 +220,46 @@ class SearchService:
         text_top_k: int,
         ocr_query: str | None,
         ocr_top_k: int,
+        text_queries: Sequence[str] | None = None,
+        title_query: str | None = None,
+        title_top_k: int = 0,
     ) -> KisCandidatePool:
-        text_query = text_query.strip() if text_query is not None else None
+        text_queries = _normalize_stage1_text_queries(text_query, text_queries)
         ocr_query = ocr_query.strip() if ocr_query is not None else None
-        if not text_query and not ocr_query:
+        title_query = title_query.strip() if title_query is not None else None
+        if not text_queries and not ocr_query and not title_query:
             raise SearchServiceError(
-                "Stage 1 requires Text Q0 or OCR query",
+                "Stage 1 requires Text, OCR, or Title query",
                 error_code="invalid_kis_request",
                 status_code=400,
             )
 
-        text_stage1_by_id: dict[str, Stage1TextScore] = {}
+        text_query_scores_by_id: dict[str, tuple[Stage1TextQueryScore, ...]] = {}
         text_metadata_by_id: dict[str, dict] = {}
         text_candidate_ids: list[str] = []
-        text_query_vector: np.ndarray | None = None
-        if text_query:
+        text_source_ids: set[str] = set()
+        text_vectors = np.empty((0, self._encoder.embedding_dim), dtype=np.float32)
+        text_original_ranks_by_query: dict[int, dict[str, int]] = {}
+        text_original_scores_by_query: dict[int, dict[str, float]] = {}
+        if text_queries:
             _assert_kis_fg_clip_encoder(self._encoder)
-            text_inputs = await self._prepare_text_inputs([text_query])
+            text_inputs = await self._prepare_text_inputs(text_queries)
             text_vectors = await asyncio.to_thread(self._encoder.encode_text, text_inputs)
-            text_query_vector = np.asarray(text_vectors[0], dtype=np.float32)
-            text_hits = await asyncio.to_thread(
-                self._milvus_store.search, text_vectors[0], text_top_k
+            text_searches = await asyncio.gather(
+                *[
+                    asyncio.to_thread(self._milvus_store.search, vector, text_top_k)
+                    for vector in text_vectors
+                ]
             )
-            for rank, hit in enumerate(text_hits, start=1):
-                keyframe_id = hit["keyframe_id"]
-                if keyframe_id not in text_stage1_by_id:
-                    text_candidate_ids.append(keyframe_id)
-                    text_stage1_by_id[keyframe_id] = Stage1TextScore(
-                        query=text_query,
-                        raw_cosine=float(hit["distance"]),
-                        rank=rank,
-                    )
-                    text_metadata_by_id[keyframe_id] = _metadata_from_milvus_hit(hit)
+            (
+                text_candidate_ids,
+                text_metadata_by_id,
+                text_original_ranks_by_query,
+                text_original_scores_by_query,
+            ) = (
+                _stage1_text_candidate_union(text_searches)
+            )
+            text_source_ids = set(text_candidate_ids)
 
         ocr_stage1_by_id: dict[str, Stage1OcrScore] = {}
         ocr_candidate_ids: list[str] = []
@@ -256,42 +271,51 @@ class SearchService:
                     ocr_candidate_ids.append(keyframe_id)
                     ocr_stage1_by_id[keyframe_id] = candidate.score
 
-        candidate_ids = _union_stage1_candidate_ids(text_candidate_ids, ocr_candidate_ids)
+        title_stage1_by_id: dict[str, Stage1TitleScore] = {}
+        title_candidate_ids: list[str] = []
+        if title_query:
+            title_candidate_ids, title_stage1_by_id = await self._retrieve_stage1_title_candidates(
+                title_query, title_top_k
+            )
+
+        candidate_ids = _union_stage1_candidate_ids(
+            text_candidate_ids, ocr_candidate_ids, title_candidate_ids
+        )
         if not candidate_ids:
             return KisCandidatePool(
                 candidate_ids=[],
                 text_candidate_count=0,
                 ocr_candidate_count=0,
+                title_candidate_count=0,
+                rrf_k=self._kis_config.rrf_k,
                 results=[],
             )
 
-        text_source_ids = set(text_candidate_ids)
         ocr_source_ids = set(ocr_candidate_ids)
+        title_source_ids = set(title_candidate_ids)
 
         vector_rows_by_id: dict[str, dict] = {}
-        if text_query and text_query_vector is not None:
+        text_stage1_by_id: dict[str, Stage1TextScore] = {}
+        fused_text_scores_by_id: dict[str, float] | None = None
+        if text_queries:
             vector_rows_by_id = await asyncio.to_thread(
                 self._milvus_store.get_vectors_by_ids, candidate_ids
             )
-            text_scores_by_id: dict[str, float] = {}
-            for keyframe_id in candidate_ids:
-                vector_row = vector_rows_by_id.get(keyframe_id)
-                if vector_row is not None:
-                    text_scores_by_id[keyframe_id] = _cosine_similarity(
-                        text_query_vector,
-                        np.asarray(vector_row["embedding"], dtype=np.float32),
-                    )
-                else:
-                    text_scores_by_id[keyframe_id] = text_stage1_by_id.get(
-                        keyframe_id,
-                        Stage1TextScore(text_query, _MISSING_TEXT_RAW_SCORE, len(candidate_ids)),
-                    ).raw_cosine
-            text_rankings = rank_percentiles(text_scores_by_id, candidate_ids)
+            text_query_scores_by_id, fused_text_scores_by_id, _ = (
+                _stage1_text_scores_for_union(
+                    candidate_ids=candidate_ids,
+                    text_queries=text_queries,
+                    text_vectors=np.asarray(text_vectors, dtype=np.float32),
+                    vector_rows_by_id=vector_rows_by_id,
+                    original_ranks_by_query=text_original_ranks_by_query,
+                    original_scores_by_query=text_original_scores_by_query,
+                )
+            )
             text_stage1_by_id = {
                 keyframe_id: Stage1TextScore(
-                    query=text_query,
-                    raw_cosine=text_rankings[keyframe_id].raw_score,
-                    rank=text_rankings[keyframe_id].rank,
+                    query=text_queries[0],
+                    raw_cosine=text_query_scores_by_id[keyframe_id][0].raw_cosine,
+                    rank=text_query_scores_by_id[keyframe_id][0].rank,
                 )
                 for keyframe_id in candidate_ids
             }
@@ -336,32 +360,47 @@ class SearchService:
                 for keyframe_id in candidate_ids
             }
 
-        stage1_fused_scores = _stage1_fused_scores(
-            candidate_ids=candidate_ids,
-            text_scores_by_id=(
-                {
-                    keyframe_id: text_stage1_by_id[keyframe_id].raw_cosine
-                    for keyframe_id in candidate_ids
-                }
-                if text_query
-                else None
-            ),
-            ocr_scores_by_id=(
-                {
-                    keyframe_id: ocr_stage1_by_id[keyframe_id].query_score
-                    for keyframe_id in candidate_ids
-                }
-                if ocr_query
-                else None
-            ),
-            config=self._kis_config,
-        )
+        title_scores_by_id: dict[str, float] | None = None
+        if title_query:
+            title_scores_by_id = {
+                keyframe_id: title_stage1_by_id.get(
+                    keyframe_id,
+                    Stage1TitleScore(
+                        query=title_query,
+                        video_title="",
+                        title_score=0.0,
+                        rank=len(candidate_ids),
+                    ),
+                ).title_score
+                for keyframe_id in candidate_ids
+            }
+
+        if fused_text_scores_by_id is not None and not ocr_query and not title_query:
+            stage1_fused_scores = fused_text_scores_by_id
+        else:
+            stage1_fused_scores = _stage1_fused_scores(
+                candidate_ids=candidate_ids,
+                text_scores_by_id=fused_text_scores_by_id,
+                ocr_scores_by_id=(
+                    {
+                        keyframe_id: ocr_stage1_by_id[keyframe_id].query_score
+                        for keyframe_id in candidate_ids
+                    }
+                    if ocr_query
+                    else None
+                ),
+                title_scores_by_id=title_scores_by_id,
+                config=self._kis_config,
+            )
+        fused_rankings = rank_percentiles(stage1_fused_scores, candidate_ids)
 
         mongo_docs = await self._mongo_store.get_keyframes_by_ids(candidate_ids)
         valid_candidate_ids: list[str] = []
         results: list[SearchHit] = []
         valid_text_ids: set[str] = set()
         valid_ocr_ids: set[str] = set()
+        valid_title_ids: set[str] = set()
+        seen_frame_keys: set[tuple[str, int]] = set()
         for keyframe_id in candidate_ids:
             metadata = _stage1_candidate_metadata(
                 keyframe_id=keyframe_id,
@@ -377,6 +416,7 @@ class SearchService:
 
             text_score = text_stage1_by_id.get(keyframe_id)
             ocr_score = ocr_stage1_by_id.get(keyframe_id)
+            title_score = title_stage1_by_id.get(keyframe_id)
             source_modalities: list[str] = []
             if keyframe_id in text_source_ids:
                 source_modalities.append("text")
@@ -384,23 +424,39 @@ class SearchService:
             if keyframe_id in ocr_source_ids:
                 source_modalities.append("ocr")
                 valid_ocr_ids.add(keyframe_id)
+            if keyframe_id in title_source_ids:
+                source_modalities.append("title")
+                valid_title_ids.add(keyframe_id)
             if not source_modalities:
                 continue
+            frame_key = (metadata["video_id"], int(metadata["frame_idx"]))
+            if frame_key in seen_frame_keys:
+                continue
+            seen_frame_keys.add(frame_key)
 
             valid_candidate_ids.append(keyframe_id)
+            fused_rank = fused_rankings[keyframe_id].rank
+            fused_score = stage1_fused_scores.get(
+                keyframe_id,
+                _stage1_display_score(text_score, ocr_score, title_score),
+            )
             stage1 = Stage1RetrievalScore(
                 source_modalities=source_modalities,
                 text=text_score,
                 ocr=ocr_score,
+                title=title_score,
+                text_queries=text_query_scores_by_id.get(keyframe_id, ()),
+                fused_image_score=fused_score if fused_text_scores_by_id is not None else None,
+                fused_image_rank=fused_rank if fused_text_scores_by_id is not None else None,
             )
             results.append(
                 SearchHit(
                     keyframe_id=keyframe_id,
                     video_id=metadata["video_id"],
-                    score=stage1_fused_scores.get(
-                        keyframe_id,
-                        _stage1_display_score(text_score, ocr_score),
-                    ),
+                    score=fused_score,
+                    fused_image_score=fused_score if fused_text_scores_by_id is not None else None,
+                    fused_image_rank=fused_rank if fused_text_scores_by_id is not None else None,
+                    video_title=title_score.video_title if title_score is not None else None,
                     frame_idx=metadata["frame_idx"],
                     timestamp=metadata["timestamp"],
                     thumbnail_path=metadata["thumbnail_path"],
@@ -413,6 +469,8 @@ class SearchService:
             candidate_ids=valid_candidate_ids,
             text_candidate_count=len(valid_text_ids),
             ocr_candidate_count=len(valid_ocr_ids),
+            title_candidate_count=len(valid_title_ids),
+            rrf_k=self._kis_config.rrf_k,
             results=results,
         )
 
@@ -464,6 +522,45 @@ class SearchService:
                 )
             )
         return selected
+
+    async def _retrieve_stage1_title_candidates(
+        self, query_text: str, top_k: int
+    ) -> tuple[list[str], dict[str, Stage1TitleScore]]:
+        if top_k <= 0:
+            return [], {}
+        video_hits = await self._mongo_store.search_videos_by_title(query_text, top_k)
+        if not video_hits:
+            return [], {}
+
+        keyframes_by_video: list[tuple[dict, list[dict]]] = []
+        for video_hit in video_hits:
+            keyframes = await self._mongo_store.get_keyframes_for_video(video_hit["video_id"])
+            if keyframes:
+                keyframes_by_video.append((video_hit, keyframes))
+
+        candidate_ids: list[str] = []
+        title_stage1_by_id: dict[str, Stage1TitleScore] = {}
+        seen_ids: set[str] = set()
+        max_keyframes = max((len(keyframes) for _, keyframes in keyframes_by_video), default=0)
+        for offset in range(max_keyframes):
+            for video_rank, (video_hit, keyframes) in enumerate(keyframes_by_video, start=1):
+                if offset >= len(keyframes):
+                    continue
+                keyframe = keyframes[offset]
+                keyframe_id = keyframe["keyframe_id"]
+                if keyframe_id in seen_ids:
+                    continue
+                seen_ids.add(keyframe_id)
+                candidate_ids.append(keyframe_id)
+                title_stage1_by_id[keyframe_id] = Stage1TitleScore(
+                    query=query_text,
+                    video_title=video_hit.get("title", ""),
+                    title_score=float(video_hit.get("score", 0.0)),
+                    rank=video_rank,
+                )
+                if len(candidate_ids) >= top_k:
+                    return candidate_ids, title_stage1_by_id
+        return candidate_ids, title_stage1_by_id
 
     async def rerank_kis_candidates(
         self,
@@ -840,6 +937,19 @@ def _kis_query_is_active(query: KisQuery) -> bool:
     return bool(query.text.strip())
 
 
+def _normalize_stage1_text_queries(
+    text_query: str | None, text_queries: Sequence[str] | None
+) -> list[str]:
+    queries: list[str] = []
+    if text_query is not None and text_query.strip():
+        queries.append(text_query.strip())
+    for query in text_queries or ():
+        stripped = query.strip()
+        if stripped:
+            queries.append(stripped)
+    return list(dict.fromkeys(queries))
+
+
 def _union_candidate_ids(
     text_hits_by_query: dict[int, list[dict]],
     ocr_hits_by_query: dict[int, list[dict]],
@@ -856,18 +966,137 @@ def _union_candidate_ids(
     return candidate_ids
 
 
-def _union_stage1_candidate_ids(
-    text_candidate_ids: Sequence[str],
-    ocr_candidate_ids: Sequence[str],
-) -> list[str]:
+def _union_stage1_candidate_ids(*candidate_sources: Sequence[str]) -> list[str]:
     candidate_ids: list[str] = []
     seen: set[str] = set()
-    for source_ids in (text_candidate_ids, ocr_candidate_ids):
+    for source_ids in candidate_sources:
         for keyframe_id in source_ids:
             if keyframe_id not in seen:
                 seen.add(keyframe_id)
                 candidate_ids.append(keyframe_id)
     return candidate_ids
+
+
+def _stage1_text_candidate_union(
+    text_hits_by_query: Sequence[Sequence[dict]],
+) -> tuple[list[str], dict[str, dict], dict[int, dict[str, int]], dict[int, dict[str, float]]]:
+    candidate_ids: list[str] = []
+    metadata_by_id: dict[str, dict] = {}
+    original_ranks_by_query: dict[int, dict[str, int]] = {}
+    original_scores_by_query: dict[int, dict[str, float]] = {}
+    canonical_id_by_frame: dict[tuple[str, int], str] = {}
+    for query_index, hits in enumerate(text_hits_by_query):
+        ranks_for_query: dict[str, int] = {}
+        scores_for_query: dict[str, float] = {}
+        seen_frames_in_query: set[tuple[str, int]] = set()
+        for rank, hit in enumerate(hits, start=1):
+            frame_key = _frame_identity_from_milvus_hit(hit)
+            if frame_key in seen_frames_in_query:
+                continue
+            seen_frames_in_query.add(frame_key)
+            keyframe_id = hit["keyframe_id"]
+            canonical_id = canonical_id_by_frame.get(frame_key)
+            if canonical_id is None:
+                canonical_id = keyframe_id
+                canonical_id_by_frame[frame_key] = canonical_id
+                candidate_ids.append(canonical_id)
+                metadata_by_id[canonical_id] = _metadata_from_milvus_hit(hit)
+            ranks_for_query[canonical_id] = rank
+            scores_for_query[canonical_id] = float(hit["distance"])
+        original_ranks_by_query[query_index] = ranks_for_query
+        original_scores_by_query[query_index] = scores_for_query
+    return candidate_ids, metadata_by_id, original_ranks_by_query, original_scores_by_query
+
+
+def _stage1_text_scores_for_union(
+    candidate_ids: Sequence[str],
+    text_queries: Sequence[str],
+    text_vectors: np.ndarray,
+    vector_rows_by_id: dict[str, dict],
+    original_ranks_by_query: dict[int, dict[str, int]],
+    original_scores_by_query: dict[int, dict[str, float]],
+) -> tuple[dict[str, tuple[Stage1TextQueryScore, ...]], dict[str, float], dict[str, int]]:
+    similarity_matrix = _candidate_query_similarity_matrix(
+        candidate_ids, vector_rows_by_id, text_vectors
+    )
+    candidate_index_by_id = {keyframe_id: index for index, keyframe_id in enumerate(candidate_ids)}
+    for query_index, scores_by_id in original_scores_by_query.items():
+        for keyframe_id, score in scores_by_id.items():
+            if keyframe_id not in vector_rows_by_id:
+                similarity_matrix[candidate_index_by_id[keyframe_id], query_index] = score
+    rankings_by_query: dict[int, dict[str, RankedScore]] = {}
+    for query_index in range(len(text_queries)):
+        scores_by_id = {
+            keyframe_id: float(similarity_matrix[candidate_index, query_index])
+            for candidate_index, keyframe_id in enumerate(candidate_ids)
+        }
+        rankings_by_query[query_index] = rank_percentiles(scores_by_id, candidate_ids)
+
+    query_scores_by_id: dict[str, tuple[Stage1TextQueryScore, ...]] = {}
+    fused_scores_by_id: dict[str, float] = {}
+    for candidate_index, keyframe_id in enumerate(candidate_ids):
+        per_query_scores: list[Stage1TextQueryScore] = []
+        fused_score = 0.0
+        for query_index, query in enumerate(text_queries):
+            raw_cosine = float(similarity_matrix[candidate_index, query_index])
+            fused_score += raw_cosine
+            ranked = rankings_by_query[query_index][keyframe_id]
+            per_query_scores.append(
+                Stage1TextQueryScore(
+                    query_index=query_index,
+                    query=query,
+                    raw_cosine=raw_cosine,
+                    original_rank=original_ranks_by_query.get(query_index, {}).get(keyframe_id),
+                    rank=ranked.rank,
+                )
+            )
+        query_scores_by_id[keyframe_id] = tuple(per_query_scores)
+        fused_scores_by_id[keyframe_id] = fused_score
+
+    fused_rankings = rank_percentiles(fused_scores_by_id, candidate_ids)
+    return (
+        query_scores_by_id,
+        fused_scores_by_id,
+        {keyframe_id: fused_rankings[keyframe_id].rank for keyframe_id in candidate_ids},
+    )
+
+
+def _candidate_query_similarity_matrix(
+    candidate_ids: Sequence[str],
+    vector_rows_by_id: dict[str, dict],
+    text_vectors: np.ndarray,
+) -> np.ndarray:
+    if not candidate_ids or text_vectors.size == 0:
+        return np.empty((len(candidate_ids), 0), dtype=np.float32)
+
+    query_vectors = np.asarray(text_vectors, dtype=np.float32)
+    query_norms = np.linalg.norm(query_vectors, axis=1, keepdims=True)
+    query_vectors = np.divide(
+        query_vectors,
+        query_norms,
+        out=np.zeros_like(query_vectors, dtype=np.float32),
+        where=query_norms > 0,
+    )
+
+    candidate_vectors = np.zeros((len(candidate_ids), query_vectors.shape[1]), dtype=np.float32)
+    present_mask = np.zeros(len(candidate_ids), dtype=bool)
+    for index, keyframe_id in enumerate(candidate_ids):
+        vector_row = vector_rows_by_id.get(keyframe_id)
+        if vector_row is None:
+            continue
+        candidate_vectors[index] = np.asarray(vector_row["embedding"], dtype=np.float32)
+        present_mask[index] = True
+
+    candidate_norms = np.linalg.norm(candidate_vectors, axis=1, keepdims=True)
+    candidate_vectors = np.divide(
+        candidate_vectors,
+        candidate_norms,
+        out=np.zeros_like(candidate_vectors, dtype=np.float32),
+        where=candidate_norms > 0,
+    )
+    scores = candidate_vectors @ query_vectors.T
+    scores[~present_mask, :] = _MISSING_TEXT_RAW_SCORE
+    return scores.astype(np.float32, copy=False)
 
 
 def _metadata_from_milvus_hit(hit: dict) -> dict:
@@ -877,6 +1106,11 @@ def _metadata_from_milvus_hit(hit: dict) -> dict:
         "frame_idx": int(entity.get("frame_idx", 0)),
         "timestamp": float(entity.get("timestamp", 0.0)),
     }
+
+
+def _frame_identity_from_milvus_hit(hit: dict) -> tuple[str, int]:
+    metadata = _metadata_from_milvus_hit(hit)
+    return metadata["video_id"], metadata["frame_idx"]
 
 
 def _stage1_candidate_metadata(
@@ -914,11 +1148,14 @@ def _stage1_candidate_metadata(
 def _stage1_display_score(
     text_score: Stage1TextScore | None,
     ocr_score: Stage1OcrScore | None,
+    title_score: Stage1TitleScore | None = None,
 ) -> float:
     if text_score is not None:
         return text_score.raw_cosine
     if ocr_score is not None:
         return ocr_score.query_score
+    if title_score is not None:
+        return title_score.title_score
     return 0.0
 
 
@@ -932,6 +1169,7 @@ def _stage1_fused_scores(
     candidate_ids: Sequence[str],
     text_scores_by_id: dict[str, float] | None,
     ocr_scores_by_id: dict[str, float] | None,
+    title_scores_by_id: dict[str, float] | None,
     config: KisConfig,
 ) -> dict[str, float]:
     modality_percentiles: list[dict[str, RankedScore]] = []
@@ -939,6 +1177,8 @@ def _stage1_fused_scores(
         modality_percentiles.append(rank_percentiles(text_scores_by_id, candidate_ids))
     if ocr_scores_by_id is not None:
         modality_percentiles.append(rank_percentiles(ocr_scores_by_id, candidate_ids))
+    if title_scores_by_id is not None:
+        modality_percentiles.append(rank_percentiles(title_scores_by_id, candidate_ids))
     if not modality_percentiles:
         return {}
     if len(modality_percentiles) == 1:

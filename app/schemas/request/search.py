@@ -25,6 +25,7 @@ MAX_TOP_K: int = _config["max_top_k"]
 DEFAULT_TEXT_CANDIDATE_K: int = _config["default_text_candidate_k"]
 DEFAULT_OCR_CANDIDATE_K: int = _config["default_ocr_candidate_k"]
 MAX_CANDIDATE_K: int = _config["max_candidate_k"]
+DEFAULT_TITLE_CANDIDATE_K: int = _config.get("default_title_candidate_k", DEFAULT_OCR_CANDIDATE_K)
 MAX_UPLOAD_SIZE_BYTES: int = _config["max_upload_size_bytes"]
 ALLOWED_UPLOAD_MIME_TYPES: frozenset[str] = frozenset(_config["allowed_upload_mime_types"])
 
@@ -87,19 +88,40 @@ def _blank_to_none(value: str | None) -> str | None:
 
 class KisCandidateRequest(BaseModel):
     text_query: str | None = None
+    text_queries: list[str] = Field(default_factory=list)
     text_top_k: int = Field(default=DEFAULT_TEXT_CANDIDATE_K, ge=1, le=MAX_CANDIDATE_K)
     ocr_query: str | None = None
     ocr_top_k: int = Field(default=DEFAULT_OCR_CANDIDATE_K, ge=1, le=MAX_CANDIDATE_K)
+    title_query: str | None = None
+    title_top_k: int = Field(default=DEFAULT_TITLE_CANDIDATE_K, ge=1, le=MAX_CANDIDATE_K)
 
-    @field_validator("text_query", "ocr_query", mode="before")
+    @field_validator("text_query", "ocr_query", "title_query", mode="before")
     @classmethod
     def empty_strings_are_absent(cls, value: str | None) -> str | None:
         return _blank_to_none(value)
 
+    @field_validator("text_queries", mode="before")
+    @classmethod
+    def text_queries_accepts_single_string(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [value]
+        return value  # type: ignore[return-value]
+
     @model_validator(mode="after")
     def at_least_one_stage1_query(self) -> KisCandidateRequest:
-        if self.text_query is None and self.ocr_query is None:
-            raise ValueError("Stage 1 requires Text Q0 or OCR query")
+        normalized_text_queries: list[str] = []
+        if self.text_query is not None:
+            normalized_text_queries.append(self.text_query)
+        for query in self.text_queries:
+            stripped = query.strip()
+            if stripped:
+                normalized_text_queries.append(stripped)
+        self.text_queries = list(dict.fromkeys(normalized_text_queries))
+        self.text_query = self.text_queries[0] if self.text_queries else None
+        if self.text_query is None and self.ocr_query is None and self.title_query is None:
+            raise ValueError("Stage 1 requires Text, OCR, or Title query")
         return self
 
 

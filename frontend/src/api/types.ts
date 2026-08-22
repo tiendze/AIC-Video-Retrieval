@@ -7,6 +7,7 @@ export type SearchMode = 'semantic' | 'ocr'
 
 // app/schemas/request/search.py: KisSearchRequest
 export type KisQueryType = 'text' | 'ocr' | 'abe'
+export type Stage1SourceModality = 'text' | 'ocr' | 'title'
 
 export interface AbePairPayload {
   attribute: string
@@ -36,9 +37,12 @@ export interface KisQueryRow {
 
 export interface KisCandidatePayload {
   text_query?: string | null
+  text_queries?: string[]
   text_top_k: number
   ocr_query?: string | null
   ocr_top_k: number
+  title_query?: string | null
+  title_top_k: number
 }
 
 export interface KisRerankPayload {
@@ -136,6 +140,14 @@ export interface Stage1TextScore {
   rank: number
 }
 
+export interface Stage1TextQueryScore {
+  query_index: number
+  query: string
+  raw_cosine: number
+  original_rank: number | null
+  rank: number
+}
+
 export interface Stage1OcrScore {
   query: string
   raw_bm25: number
@@ -146,10 +158,21 @@ export interface Stage1OcrScore {
   rank: number
 }
 
+export interface Stage1TitleScore {
+  query: string
+  video_title: string
+  title_score: number
+  rank: number
+}
+
 export interface Stage1RetrievalScore {
-  source_modalities: KisQueryType[]
+  source_modalities: Stage1SourceModality[]
   text?: Stage1TextScore
+  text_queries?: Stage1TextQueryScore[]
   ocr?: Stage1OcrScore
+  title?: Stage1TitleScore
+  fused_image_score?: number
+  fused_image_rank?: number
 }
 
 // app/schemas/response/search.py: SearchHitResponse
@@ -157,6 +180,9 @@ export interface SearchHit {
   keyframe_id: string
   video_id: string
   score: number
+  fused_image_score?: number
+  fused_image_rank?: number
+  video_title?: string
   final_score?: number
   active_modalities?: number
   modalities?: SearchModalities
@@ -179,6 +205,8 @@ export interface KisCandidateResponse {
   candidate_pool_size: number
   text_candidate_count: number
   ocr_candidate_count: number
+  title_candidate_count: number
+  rrf_k: number
   results: SearchHit[]
 }
 

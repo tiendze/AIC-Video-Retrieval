@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from 'react'
 import {
   DEFAULT_OCR_CANDIDATE_K,
+  DEFAULT_TITLE_CANDIDATE_K,
   DEFAULT_TEXT_CANDIDATE_K,
   DEFAULT_TOP_K,
 } from '../api/constants'
@@ -17,10 +18,16 @@ export interface KisCandidatePoolState {
   candidatePoolSize: number
   textCandidateCount: number
   ocrCandidateCount: number
+  titleCandidateCount: number
+  rrfK: number
   hits: SearchHit[]
 }
 
 export interface UseSearchResult {
+  textQueries: string[]
+  setTextQuery: (index: number, query: string) => void
+  addTextQuery: () => void
+  removeTextQuery: (index: number) => void
   globalTextQuery: string
   setGlobalTextQuery: (query: string) => void
   textCandidateK: number
@@ -29,6 +36,10 @@ export interface UseSearchResult {
   setOcrQuery: (query: string) => void
   ocrCandidateK: number
   setOcrCandidateK: (topK: number) => void
+  titleQuery: string
+  setTitleQuery: (query: string) => void
+  titleCandidateK: number
+  setTitleCandidateK: (topK: number) => void
   candidatePool: KisCandidatePoolState | null
   stage2Queries: KisQueryRow[]
   setStage2QueryText: (id: string, text: string) => void
@@ -115,10 +126,12 @@ function activePayload(rows: KisQueryRow[]): KisQueryPayload[] {
 }
 
 export function useSearch(): UseSearchResult {
-  const [globalTextQueryValue, setGlobalTextQueryValue] = useState('')
+  const [textQueriesValue, setTextQueriesValue] = useState<string[]>([''])
   const [textCandidateKValue, setTextCandidateKValue] = useState(DEFAULT_TEXT_CANDIDATE_K)
   const [ocrQueryValue, setOcrQueryValue] = useState('')
   const [ocrCandidateKValue, setOcrCandidateKValue] = useState(DEFAULT_OCR_CANDIDATE_K)
+  const [titleQueryValue, setTitleQueryValue] = useState('')
+  const [titleCandidateKValue, setTitleCandidateKValue] = useState(DEFAULT_TITLE_CANDIDATE_K)
   const [candidatePool, setCandidatePool] = useState<KisCandidatePoolState | null>(null)
   const [stage2Queries, setStage2Queries] = useState<KisQueryRow[]>([])
   const [finalTopK, setFinalTopK] = useState(DEFAULT_TOP_K)
@@ -127,7 +140,7 @@ export function useSearch(): UseSearchResult {
   const [error, setError] = useState<string | null>(null)
   const [latencyMs, setLatencyMs] = useState<number | null>(null)
   const abortRef = useRef<AbortController | null>(null)
-  const primaryTextQuery = globalTextQueryValue
+  const primaryTextQuery = textQueriesValue[0] ?? ''
 
   const invalidateCandidatePool = useCallback(() => {
     setCandidatePool(null)
@@ -138,12 +151,39 @@ export function useSearch(): UseSearchResult {
   }, [])
 
   const setGlobalTextQuery = useCallback((query: string) => {
-    setGlobalTextQueryValue(query)
+    setTextQueriesValue((prev) => {
+      const next = prev.length > 0 ? [...prev] : ['']
+      next[0] = query
+      return next
+    })
+    invalidateCandidatePool()
+  }, [invalidateCandidatePool])
+
+  const setTextQuery = useCallback((index: number, query: string) => {
+    setTextQueriesValue((prev) => prev.map((value, i) => (i === index ? query : value)))
+    invalidateCandidatePool()
+  }, [invalidateCandidatePool])
+
+  const addTextQuery = useCallback(() => {
+    setTextQueriesValue((prev) => [...prev, ''])
+    invalidateCandidatePool()
+  }, [invalidateCandidatePool])
+
+  const removeTextQuery = useCallback((index: number) => {
+    setTextQueriesValue((prev) => {
+      const next = prev.filter((_, i) => i !== index)
+      return next.length > 0 ? next : ['']
+    })
     invalidateCandidatePool()
   }, [invalidateCandidatePool])
 
   const setOcrQuery = useCallback((query: string) => {
     setOcrQueryValue(query)
+    invalidateCandidatePool()
+  }, [invalidateCandidatePool])
+
+  const setTitleQuery = useCallback((query: string) => {
+    setTitleQueryValue(query)
     invalidateCandidatePool()
   }, [invalidateCandidatePool])
 
@@ -154,6 +194,11 @@ export function useSearch(): UseSearchResult {
 
   const setOcrCandidateK = useCallback((topK: number) => {
     setOcrCandidateKValue(topK)
+    invalidateCandidatePool()
+  }, [invalidateCandidatePool])
+
+  const setTitleCandidateK = useCallback((topK: number) => {
+    setTitleCandidateKValue(topK)
     invalidateCandidatePool()
   }, [invalidateCandidatePool])
 
@@ -242,9 +287,12 @@ export function useSearch(): UseSearchResult {
   }, [])
 
   const retrieveCandidates = useCallback((overrideQuery?: string) => {
-    const textQuery = (overrideQuery ?? globalTextQueryValue).trim()
+    const textQueries = overrideQuery
+      ? [overrideQuery.trim()].filter(Boolean)
+      : textQueriesValue.map((query) => query.trim()).filter(Boolean)
     const ocrQuery = ocrQueryValue.trim()
-    if (!textQuery && !ocrQuery) return
+    const titleQuery = titleQueryValue.trim()
+    if (textQueries.length === 0 && !ocrQuery && !titleQuery) return
     abortRef.current?.abort()
     const controller = new AbortController()
     abortRef.current = controller
@@ -254,10 +302,13 @@ export function useSearch(): UseSearchResult {
 
     retrieveKisCandidatesApi(
       {
-        text_query: textQuery || null,
+        text_query: textQueries[0] ?? null,
+        text_queries: textQueries,
         text_top_k: textCandidateKValue,
         ocr_query: ocrQuery || null,
         ocr_top_k: ocrCandidateKValue,
+        title_query: titleQuery || null,
+        title_top_k: titleCandidateKValue,
       },
       controller.signal,
     )
@@ -271,6 +322,8 @@ export function useSearch(): UseSearchResult {
           candidatePoolSize: response.candidate_pool_size,
           textCandidateCount: response.text_candidate_count,
           ocrCandidateCount: response.ocr_candidate_count,
+          titleCandidateCount: response.title_candidate_count,
+          rrfK: response.rrf_k,
           hits,
         }
         setCandidatePool(pool)
@@ -287,7 +340,15 @@ export function useSearch(): UseSearchResult {
       .finally(() => {
         if (abortRef.current === controller) setIsLoading(false)
       })
-  }, [finalTopK, globalTextQueryValue, ocrCandidateKValue, ocrQueryValue, textCandidateKValue])
+  }, [
+    finalTopK,
+    ocrCandidateKValue,
+    ocrQueryValue,
+    textCandidateKValue,
+    textQueriesValue,
+    titleCandidateKValue,
+    titleQueryValue,
+  ])
 
   const rerankCandidates = useCallback(() => {
     const subqueries = activePayload(stage2Queries)
@@ -360,7 +421,11 @@ export function useSearch(): UseSearchResult {
   }, [finalTopK])
 
   return {
-    globalTextQuery: globalTextQueryValue,
+    textQueries: textQueriesValue,
+    setTextQuery,
+    addTextQuery,
+    removeTextQuery,
+    globalTextQuery: primaryTextQuery,
     setGlobalTextQuery,
     textCandidateK: textCandidateKValue,
     setTextCandidateK,
@@ -368,6 +433,10 @@ export function useSearch(): UseSearchResult {
     setOcrQuery,
     ocrCandidateK: ocrCandidateKValue,
     setOcrCandidateK,
+    titleQuery: titleQueryValue,
+    setTitleQuery,
+    titleCandidateK: titleCandidateKValue,
+    setTitleCandidateK,
     candidatePool,
     stage2Queries,
     setStage2QueryText,

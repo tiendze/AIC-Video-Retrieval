@@ -27,6 +27,10 @@ export interface KisSidebarProps {
   onClearVqaSelection: () => void
   onClearVqaAnswers: () => void
   onVqaAnswerChange: (key: string, answer: string) => void
+  kisFrameSweepStep: number
+  kisFrameSweepMargin: number
+  onKisFrameSweepStepChange: (value: number) => void
+  onKisFrameSweepMarginChange: (value: number) => void
   onExportKis: () => void
   onExportVqa: () => void
 }
@@ -52,6 +56,10 @@ export function KisSidebar({
   onClearVqaSelection,
   onClearVqaAnswers,
   onVqaAnswerChange,
+  kisFrameSweepStep,
+  kisFrameSweepMargin,
+  onKisFrameSweepStepChange,
+  onKisFrameSweepMarginChange,
   onExportKis,
   onExportVqa,
 }: KisSidebarProps) {
@@ -103,6 +111,10 @@ export function KisSidebar({
           onClearVqaSelection={onClearVqaSelection}
           onClearVqaAnswers={onClearVqaAnswers}
           onVqaAnswerChange={onVqaAnswerChange}
+          kisFrameSweepStep={kisFrameSweepStep}
+          kisFrameSweepMargin={kisFrameSweepMargin}
+          onKisFrameSweepStepChange={onKisFrameSweepStepChange}
+          onKisFrameSweepMarginChange={onKisFrameSweepMarginChange}
           onExportKis={onExportKis}
           onExportVqa={onExportVqa}
         />

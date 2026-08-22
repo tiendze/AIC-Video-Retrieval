@@ -103,6 +103,45 @@
   width: 100%;
 }
 
+.queryListHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.textQueryList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.textQueryRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 32px;
+  gap: 6px;
+}
+
+.removeMini {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 38px;
+  padding: 0;
+  background: transparent;
+  color: #aaa;
+  border: 1px solid #444;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 16px;
+}
+
+.removeMini:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .queryRow {
   display: grid;
   grid-template-columns: 86px minmax(0, 1fr) 38px;
@@ -205,6 +244,17 @@
   height: 38px;
   padding: 7px 10px;
   font-size: 12px;
+  background: transparent;
+  color: #ddd;
+  border: 1px solid #444;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.addInlineButton {
+  height: 24px;
+  padding: 3px 7px;
+  font-size: 11px;
   background: transparent;
   color: #ddd;
   border: 1px solid #444;

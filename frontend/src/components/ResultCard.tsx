@@ -3,6 +3,7 @@ import styles from './ResultCard.module.css'
 
 export interface ResultCardProps {
   hit: SearchHit
+  rank?: number
   selected?: boolean
   manuallySelected?: boolean
   manualSelectionLabel?: string
@@ -17,6 +18,7 @@ export interface ResultCardProps {
 // pressure should never have to mouse over 100 tiles to read one.
 export function ResultCard({
   hit,
+  rank,
   selected = false,
   manuallySelected = false,
   manualSelectionLabel = 'Select',
@@ -33,19 +35,20 @@ export function ResultCard({
       className={`${styles.card} ${selected ? styles.selected : ''} ${
         manuallySelected ? styles.manualSelectedCard : ''
       }`}
-      aria-label={`${hit.video_id} at ${hit.timestamp}s`}
+      aria-label={`${hit.video_id} frame ${hit.frame_idx}`}
       onClick={() => onSelect(hit)}
     >
       <img
         className={styles.thumbnail}
         src={hit.thumbnail_url}
-        alt={`${hit.video_id} @ ${hit.timestamp}s`}
+        alt={`${hit.video_id} frame ${hit.frame_idx}`}
         loading="lazy"
       />
       <span className={styles.label}>
         <span className={styles.videoId}>{hit.video_id}</span>
-        <span>{hit.timestamp}s</span>
+        <span>frame {hit.frame_idx}</span>
       </span>
+      {rank !== undefined && <span className={styles.rankBadge}>#{rank}</span>}
       {hit.final_score !== undefined && (
         <span className={styles.scoreBadge}>Final {score.toFixed(3)}</span>
       )}
