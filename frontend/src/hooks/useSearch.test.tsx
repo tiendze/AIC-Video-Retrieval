@@ -10,6 +10,7 @@ import type {
 import { useSearch } from './useSearch'
 
 vi.mock('../api/client', () => ({
+  ApiError: class ApiError extends Error {},
   retrieveKisCandidates: vi.fn().mockResolvedValue({
     candidate_ids: [],
     candidate_pool_size: 0,
@@ -349,6 +350,50 @@ describe('useSearch staged KIS flow', () => {
 
     expect(result.current.results).toEqual([STAGE1_HIT])
     expect(result.current.isLoading).toBe(false)
+  })
+
+  it('keeps completed image results across a non-ready ASR transition', async () => {
+    vi.mocked(searchByImage).mockResolvedValueOnce({ results: [STAGE1_HIT] })
+    const { result, rerender } = renderHook(
+      ({ asrReady }) => useSearch({ asrReady }),
+      { initialProps: { asrReady: true } },
+    )
+
+    act(() => result.current.setAsrQuery('hydraulic works'))
+    act(() => result.current.runImageSearch(new Blob(['image'], { type: 'image/jpeg' })))
+    await waitFor(() => expect(result.current.results).toEqual([STAGE1_HIT]))
+
+    rerender({ asrReady: false })
+
+    await waitFor(() => expect(result.current.asrQuery).toBe(''))
+    expect(result.current.results).toEqual([STAGE1_HIT])
+  })
+
+  it('clears stale KIS feedback while retaining completed image results', async () => {
+    vi.mocked(searchByImage).mockResolvedValueOnce({ results: [STAGE1_HIT] })
+    vi.mocked(retrieveKisCandidates).mockRejectedValueOnce(new Error('network down'))
+    const { result, rerender } = renderHook(
+      ({ asrReady }) => useSearch({ asrReady }),
+      { initialProps: { asrReady: true } },
+    )
+
+    act(() => {
+      result.current.setGlobalTextQuery('dam')
+      result.current.setAsrQuery('hydraulic works')
+      result.current.runImageSearch(new Blob(['image'], { type: 'image/jpeg' }))
+    })
+    await waitFor(() => expect(result.current.results).toEqual([STAGE1_HIT]))
+    expect(result.current.latencyMs).not.toBeNull()
+
+    act(() => result.current.retrieveCandidates())
+    await waitFor(() => expect(result.current.error).toBe('Candidate retrieval failed'))
+
+    rerender({ asrReady: false })
+
+    await waitFor(() => expect(result.current.asrQuery).toBe(''))
+    expect(result.current.results).toEqual([STAGE1_HIT])
+    expect(result.current.error).toBeNull()
+    expect(result.current.latencyMs).toBeNull()
   })
 
   it('changing ASR query or candidate video count invalidates the candidate pool', async () => {

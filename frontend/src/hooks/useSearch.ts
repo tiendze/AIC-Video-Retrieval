@@ -93,6 +93,8 @@ export interface UseSearchOptions {
   asrReady?: boolean
 }
 
+type ResultsOwner = 'kis' | 'image' | 'external' | null
+
 // KIS Stage 2 rows are keyed by a stable id so removing a middle row never
 // re-associates focus/caret with the wrong input. AbortController cancels
 // an in-flight request when a newer one starts, so a slow first response
@@ -158,9 +160,10 @@ export function useSearch({ asrReady = true }: UseSearchOptions = {}): UseSearch
   const abortRef = useRef<AbortController | null>(null)
   const kisAbortRef = useRef<AbortController | null>(null)
   const kisRequestGenerationRef = useRef(0)
+  const resultsOwnerRef = useRef<ResultsOwner>(null)
   const primaryTextQuery = globalTextQueryValue
 
-  const invalidateCandidatePool = useCallback(() => {
+  const invalidateCandidatePool = useCallback((preserveNonKisResults = false) => {
     kisRequestGenerationRef.current += 1
     const kisController = kisAbortRef.current
     kisController?.abort()
@@ -171,15 +174,21 @@ export function useSearch({ asrReady = true }: UseSearchOptions = {}): UseSearch
     }
     setCandidatePool(null)
     setStage2Queries([])
-    setResults([])
+    const keepResults =
+      preserveNonKisResults &&
+      (resultsOwnerRef.current === 'image' || resultsOwnerRef.current === 'external')
     setError(null)
     setLatencyMs(null)
+    if (!keepResults) {
+      setResults([])
+      resultsOwnerRef.current = null
+    }
   }, [])
 
   useEffect(() => {
     if (asrReady || !asrQueryValue) return
     setAsrQueryValue('')
-    invalidateCandidatePool()
+    invalidateCandidatePool(true)
   }, [asrQueryValue, asrReady, invalidateCandidatePool])
 
   const setGlobalTextQuery = useCallback((query: string) => {
@@ -293,6 +302,7 @@ export function useSearch({ asrReady = true }: UseSearchOptions = {}): UseSearch
 
   const applyExternalResults = useCallback((hits: SearchHit[]) => {
     setCandidatePool(null)
+    resultsOwnerRef.current = 'external'
     setResults(hits)
   }, [])
 
@@ -343,6 +353,7 @@ export function useSearch({ asrReady = true }: UseSearchOptions = {}): UseSearch
           hits,
         }
         setCandidatePool(pool)
+        resultsOwnerRef.current = 'kis'
         setResults(hits)
         if (response.candidate_pool_size > 0 && finalTopK > response.candidate_pool_size) {
           setFinalTopK(response.candidate_pool_size)
@@ -410,6 +421,7 @@ export function useSearch({ asrReady = true }: UseSearchOptions = {}): UseSearch
     )
       .then((response) => {
         if (requestGeneration !== kisRequestGenerationRef.current) return
+        resultsOwnerRef.current = 'kis'
         setResults(
           response.results.map((hit) =>
             withAsrEvidence(
@@ -453,6 +465,7 @@ export function useSearch({ asrReady = true }: UseSearchOptions = {}): UseSearch
     searchByImageApi(file, finalTopK, controller.signal)
       .then((response) => {
         setCandidatePool(null)
+        resultsOwnerRef.current = 'image'
         setResults(response.results)
         setLatencyMs(performance.now() - start)
       })
