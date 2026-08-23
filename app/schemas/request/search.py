@@ -25,6 +25,9 @@ MAX_TOP_K: int = _config["max_top_k"]
 DEFAULT_TEXT_CANDIDATE_K: int = _config["default_text_candidate_k"]
 DEFAULT_OCR_CANDIDATE_K: int = _config["default_ocr_candidate_k"]
 MAX_CANDIDATE_K: int = _config["max_candidate_k"]
+DEFAULT_ASR_VIDEO_CANDIDATE_K: int = _config["default_asr_video_candidate_k"]
+MAX_ASR_VIDEO_CANDIDATE_K: int = _config["max_asr_video_candidate_k"]
+MAX_ASR_QUERY_LENGTH: int = _config["max_asr_query_length"]
 MAX_UPLOAD_SIZE_BYTES: int = _config["max_upload_size_bytes"]
 ALLOWED_UPLOAD_MIME_TYPES: frozenset[str] = frozenset(_config["allowed_upload_mime_types"])
 
@@ -90,8 +93,14 @@ class KisCandidateRequest(BaseModel):
     text_top_k: int = Field(default=DEFAULT_TEXT_CANDIDATE_K, ge=1, le=MAX_CANDIDATE_K)
     ocr_query: str | None = None
     ocr_top_k: int = Field(default=DEFAULT_OCR_CANDIDATE_K, ge=1, le=MAX_CANDIDATE_K)
+    asr_query: str | None = Field(default=None, max_length=MAX_ASR_QUERY_LENGTH)
+    asr_video_top_k: int = Field(
+        default=DEFAULT_ASR_VIDEO_CANDIDATE_K,
+        ge=1,
+        le=MAX_ASR_VIDEO_CANDIDATE_K,
+    )
 
-    @field_validator("text_query", "ocr_query", mode="before")
+    @field_validator("text_query", "ocr_query", "asr_query", mode="before")
     @classmethod
     def empty_strings_are_absent(cls, value: str | None) -> str | None:
         return _blank_to_none(value)
