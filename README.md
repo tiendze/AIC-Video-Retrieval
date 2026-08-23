@@ -90,6 +90,8 @@ Ba chế độ tìm kiếm sống trong `ModeSelector` (phím tắt `1`/`2`/`3`)
 - **OCR** — tìm theo chữ xuất hiện trong khung hình (Elasticsearch + `vi_analyzer`); tự động disable nếu Elasticsearch không sống.
 - **DANTE** — nhập chuỗi N sự kiện theo thứ tự (`EventSequenceInput`), trả về video khớp cả chuỗi đúng thứ tự thời gian (`TrakeResultList`) — dùng cho task `TRAKE`.
 
+KIS có thêm optional ASR gate: nhập `asr_query` và số video gate (`asr_video_top_k`). Backend BM25 `asr_segments`, trả `asr_gate` gồm video IDs xếp hạng và evidence có timestamp, rồi filter Text Q0 Milvus/OCR Elasticsearch trong engine. ASR không đổi Stage 1/Stage 2 score và không tạo pool nộp bài một mình; hàng nộp luôn là `frame_idx` của keyframe đã lưu. UI tự disable ASR khi `/health` báo ASR chưa sẵn sàng và cho biết lý do.
+
 ```powershell
 cd frontend
 npm install
@@ -99,6 +101,23 @@ npm run build    # tsc -b && vite build
 ```
 
 Cần backend sống ở `:8000` để dùng thật (`./.venv/Scripts/python.exe -m uvicorn app.main:app --port 8000`) + docker-compose stack (Milvus/Elasticsearch/MongoDB). Ảnh keyframe được resize + cache theo yêu cầu qua `GET /api/keyframes/{id}/thumbnail` -- lần xem đầu mỗi ảnh chậm hơn (đang sinh cache), lần sau tức thì. Warm cache trước cho toàn corpus (tốn thời gian, không tự chạy):
+
+### ASR readiness (read-only)
+
+Không chạy model, ingest, hay reindex để kiểm tra readiness. Với Elasticsearch và backend đang sống, chạy hai lệnh read-only sau:
+
+```powershell
+Invoke-RestMethod http://localhost:9200/asr_segments/_count
+Invoke-RestMethod http://localhost:8000/health
+```
+
+Nếu `count > 0` và health trả `asr_status: ready`, ASR đã sẵn sàng và **không cần reindex**. `asr_segment_count` bằng `0` nghĩa index empty; `null` chỉ index missing/probe unavailable hoặc Elasticsearch unreachable (xem `asr_status`: `empty`, `unavailable`, hay `unreachable`). Với index missing/empty, chủ dự án tự chạy import sau — không thêm `--reset` cho một lần nạp thường:
+
+```powershell
+./.venv/Scripts/python.exe scripts/import_asr_out.py --asr-out-dir data/asr_out
+```
+
+`--reset` chỉ dành cho một replacement ASR model-identity đã được xác minh rõ ràng; nó không phải cờ refresh định kỳ. Chất lượng ASR-assisted retrieval: **not measured**; evaluation plan tách riêng ở [`docs/superpowers/plans/2026-08-23-asr-assisted-kis-evaluation.md`](docs/superpowers/plans/2026-08-23-asr-assisted-kis-evaluation.md).
 
 ```powershell
 python scripts/build_thumbnails.py --limit-videos 5   # đo thử trước
@@ -169,12 +188,12 @@ Chi tiết từng phase + số đo thật: [`.claude/plans/roadmap.plan.md`](./.
 
 ```
 app/
-├── main.py                  # app factory + lifespan: dựng Settings, encoder, 3 store, services; đăng ký router; CORS
+├── main.py                  # app factory + lifespan: dựng Settings, encoder, 3 store + ASR ES store, services; đăng ký router; CORS
 ├── config.py                 # Settings / CorsSettings (pydantic-settings, đọc .env)
 ├── dependencies.py            # Depends() provider — đọc instance từ request.app.state, router không tự new client
 │
 ├── api/                       # router tầng HTTP — validate input, gọi service, response_model
-│   ├── search.py                #   POST /api/search · POST /api/search/image
+│   ├── search.py                #   POST /api/search · /api/search/kis/{candidates,rerank} · /api/search/image
 │   ├── trake.py                  #   POST /api/trake (DANTE)
 │   ├── quest.py                    #   POST /api/quest/rewrite-query · /image-candidates · /image-search
 │   ├── videos.py                    #   GET /api/videos/{id} · /api/videos/{id}/keyframes
@@ -183,17 +202,18 @@ app/
 │   └── errors.py                       #   chuẩn hoá response lỗi
 │
 ├── services/                   # business logic thuần Python, test không cần FastAPI
-│   ├── search_service.py          #   semantic (BEiT-3 + QueryTranslator VI→EN) + image-to-image + OCR + fusion
+│   ├── search_service.py          #   semantic + KIS Stage 1/2; optional ASR video gate/evidence, never ASR score
+│   ├── asr_retrieval_service.py   #   BM25 asr_segments -> ranked video IDs + timestamp evidence
 │   ├── dante_service.py             #   DP O(NT) tìm chuỗi N sự kiện đúng thứ tự — công thức Eq (1)–(5) của paper
 │   ├── trake_service.py               #   cầu nối POST /api/trake → dante_service, duyệt mọi video `complete`
 │   ├── quest_service.py                 #   QUEST 2 nhánh: GeminiQueryRewriter (viết lại truy vấn) + tìm ảnh mẫu web (DDGS + httpx)
 │   ├── query_translator.py                #   VI→EN cho kênh semantic — BEiT-3 text tower chỉ học cặp tiếng Anh
 │   ├── thumbnail_service.py                 #   resize + cache ảnh keyframe theo yêu cầu
-│   └── health_service.py                     #   kiểm tra 3 store còn sống
+│   └── health_service.py                     #   kiểm tra 3 store và ASR readiness
 │
 ├── stores/                     # client mỏng bọc SDK từng store
 │   ├── milvus_client.py           #   vector search
-│   ├── es_client.py                 #   OCR text search (Elasticsearch + vi_analyzer)
+│   ├── es_client.py                 #   OCR text search + ASR transcript `asr_segments`
 │   └── mongo_client.py                #   metadata (frame_idx, global_index, s_v/e_v...)
 │
 ├── encoders/                   # MultimodalEncoder Protocol + implementation; L2-normalize ngay tại encoder

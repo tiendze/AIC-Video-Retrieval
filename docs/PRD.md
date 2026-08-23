@@ -223,6 +223,14 @@ Tìm theo chữ xuất hiện trên màn hình, qua Elasticsearch.
 - [ ] Đặt **trần chi phí OCR trong `configs/`** — vượt trần thì dừng và báo, không đốt tiếp (R2)
 - [ ] Báo cáo tỉ lệ frame bị cắt ở **từng** bước lọc riêng biệt, không gộp — đây là bằng chứng R2 đã được giảm thiểu
 
+### F3.1 — ASR-assisted KIS gate *(P0, optional)*
+
+ASR narrows candidate videos and exposes evidence; it does not contribute a keyframe score. `asr_query` được BM25 trong `asr_segments` truy hồi thành video IDs đã xếp hạng, kèm segment evidence có timestamp, rồi giới hạn Text Q0 Milvus và OCR Elasticsearch trước khi Stage 1/Stage 2 chạy như cũ. Người vận hành có thể xem evidence để quyết định, nhưng evidence không phải đáp án.
+
+- ASR-only search does not produce a submission candidate pool.
+- The submitted frame is always a stored keyframe `frame_idx`.
+- ASR-assisted retrieval quality: **not measured**. Không tuyên bố cải thiện cho tới khi có so sánh đã chạy theo [evaluation plan](superpowers/plans/2026-08-23-asr-assisted-kis-evaluation.md); plan này là artifact riêng, không thêm record ASR vào `aic_eval_v1`.
+
 ### F4 — Hybrid fusion *(P1)* — ĐÃ BỎ, 2026-08-12
 
 🔧 **[Giả định]** Paper mô tả Semantic và OCR là hai **mode riêng biệt**, không nêu cơ chế hợp nhất. Dự án từng thử bổ sung fusion vì hai kênh này *tưởng* bổ trợ nhau.
@@ -308,6 +316,8 @@ Xuất file kết quả theo định dạng BTC.
 > ⚠️ **Xem §9 — Ràng buộc quy trình.** Đây **chỉ là tham chiếu chức năng**, không phải bản thiết kế phải làm theo.
 
 **Cập nhật 2026-08-12 (P1.6):** không có mẫu thiết kế riêng — chủ dự án mở gate P1.5, cho phép build đúng theo (A)–(D) ở trên làm bố cục, hình thức chỉnh sau khi có yêu cầu. Mục (A) AI enhancer và mục (B) DANTE hiển thị **disabled kèm badge "P2"** (backend QUEST/DANTE chưa xây); mục (D) bộ lọc metadata hiển thị **disabled** (chưa có field `filters` trong `SearchRequest`). Mục (C) và phần Semantic/OCR của (B), cùng upload ảnh của (D), đã chạy đầy đủ.
+
+**ASR-assisted KIS:** UI có optional `asr_query` và `asr_video_top_k`, hiển thị top-level `asr_gate` với video rank/evidence timestamp. Khi health không `ready`, ASR controls disabled và lý do được hiển thị. ASR chỉ thu hẹp candidate video; không có ASR-only pool hoặc nút nộp đáp án từ transcript. Mọi hàng nộp KIS luôn dùng `frame_idx` của stored keyframe.
 
 **Acceptance criteria (chức năng, không phải hình thức):**
 - [x] Đổi mode không mất truy vấn đang gõ
@@ -436,6 +446,8 @@ Chênh lệch giữa hai mức chỉ ra bệnh cụ thể: video-level cao mà s
 ### 6.3 Nhóm A — Metrics truy hồi (Textual KIS)
 
 **Bộ đánh giá:** mỗi `caption` trong `aic_eval_v1.json` (§6.1) là một truy vấn; ground truth là shot tương ứng.
+
+**ASR-assisted retrieval quality: not measured.** Không ghi ASR query/evidence vào `aic_eval_v1`, vì đó là bộ eval keyframe đóng băng. Thiết kế đo tách biệt nằm ở [`docs/superpowers/plans/2026-08-23-asr-assisted-kis-evaluation.md`](superpowers/plans/2026-08-23-asr-assisted-kis-evaluation.md). Chỉ sau khi plan này được thực hiện với baseline phù hợp mới được kết luận về chất lượng hoặc cải thiện.
 
 > ✅ **Bộ K đổi theo đề AIC 2026: `K ∈ {1, 5, 20, 50, 100}`** — đúng bộ K mà BTC dùng để chấm (`references.md` §1.2). Bản trước dùng `{1, 5, 10, 20, 100}`; `K = 10` bị bỏ và `K = 50` được thêm vào. Đo lệch bộ K nghĩa là đo bằng cái thước khác với thước chấm điểm.
 >
@@ -652,7 +664,7 @@ Khi hệ thống nộp bài mở:
 ### 7.7 Khả năng quan sát
 - Structured logging (JSON) cho pipeline ingest, có tiến độ theo `video_id`
 - Mỗi request search log lại: mode, độ trễ, số kết quả, cache hit/miss
-- Endpoint `/health` kiểm tra kết nối cả ba store
+- Endpoint `/health` kiểm tra kết nối cả ba store và ASR readiness: `ready` (`count > 0`), `empty` (`count = 0`), `unavailable` (`count = null`), hoặc `unreachable` (`count = null`)
 
 ---
 

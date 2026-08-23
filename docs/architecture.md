@@ -262,6 +262,19 @@ flowchart TD
 
 3. **Cổng `GUARD`** đứng giữa VLM và kết quả. Hệ thống được phép nói "không đủ căn cứ". Không có cổng này thì `Hallucination Rate` (metric §6.5 của PRD) sẽ không kiểm soát được.
 
+#### ASR-assisted KIS: optional gate và evidence
+
+ASR không phải một kênh score keyframe. Khi người vận hành điền `asr_query`, đường online là:
+
+```text
+ASR query -> AsrRetrievalService -> asr_segments BM25
+          -> ranked video_ids + timestamped evidence
+          -> Milvus Text Q0 and Elasticsearch OCR engine filters
+          -> unchanged Stage 1 scoring -> unchanged Stage 2 reranking
+```
+
+`AsrRetrievalService` gom các segment BM25 thành `video_id` đã xếp hạng và giữ evidence theo timestamp (`start_time`, `end_time`, text, raw BM25). Danh sách `video_id` được truyền vào Milvus Text Q0 và Elasticsearch OCR **ngay trong engine**. ASR không đóng góp score vào Stage 1 hoặc Stage 2. Vì Stage 1 vẫn bắt buộc Text Q0 hoặc OCR, ASR-only không tạo candidate pool để rerank hay nộp bài.
+
 ### 3.4 QUEST — xử lý truy vấn Out-of-Knowledge
 
 📄 **[Paper]** Kích hoạt khi truy vấn chứa thực thể mà model embedding chưa từng thấy (ví dụ trong paper: *"Labubu"*, *"Babythree"*).
@@ -427,6 +440,17 @@ sequenceDiagram
 
 Mapping dùng plugin `elasticsearch-analysis-vietnamese`, kèm `asciifolding` với `preserve_original: true` để khớp cả khi người vận hành gõ không dấu — thao tác rất phổ biến khi thi gấp. Cú pháp chi tiết xem [`references.md`](./references.md).
 
+**Index `asr_segments` (ASR transcript):**
+
+| Trường | Kiểu / ý nghĩa |
+|---|---|
+| `segment_id` | `keyword`, định danh segment duy nhất |
+| `video_id` | `keyword`, dùng để tạo ASR video gate |
+| `text` | `text`, BM25 transcript query |
+| `start_time`, `end_time` | thời gian evidence trả về cho người vận hành |
+
+`asr_segments` độc lập với OCR index. Nó chỉ phục vụ BM25 ASR gate/evidence và không ghi score vào kết quả keyframe.
+
 ### 4.3 MongoDB — metadata
 
 **Collection `keyframes`:**
@@ -586,6 +610,8 @@ AIC-Video-Retrieval/
 | Method | Endpoint | Mục đích | Ghi chú |
 |---|---|---|---|
 | `POST` | `/api/search` | Tìm bằng văn bản | Body: `query`, `mode` (`semantic` \| `ocr`), `top_k`, `filters` |
+| `POST` | `/api/search/kis/candidates` | Lấy candidate pool KIS | Body: Text Q0/OCR và tuỳ chọn `asr_query`, `asr_video_top_k`; response có top-level `asr_gate` (ranked video IDs + timestamped evidence) |
+| `POST` | `/api/search/kis/rerank` | Rerank candidate KIS | Chỉ rerank pool keyframe từ Stage 1; ASR không có score trong Stage 1/2 |
 | `POST` | `/api/search/image` | Tìm bằng ảnh upload | `multipart/form-data`; dùng **chung** không gian vector |
 | `POST` | `/api/quest` | Viết lại truy vấn / tìm ảnh mẫu | Trả về **cả** truy vấn gốc và bản viết lại |
 | `POST` | `/api/trake` | Chuỗi N sự kiện | Body: `events[]`, `lambda_penalty`, `top_k` |
@@ -596,13 +622,24 @@ AIC-Video-Retrieval/
 | ✅ `GET` | `/api/videos/{id}` | Thông tin video kèm `s_v`, `e_v` | P1.6. Wrapper mỏng trên `MongoStore.get_video()`. `watch_url` phục vụ nút "Play YouTube" |
 | ✅ `GET` | `/api/videos/{id}/keyframes` | Toàn bộ keyframe của một video | P1.6. Wrapper mỏng trên `MongoStore.get_keyframes_for_video()` — không có trong paper, phục vụ panel keyframe lân cận trong `KeyframeDetail` |
 | `POST` | `/api/submissions/export` | Xuất file nộp | Validate trước khi ghi |
-| `GET` | `/health` | Kiểm tra kết nối 3 store | |
+| `GET` | `/health` | Kiểm tra kết nối store và ASR readiness | Trả `asr_status`, `asr_ready`, `asr_segment_count` |
 
 **Quy ước chung:**
 - Mọi endpoint khai báo `response_model` (theo rules ECC)
 - Endpoint có I/O dùng `async def` với client bất đồng bộ
 - Encoder và store client inject qua `Depends`, **không** khởi tạo trong route handler
 - Lỗi trả về theo một schema thống nhất: `{detail, error_code, request_id}`
+
+**ASR readiness trong `/health`:**
+
+| `asr_status` | `asr_ready` | `asr_segment_count` | Nghĩa |
+|---|---:|---:|---|
+| `ready` | `true` | số nguyên `> 0` | Elasticsearch sống, `asr_segments` tồn tại và có segment |
+| `empty` | `false` | `0` | index tồn tại nhưng chưa có segment |
+| `unavailable` | `false` | `null` | index thiếu hoặc probe index/count lỗi dù Elasticsearch health probe thành công |
+| `unreachable` | `false` | `null` | Elasticsearch không reachable; ASR không thể probe |
+
+`asr_segment_count` chỉ có giá trị khi index đã probe được; do đó `null` không phải zero segments. `asr_ready` chỉ true ở `ready`; trạng thái tổng thể `/health` là `ok` khi cả ba store sống và ASR `ready`, ngược lại là `degraded`.
 
 ---
 
@@ -662,6 +699,8 @@ stateDiagram-v2
 ```
 
 Nhánh cuối là ràng buộc quan trọng nhất trong sơ đồ: **đổi model embedding không bao giờ được ghi đè collection cũ**. Vector của hai model khác nhau không so sánh được, và lỗi này không gây crash — nó chỉ làm điểm số tệ đi một cách khó truy vết.
+
+ASR có identity riêng trong `asr_runs.model_id`/artifact manifest. Import ASR thông thường không dùng reset; chỉ replacement đã xác minh model identity mới được dùng `--reset`, để tránh trộn transcript khác model trong cùng gate.
 
 ---
 
