@@ -7,6 +7,7 @@ the real-server counterpart.
 from __future__ import annotations
 
 import numpy as np
+import pytest
 from pymilvus.exceptions import MilvusException
 
 from app.stores.milvus_client import MilvusStore, TranscriptMilvusStore
@@ -177,6 +178,37 @@ def test_search_keeps_configured_ef_when_it_already_covers_top_k(monkeypatch):
 
     sent_ef = store._client.search_calls[0]["search_params"]["params"]["ef"]
     assert sent_ef == 64
+
+
+def test_search_serializes_typed_video_ids_into_the_engine_filter(monkeypatch):
+    store = _keyframe_store(monkeypatch)
+
+    store.search(
+        np.zeros(512, dtype=np.float32),
+        top_k=20,
+        video_ids=["L21_V001", 'quote"video', "L21_V001"],
+    )
+
+    assert store._client.search_calls[0]["filter"] == ('video_id in ["L21_V001", "quote\\"video"]')
+
+
+def test_search_returns_empty_without_calling_milvus_for_empty_video_ids(monkeypatch):
+    store = _keyframe_store(monkeypatch)
+
+    assert store.search(np.zeros(512, dtype=np.float32), 20, video_ids=[]) == []
+    assert store._client.search_calls == []
+
+
+def test_search_rejects_raw_and_typed_filters_together(monkeypatch):
+    store = _keyframe_store(monkeypatch)
+
+    with pytest.raises(ValueError, match="filter_expr and video_ids"):
+        store.search(
+            np.zeros(512, dtype=np.float32),
+            20,
+            filter_expr='batch == "L21"',
+            video_ids=["L21_V001"],
+        )
 
 
 def test_get_vectors_for_video_filters_by_video_id_and_global_index_bounds(monkeypatch):

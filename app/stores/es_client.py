@@ -112,11 +112,24 @@ class EsStore:
             doc["_id"]: doc["_source"]["ocr_text"] for doc in response["docs"] if doc.get("found")
         }
 
-    async def search(self, query_text: str, top_k: int, video_id: str | None = None) -> list[dict]:
-        """Full-text OCR search. `video_id` filter runs inside ES, never after the fact."""
+    async def search(
+        self,
+        query_text: str,
+        top_k: int,
+        video_ids: Sequence[str] | None = None,
+    ) -> list[dict]:
+        """Full-text OCR search. Video filters run inside ES, never after the fact."""
         query = _ocr_match_query(query_text)
-        if video_id is not None:
-            query = {"bool": {"must": [query], "filter": [{"term": {"video_id": video_id}}]}}
+        if video_ids is not None:
+            unique_video_ids = list(dict.fromkeys(video_ids))
+            if not unique_video_ids:
+                return []
+            query = {
+                "bool": {
+                    "must": [query],
+                    "filter": [{"terms": {"video_id": unique_video_ids}}],
+                }
+            }
 
         response = await self._client.search(index=self._index_name, query=query, size=top_k)
         return [hit["_source"] | {"score": hit["_score"]} for hit in response["hits"]["hits"]]

@@ -127,7 +127,7 @@ def test_search_returns_frame_idx_needed_for_submission(store: MilvusStore) -> N
     assert results[0]["entity"]["frame_idx"] == 1234
 
 
-def test_search_filter_is_passed_to_engine_not_applied_after(store: MilvusStore) -> None:
+def test_search_video_filter_is_passed_to_engine_not_applied_after(store: MilvusStore) -> None:
     vector = _unit_vector(hot_index=0)
     store.upsert(
         [
@@ -154,10 +154,10 @@ def test_search_filter_is_passed_to_engine_not_applied_after(store: MilvusStore)
         ]
     )
 
-    results = store.search(query_vector=vector, top_k=10, filter_expr='video_id == "video_b"')
+    results = store.search(query_vector=vector, top_k=10, video_ids=["video_b"])
 
-    assert len(results) == 1
-    assert results[0]["entity"]["video_id"] == "video_b"
+    assert results
+    assert {hit["entity"]["video_id"] for hit in results} == {"video_b"}
 
 
 def test_upsert_is_idempotent_on_same_keyframe_id(store: MilvusStore) -> None:

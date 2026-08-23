@@ -172,6 +172,23 @@ async def test_ocr_search_uses_fuzzy_match_for_candidate_generation(monkeypatch)
     ]
 
 
+async def test_ocr_search_filters_candidate_videos_inside_elasticsearch(monkeypatch):
+    store = _ocr_store(monkeypatch)
+
+    await store.search("SAIGON", 100, video_ids=["L21_V001", "L21_V002", "L21_V001"])
+
+    assert store._client.search_calls[0]["query"]["bool"]["filter"] == [
+        {"terms": {"video_id": ["L21_V001", "L21_V002"]}}
+    ]
+
+
+async def test_ocr_search_returns_empty_without_calling_es_for_empty_video_ids(monkeypatch):
+    store = _ocr_store(monkeypatch)
+
+    assert await store.search("SAIGON", 100, video_ids=[]) == []
+    assert store._client.search_calls == []
+
+
 async def test_score_by_ids_scores_one_ocr_query_inside_candidate_pool(monkeypatch):
     store = _ocr_store(monkeypatch)
     store._client.search_hits = [

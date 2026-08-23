@@ -27,6 +27,11 @@ _SEGMENT_ID_MAX_LENGTH = 64
 _QUERY_ID_BATCH_SIZE = 512
 
 
+def _milvus_video_filter(video_ids: Sequence[str]) -> str:
+    unique_ids = list(dict.fromkeys(video_ids))
+    return "video_id in [" + ", ".join(json.dumps(value) for value in unique_ids) + "]"
+
+
 @dataclass(frozen=True)
 class KeyframeVector:
     """One row to upsert into Milvus. `embedding` must already be L2-normalized."""
@@ -149,7 +154,13 @@ class MilvusStore:
         ]
         self._client.upsert(collection_name=self._collection_name, data=rows)
 
-    def search(self, query_vector: np.ndarray, top_k: int, filter_expr: str = "") -> list[dict]:
+    def search(
+        self,
+        query_vector: np.ndarray,
+        top_k: int,
+        filter_expr: str = "",
+        video_ids: Sequence[str] | None = None,
+    ) -> list[dict]:
         """ANN search. `filter_expr` runs inside Milvus — never filter results after the fact.
 
         `consistency_level="Strong"`: without it Milvus's default "Bounded"
@@ -163,6 +174,14 @@ class MilvusStore:
         ranked answers per query, PRD §1.2), so it is clamped up here rather
         than trusted to always be configured high enough.
         """
+        if filter_expr and video_ids is not None:
+            raise ValueError("filter_expr and video_ids cannot be supplied together")
+        if video_ids is not None:
+            unique_video_ids = list(dict.fromkeys(video_ids))
+            if not unique_video_ids:
+                return []
+            filter_expr = _milvus_video_filter(unique_video_ids)
+
         effective_ef = max(self._search_ef, top_k)
         results = self._client.search(
             collection_name=self._collection_name,
