@@ -700,7 +700,7 @@ stateDiagram-v2
 
 Nhánh cuối là ràng buộc quan trọng nhất trong sơ đồ: **đổi model embedding không bao giờ được ghi đè collection cũ**. Vector của hai model khác nhau không so sánh được, và lỗi này không gây crash — nó chỉ làm điểm số tệ đi một cách khó truy vết.
 
-ASR có identity riêng trong `asr_runs.model_id`/artifact manifest. Import ASR thông thường không dùng reset; chỉ replacement đã xác minh model identity mới được dùng `--reset`, để tránh trộn transcript khác model trong cùng gate.
+ASR có identity riêng trong `asr_runs.model_id`/artifact manifest. Import ASR thông thường không dùng reset; chỉ replacement đã xác minh model identity mới được cân nhắc dùng `--reset`. Cờ này **chỉ bypass guard khác `model_id`, không tự xoá document cũ**; trước đó chủ dự án phải deliberately replace/clear ASR index/store cũ theo destructive procedure được review riêng. Không suy ra hoặc chạy lệnh destructive từ tài liệu này.
 
 ---
 

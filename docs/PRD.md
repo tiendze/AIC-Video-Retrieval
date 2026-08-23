@@ -317,7 +317,7 @@ Xuất file kết quả theo định dạng BTC.
 
 **Cập nhật 2026-08-12 (P1.6):** không có mẫu thiết kế riêng — chủ dự án mở gate P1.5, cho phép build đúng theo (A)–(D) ở trên làm bố cục, hình thức chỉnh sau khi có yêu cầu. Mục (A) AI enhancer và mục (B) DANTE hiển thị **disabled kèm badge "P2"** (backend QUEST/DANTE chưa xây); mục (D) bộ lọc metadata hiển thị **disabled** (chưa có field `filters` trong `SearchRequest`). Mục (C) và phần Semantic/OCR của (B), cùng upload ảnh của (D), đã chạy đầy đủ.
 
-**ASR-assisted KIS:** UI có optional `asr_query` và `asr_video_top_k`, hiển thị top-level `asr_gate` với video rank/evidence timestamp. Khi health không `ready`, ASR controls disabled và lý do được hiển thị. ASR chỉ thu hẹp candidate video; không có ASR-only pool hoặc nút nộp đáp án từ transcript. Mọi hàng nộp KIS luôn dùng `frame_idx` của stored keyframe.
+**ASR-assisted KIS:** UI có optional `asr_query` và `asr_video_top_k`, hiển thị top-level `asr_gate` với video rank/evidence timestamp. Khi health không `ready`, ASR controls disabled và lý do được hiển thị. Chọn một evidence segment sẽ chuyển tới keyframe **stored** gần midpoint của segment nhất và highlight khoảng thời gian đóng, inclusive `[start_time, end_time]`. ASR chỉ thu hẹp candidate video; không có ASR-only pool hoặc nút nộp đáp án từ transcript. Mọi hàng nộp KIS luôn dùng `frame_idx` của stored keyframe, không suy ra từ timestamp.
 
 **Acceptance criteria (chức năng, không phải hình thức):**
 - [x] Đổi mode không mất truy vấn đang gõ

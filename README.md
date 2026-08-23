@@ -117,7 +117,7 @@ Nếu `count > 0` và health trả `asr_status: ready`, ASR đã sẵn sàng và
 ./.venv/Scripts/python.exe scripts/import_asr_out.py --asr-out-dir data/asr_out
 ```
 
-`--reset` chỉ dành cho một replacement ASR model-identity đã được xác minh rõ ràng; nó không phải cờ refresh định kỳ. Chất lượng ASR-assisted retrieval: **not measured**; evaluation plan tách riêng ở [`docs/superpowers/plans/2026-08-23-asr-assisted-kis-evaluation.md`](docs/superpowers/plans/2026-08-23-asr-assisted-kis-evaluation.md).
+`--reset` chỉ dành cho một replacement ASR model-identity đã được xác minh rõ ràng; nó không phải cờ refresh định kỳ. Cờ này **chỉ bypass guard khác `model_id`, không tự xoá document cũ**. Trước khi dùng nó, chủ dự án phải chủ động replace/clear ASR index/store cũ theo một destructive procedure được review riêng; không có lệnh destructive nào được suy ra từ hướng dẫn này. Chất lượng ASR-assisted retrieval: **not measured**; evaluation plan tách riêng ở [`docs/superpowers/plans/2026-08-23-asr-assisted-kis-evaluation.md`](docs/superpowers/plans/2026-08-23-asr-assisted-kis-evaluation.md).
 
 ```powershell
 python scripts/build_thumbnails.py --limit-videos 5   # đo thử trước
