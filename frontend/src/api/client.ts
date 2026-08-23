@@ -54,7 +54,9 @@ export function search(
   })
 }
 
-// POST /api/search/kis/candidates (app/api/search.py)
+// POST /api/search/kis/candidates (app/api/search.py). ASR is an optional
+// video gate in this Stage 1 payload; its evidence returns once at the
+// response top level rather than being duplicated on each result.
 export function retrieveKisCandidates(
   payload: KisCandidatePayload,
   signal?: AbortSignal,
@@ -174,7 +176,7 @@ export function trakeSearch(
 }
 
 // GET /health (app/api/health.py) -- polled by useHealth (plan §P1.8) to
-// detect Elasticsearch being down and show a degraded-mode banner.
+// detect Elasticsearch being down and expose four-state ASR readiness.
 export function getHealth(): Promise<HealthStatus> {
   return request<HealthStatus>('/health')
 }

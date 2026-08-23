@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { fetchImageBlob } from './api/client'
-import type { AppMode, SearchHit, TrakeKeyframe, TrakeVideoResultItem } from './api/types'
+import type {
+  AppMode,
+  HealthStatus,
+  SearchHit,
+  TrakeKeyframe,
+  TrakeVideoResultItem,
+} from './api/types'
 import { EventSequenceInput } from './components/EventSequenceInput'
 import { FilterPanel } from './components/FilterPanel'
 import { ImageCandidatePicker } from './components/ImageCandidatePicker'
@@ -49,6 +55,17 @@ const ES_DOWN_MESSAGE = 'Elasticsearch không khả dụng — OCR trong KIS t�
 // mode-agnostic.
 const MODE_ORDER: AppMode[] = ['kis', 'dante']
 
+function asrReadinessMessage(health: HealthStatus | null): string | null {
+  if (!health || health.asr_status === 'ready') return null
+  if (health.asr_status === 'unreachable') {
+    return 'Elasticsearch is unreachable; ASR is unavailable.'
+  }
+  if (health.asr_status === 'unavailable') {
+    return 'The ASR transcript index is unavailable.'
+  }
+  return 'The ASR transcript index is empty.'
+}
+
 function App() {
   const {
     globalTextQuery,
@@ -59,6 +76,10 @@ function App() {
     setOcrQuery,
     ocrCandidateK,
     setOcrCandidateK,
+    asrQuery,
+    setAsrQuery,
+    asrVideoCandidateK,
+    setAsrVideoCandidateK,
     candidatePool,
     stage2Queries,
     setStage2QueryText,
@@ -92,6 +113,7 @@ function App() {
   const kisLeftScrollRef = useRef<HTMLDivElement>(null)
   const health = useHealth()
   const esDown = health?.elasticsearch_ok === false
+  const asrMessage = asrReadinessMessage(health)
 
   // QUEST (plan §P2.5, PRD §F5). Both branches push hits into the exact
   // same grid a regular search populates -- latencyMs resets to null
@@ -292,6 +314,11 @@ function App() {
                 textCandidateK={textCandidateK}
                 ocrQuery={ocrQuery}
                 ocrCandidateK={ocrCandidateK}
+                asrQuery={asrQuery}
+                asrVideoCandidateK={asrVideoCandidateK}
+                asrGate={candidatePool?.asrGate ?? null}
+                asrDisabled={health?.asr_ready === false}
+                asrReadinessMessage={asrMessage}
                 candidatePoolSize={candidatePool?.candidatePoolSize ?? null}
                 textCandidateCount={candidatePool?.textCandidateCount ?? 0}
                 ocrCandidateCount={candidatePool?.ocrCandidateCount ?? 0}
@@ -301,6 +328,8 @@ function App() {
                 onTextCandidateKChange={setTextCandidateK}
                 onOcrQueryChange={setOcrQuery}
                 onOcrCandidateKChange={setOcrCandidateK}
+                onAsrQueryChange={setAsrQuery}
+                onAsrVideoCandidateKChange={setAsrVideoCandidateK}
                 onStage2QueryTextChange={setStage2QueryText}
                 onStage2QueryTypeChange={setStage2QueryType}
                 onAbePairAttributeChange={setAbePairAttribute}

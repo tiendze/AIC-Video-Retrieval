@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import {
   findImageCandidates,
+  getHealth,
   getVideo,
   getVideoKeyframes,
   rerankKisCandidates,
@@ -68,6 +69,14 @@ function stubViewportSizeGlobally(size: number): () => void {
 }
 
 describe('App', () => {
+  it('leaves ASR controls enabled without an unavailable message before health loads', () => {
+    render(<App />)
+
+    expect(screen.getByLabelText('stage 1 asr')).toBeEnabled()
+    expect(screen.getByLabelText('asr candidate videos')).toBeEnabled()
+    expect(screen.queryByText(/ASR transcript index|ASR is unavailable/)).not.toBeInTheDocument()
+  })
+
   it('preserves the typed query when switching search mode', async () => {
     const user = userEvent.setup()
     render(<App />)
@@ -401,6 +410,44 @@ describe('App', () => {
       expect(screen.getByLabelText('KIS score details')).toBeInTheDocument()
     } finally {
       restoreViewportSize()
+    }
+  })
+
+  it.each([
+    {
+      asr_status: 'unreachable' as const,
+      elasticsearch_ok: false,
+      message: 'Elasticsearch is unreachable; ASR is unavailable.',
+    },
+    {
+      asr_status: 'unavailable' as const,
+      elasticsearch_ok: true,
+      message: 'The ASR transcript index is unavailable.',
+    },
+    {
+      asr_status: 'empty' as const,
+      elasticsearch_ok: true,
+      message: 'The ASR transcript index is empty.',
+    },
+  ])('disables ASR controls for $asr_status health with the exact reason', async (state) => {
+    vi.mocked(getHealth).mockResolvedValue({
+      status: 'degraded',
+      milvus_ok: true,
+      elasticsearch_ok: state.elasticsearch_ok,
+      mongodb_ok: true,
+      asr_status: state.asr_status,
+      asr_ready: false,
+      asr_segment_count: state.asr_status === 'empty' ? 0 : null,
+    })
+
+    render(<App />)
+
+    await waitFor(() => expect(screen.getByText(state.message)).toBeInTheDocument())
+    expect(screen.getByLabelText('stage 1 asr')).toBeDisabled()
+    expect(screen.getByLabelText('asr candidate videos')).toBeDisabled()
+    if (state.elasticsearch_ok) {
+      expect(screen.getByLabelText('stage 1 ocr')).toBeEnabled()
+      expect(screen.getByLabelText('ocr candidates')).toBeEnabled()
     }
   })
 })

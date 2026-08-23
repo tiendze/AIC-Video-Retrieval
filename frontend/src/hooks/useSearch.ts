@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from 'react'
 import {
+  DEFAULT_ASR_VIDEO_CANDIDATE_K,
   DEFAULT_OCR_CANDIDATE_K,
   DEFAULT_TEXT_CANDIDATE_K,
   DEFAULT_TOP_K,
@@ -10,13 +11,21 @@ import {
   searchByImage as searchByImageApi,
 } from '../api/client'
 import { isAbortError, messageFor } from '../api/requestHelpers'
-import type { KisQueryPayload, KisQueryRow, KisQueryType, SearchHit } from '../api/types'
+import type {
+  AsrGate,
+  AsrVideoEvidence,
+  KisQueryPayload,
+  KisQueryRow,
+  KisQueryType,
+  SearchHit,
+} from '../api/types'
 
 export interface KisCandidatePoolState {
   candidateIds: string[]
   candidatePoolSize: number
   textCandidateCount: number
   ocrCandidateCount: number
+  asrGate: AsrGate | null
   hits: SearchHit[]
 }
 
@@ -29,6 +38,10 @@ export interface UseSearchResult {
   setOcrQuery: (query: string) => void
   ocrCandidateK: number
   setOcrCandidateK: (topK: number) => void
+  asrQuery: string
+  setAsrQuery: (query: string) => void
+  asrVideoCandidateK: number
+  setAsrVideoCandidateK: (topK: number) => void
   candidatePool: KisCandidatePoolState | null
   stage2Queries: KisQueryRow[]
   setStage2QueryText: (id: string, text: string) => void
@@ -114,11 +127,23 @@ function activePayload(rows: KisQueryRow[]): KisQueryPayload[] {
     .filter((row): row is KisQueryPayload => row !== null)
 }
 
+function withAsrEvidence(
+  hit: SearchHit,
+  evidenceByVideo: Map<string, AsrVideoEvidence>,
+): SearchHit {
+  const evidence = evidenceByVideo.get(hit.video_id)
+  return evidence ? { ...hit, asr_evidence: evidence } : hit
+}
+
 export function useSearch(): UseSearchResult {
   const [globalTextQueryValue, setGlobalTextQueryValue] = useState('')
   const [textCandidateKValue, setTextCandidateKValue] = useState(DEFAULT_TEXT_CANDIDATE_K)
   const [ocrQueryValue, setOcrQueryValue] = useState('')
   const [ocrCandidateKValue, setOcrCandidateKValue] = useState(DEFAULT_OCR_CANDIDATE_K)
+  const [asrQueryValue, setAsrQueryValue] = useState('')
+  const [asrVideoCandidateKValue, setAsrVideoCandidateKValue] = useState(
+    DEFAULT_ASR_VIDEO_CANDIDATE_K,
+  )
   const [candidatePool, setCandidatePool] = useState<KisCandidatePoolState | null>(null)
   const [stage2Queries, setStage2Queries] = useState<KisQueryRow[]>([])
   const [finalTopK, setFinalTopK] = useState(DEFAULT_TOP_K)
@@ -154,6 +179,16 @@ export function useSearch(): UseSearchResult {
 
   const setOcrCandidateK = useCallback((topK: number) => {
     setOcrCandidateKValue(topK)
+    invalidateCandidatePool()
+  }, [invalidateCandidatePool])
+
+  const setAsrQuery = useCallback((query: string) => {
+    setAsrQueryValue(query)
+    invalidateCandidatePool()
+  }, [invalidateCandidatePool])
+
+  const setAsrVideoCandidateK = useCallback((topK: number) => {
+    setAsrVideoCandidateKValue(topK)
     invalidateCandidatePool()
   }, [invalidateCandidatePool])
 
@@ -244,6 +279,7 @@ export function useSearch(): UseSearchResult {
   const retrieveCandidates = useCallback((overrideQuery?: string) => {
     const textQuery = (overrideQuery ?? globalTextQueryValue).trim()
     const ocrQuery = ocrQueryValue.trim()
+    const asrQuery = asrQueryValue.trim()
     if (!textQuery && !ocrQuery) return
     abortRef.current?.abort()
     const controller = new AbortController()
@@ -258,19 +294,28 @@ export function useSearch(): UseSearchResult {
         text_top_k: textCandidateKValue,
         ocr_query: ocrQuery || null,
         ocr_top_k: ocrCandidateKValue,
+        asr_query: asrQuery || null,
+        asr_video_top_k: asrVideoCandidateKValue,
       },
       controller.signal,
     )
       .then((response) => {
-        const hits = response.results.map((hit) => ({
-          ...hit,
-          candidate_pool_size: response.candidate_pool_size,
-        }))
+        const asrGate = response.asr_gate ?? null
+        const asrEvidenceByVideo = new Map(
+          (asrGate?.videos ?? []).map((video) => [video.video_id, video]),
+        )
+        const hits = response.results.map((hit) =>
+          withAsrEvidence(
+            { ...hit, candidate_pool_size: response.candidate_pool_size },
+            asrEvidenceByVideo,
+          ),
+        )
         const pool = {
           candidateIds: response.candidate_ids,
           candidatePoolSize: response.candidate_pool_size,
           textCandidateCount: response.text_candidate_count,
           ocrCandidateCount: response.ocr_candidate_count,
+          asrGate,
           hits,
         }
         setCandidatePool(pool)
@@ -287,7 +332,15 @@ export function useSearch(): UseSearchResult {
       .finally(() => {
         if (abortRef.current === controller) setIsLoading(false)
       })
-  }, [finalTopK, globalTextQueryValue, ocrCandidateKValue, ocrQueryValue, textCandidateKValue])
+  }, [
+    asrQueryValue,
+    asrVideoCandidateKValue,
+    finalTopK,
+    globalTextQueryValue,
+    ocrCandidateKValue,
+    ocrQueryValue,
+    textCandidateKValue,
+  ])
 
   const rerankCandidates = useCallback(() => {
     const subqueries = activePayload(stage2Queries)
@@ -308,6 +361,9 @@ export function useSearch(): UseSearchResult {
     setError(null)
     const start = performance.now()
     const stage1ById = new Map(candidatePool.hits.map((hit) => [hit.keyframe_id, hit]))
+    const asrEvidenceByVideo = new Map(
+      (candidatePool.asrGate?.videos ?? []).map((video) => [video.video_id, video]),
+    )
 
     rerankKisCandidatesApi(
       {
@@ -319,11 +375,16 @@ export function useSearch(): UseSearchResult {
     )
       .then((response) => {
         setResults(
-          response.results.map((hit) => ({
-            ...hit,
-            stage1: stage1ById.get(hit.keyframe_id)?.stage1,
-            candidate_pool_size: response.candidate_pool_size,
-          })),
+          response.results.map((hit) =>
+            withAsrEvidence(
+              {
+                ...hit,
+                stage1: stage1ById.get(hit.keyframe_id)?.stage1,
+                candidate_pool_size: response.candidate_pool_size,
+              },
+              asrEvidenceByVideo,
+            ),
+          ),
         )
         setLatencyMs(performance.now() - start)
       })
@@ -368,6 +429,10 @@ export function useSearch(): UseSearchResult {
     setOcrQuery,
     ocrCandidateK: ocrCandidateKValue,
     setOcrCandidateK,
+    asrQuery: asrQueryValue,
+    setAsrQuery,
+    asrVideoCandidateK: asrVideoCandidateKValue,
+    setAsrVideoCandidateK,
     candidatePool,
     stage2Queries,
     setStage2QueryText,

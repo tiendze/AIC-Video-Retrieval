@@ -1,6 +1,12 @@
 import { forwardRef } from 'react'
-import { MAX_CANDIDATE_K, MAX_TOP_K, MIN_TOP_K } from '../api/constants'
-import type { KisQueryRow, KisQueryType } from '../api/types'
+import {
+  MAX_ASR_QUERY_LENGTH,
+  MAX_ASR_VIDEO_CANDIDATE_K,
+  MAX_CANDIDATE_K,
+  MAX_TOP_K,
+  MIN_TOP_K,
+} from '../api/constants'
+import type { AsrGate, KisQueryRow, KisQueryType } from '../api/types'
 import { QueryInput } from './QueryInput'
 import styles from './SearchBar.module.css'
 
@@ -9,6 +15,11 @@ export interface SearchBarProps {
   textCandidateK: number
   ocrQuery: string
   ocrCandidateK: number
+  asrQuery: string
+  asrVideoCandidateK: number
+  asrGate: AsrGate | null
+  asrDisabled: boolean
+  asrReadinessMessage: string | null
   candidatePoolSize: number | null
   textCandidateCount: number
   ocrCandidateCount: number
@@ -18,6 +29,8 @@ export interface SearchBarProps {
   onTextCandidateKChange: (value: number) => void
   onOcrQueryChange: (value: string) => void
   onOcrCandidateKChange: (value: number) => void
+  onAsrQueryChange: (value: string) => void
+  onAsrVideoCandidateKChange: (value: number) => void
   onStage2QueryTextChange: (id: string, value: string) => void
   onStage2QueryTypeChange: (id: string, type: KisQueryType) => void
   onAbePairAttributeChange: (queryId: string, pairId: string, value: string) => void
@@ -40,6 +53,11 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
     textCandidateK,
     ocrQuery,
     ocrCandidateK,
+    asrQuery,
+    asrVideoCandidateK,
+    asrGate,
+    asrDisabled,
+    asrReadinessMessage,
     candidatePoolSize,
     textCandidateCount,
     ocrCandidateCount,
@@ -49,6 +67,8 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
     onTextCandidateKChange,
     onOcrQueryChange,
     onOcrCandidateKChange,
+    onAsrQueryChange,
+    onAsrVideoCandidateKChange,
     onStage2QueryTextChange,
     onStage2QueryTypeChange,
     onAbePairAttributeChange,
@@ -135,7 +155,31 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
             disabled={ocrDisabled}
             onChange={onOcrCandidateKChange}
           />
+          <label className={styles.fieldWide}>
+            <span>Optional ASR topic/dialogue</span>
+            <QueryInput
+              aria-label="stage 1 asr"
+              type="text"
+              maxLength={MAX_ASR_QUERY_LENGTH}
+              placeholder="công trình thủy lợi đập hồ chứa"
+              value={asrQuery}
+              disabled={asrDisabled}
+              onValueChange={onAsrQueryChange}
+            />
+          </label>
+          <NumberField
+            label="ASR candidate videos"
+            ariaLabel="asr candidate videos"
+            value={asrVideoCandidateK}
+            min={1}
+            max={MAX_ASR_VIDEO_CANDIDATE_K}
+            disabled={asrDisabled}
+            onChange={onAsrVideoCandidateKChange}
+          />
         </div>
+        {asrReadinessMessage && (
+          <span className={styles.asrReadiness}>{asrReadinessMessage}</span>
+        )}
         <div className={styles.actions}>
           <button type="submit" className={styles.submit} disabled={!hasStage1Input}>
             Retrieve Candidates
@@ -151,7 +195,14 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
           </button>
           {candidatePoolSize !== null && (
             <span className={styles.poolBreakdown}>
-              Text {textCandidateCount} · OCR {ocrCandidateCount}
+              {`Text ${textCandidateCount} · OCR ${ocrCandidateCount}${
+                asrGate ? ` · ASR ${asrGate.candidate_video_count} videos` : ''
+              }`}
+            </span>
+          )}
+          {asrGate?.candidate_video_count === 0 && (
+            <span className={styles.hint}>
+              No transcript video matched—clear or revise the ASR query.
             </span>
           )}
         </div>

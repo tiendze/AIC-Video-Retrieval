@@ -2,8 +2,30 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ComponentProps } from 'react'
 import { describe, expect, it, vi } from 'vitest'
-import type { KisQueryRow } from '../api/types'
+import type { AsrGate, KisQueryRow } from '../api/types'
 import { SearchBar } from './SearchBar'
+
+const ASR_GATE: AsrGate = {
+  query: 'thủy lợi',
+  segment_hit_count: 57,
+  candidate_video_count: 1,
+  videos: [
+    {
+      video_id: 'V1',
+      video_rank: 1,
+      best_bm25_score: 8.73,
+      segments: [
+        {
+          segment_id: 'V1_seg1',
+          text: 'công trình thủy lợi',
+          start_time: 151.2,
+          end_time: 158.4,
+          raw_bm25: 8.73,
+        },
+      ],
+    },
+  ],
+}
 
 describe('SearchBar', () => {
   function renderSearchBar(overrides: Partial<ComponentProps<typeof SearchBar>> = {}) {
@@ -12,6 +34,11 @@ describe('SearchBar', () => {
       textCandidateK: 300,
       ocrQuery: '',
       ocrCandidateK: 100,
+      asrQuery: '',
+      asrVideoCandidateK: 20,
+      asrGate: null,
+      asrDisabled: false,
+      asrReadinessMessage: null,
       candidatePoolSize: null,
       textCandidateCount: 0,
       ocrCandidateCount: 0,
@@ -21,6 +48,8 @@ describe('SearchBar', () => {
       onTextCandidateKChange: vi.fn(),
       onOcrQueryChange: vi.fn(),
       onOcrCandidateKChange: vi.fn(),
+      onAsrQueryChange: vi.fn(),
+      onAsrVideoCandidateKChange: vi.fn(),
       onStage2QueryTextChange: vi.fn(),
       onStage2QueryTypeChange: vi.fn(),
       onAbePairAttributeChange: vi.fn(),
@@ -65,6 +94,58 @@ describe('SearchBar', () => {
 
     expect(props.onTextCandidateKChange).toHaveBeenLastCalledWith(250)
     expect(props.onOcrCandidateKChange).toHaveBeenLastCalledWith(75)
+  })
+
+  it('renders ASR controls and reports the active gated video count', () => {
+    const props = renderSearchBar({
+      asrQuery: 'thủy lợi',
+      asrVideoCandidateK: 20,
+      asrGate: { ...ASR_GATE, candidate_video_count: 12 },
+      candidatePoolSize: 300,
+      textCandidateCount: 300,
+      ocrCandidateCount: 0,
+    })
+
+    expect(screen.getByLabelText('stage 1 asr')).toHaveValue('thủy lợi')
+    expect(screen.getByLabelText('stage 1 asr')).toHaveAttribute('maxlength', '1000')
+    expect(screen.getByLabelText('asr candidate videos')).toHaveValue(20)
+    expect(screen.getByLabelText('asr candidate videos')).toHaveAttribute('max', '100')
+    expect(screen.getByText('Text 300 · OCR 0 · ASR 12 videos')).toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('stage 1 asr'), {
+      target: { value: 'new topic' },
+    })
+    fireEvent.change(screen.getByLabelText('asr candidate videos'), {
+      target: { value: '10' },
+    })
+    expect(props.onAsrQueryChange).toHaveBeenLastCalledWith('new topic')
+    expect(props.onAsrVideoCandidateKChange).toHaveBeenLastCalledWith(10)
+  })
+
+  it('keeps an active zero-hit ASR gate visible with revision guidance', () => {
+    renderSearchBar({
+      asrQuery: 'không có kết quả',
+      asrGate: { ...ASR_GATE, candidate_video_count: 0, videos: [] },
+      candidatePoolSize: 0,
+    })
+
+    expect(screen.getByText('Text 0 · OCR 0 · ASR 0 videos')).toBeInTheDocument()
+    expect(
+      screen.getByText('No transcript video matched—clear or revise the ASR query.'),
+    ).toBeInTheDocument()
+  })
+
+  it('disables only ASR controls with their readiness reason', () => {
+    renderSearchBar({
+      asrDisabled: true,
+      asrReadinessMessage: 'The ASR transcript index is empty.',
+    })
+
+    expect(screen.getByLabelText('stage 1 asr')).toBeDisabled()
+    expect(screen.getByLabelText('asr candidate videos')).toBeDisabled()
+    expect(screen.getByText('The ASR transcript index is empty.')).toBeInTheDocument()
+    expect(screen.getByLabelText('stage 1 ocr')).toBeEnabled()
+    expect(screen.getByLabelText('ocr candidates')).toBeEnabled()
   })
 
   it('calls onEnhance with Text Q0 when the AI enhancer button is clicked', async () => {

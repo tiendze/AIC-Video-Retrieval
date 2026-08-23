@@ -12,6 +12,9 @@ const UNREACHABLE_STATUS: HealthStatus = {
   milvus_ok: false,
   elasticsearch_ok: false,
   mongodb_ok: false,
+  asr_status: 'unreachable',
+  asr_ready: false,
+  asr_segment_count: null,
 }
 
 // `null` = not checked yet -- callers should treat this as "unknown", not
