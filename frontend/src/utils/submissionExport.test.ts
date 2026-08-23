@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { SearchHit, TrakeVideoResultItem } from '../api/types'
 import {
   buildKisFinalRanking,
+  buildKisSubmissionRows,
   buildRawFrameSweep,
   buildTrakeFinalRanking,
   buildVqaFinalRows,
@@ -66,22 +67,56 @@ describe('submissionExport', () => {
     )
   })
 
-  it('builds raw-frame sweep around a center frame and keeps the center', () => {
-    expect(buildRawFrameSweep(1000, { step: 10, marginCount: 3 })).toEqual([
-      970,
-      980,
-      990,
-      1000,
-      1010,
-      1020,
-      1030,
+  it('builds raw-frame sweep in center-first alternating order', () => {
+    expect(buildRawFrameSweep(90, { step: 10, margin: 40 })).toEqual([
+      90,
+      80,
+      100,
+      70,
+      110,
+      60,
+      120,
+      50,
+      130,
     ])
-    expect(buildRawFrameSweep(15, { step: 10, marginCount: 3 })).toEqual([5, 15, 25, 35, 45])
+    expect(buildRawFrameSweep(90, { step: 10, margin: 40, maxRows: 5 })).toEqual([
+      90,
+      80,
+      100,
+      70,
+      110,
+    ])
+    expect(buildRawFrameSweep(15, { step: 10, margin: 30 })).toEqual([15, 5, 25, 35, 45])
   })
 
-  it('expands KIS CSV rows with raw-frame sweep settings', () => {
-    expect(serializeKisCsv([hit(1000)], { step: 10, marginCount: 1 })).toBe(
-      'L30_V006,990\nL30_V006,1000\nL30_V006,1010',
+  it('exports primary margin frames first, then fills from fused image ranking', () => {
+    const rows = buildKisSubmissionRows([hit(90), hit(100), hit(200, 'L30_V007')], {
+      step: 10,
+      margin: 20,
+      maxRows: 5,
+    })
+
+    expect(rows.map((row) => `${row.video_id}:${row.frame_idx}`)).toEqual([
+      'L30_V006:90',
+      'L30_V006:80',
+      'L30_V006:100',
+      'L30_V006:70',
+      'L30_V006:110',
+    ])
+  })
+
+  it('deduplicates selected and margin frames before image-ranking fallback', () => {
+    expect(
+      serializeKisCsv([hit(90), hit(80), hit(100), hit(200, 'L30_V007')], {
+        step: 10,
+        margin: 10,
+        maxRows: 4,
+      }),
+    ).toBe(
+      'L30_V006,90\n' +
+        'L30_V006,80\n' +
+        'L30_V006,100\n' +
+        'L30_V007,200',
     )
   })
 

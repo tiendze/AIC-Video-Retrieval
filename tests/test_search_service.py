@@ -560,10 +560,13 @@ async def test_kis_stage1_text_and_ocr_use_independent_k_and_deduplicate_union()
     assert pool.candidate_pool_size == 3
     assert pool.text_candidate_count == 2
     assert pool.ocr_candidate_count == 2
-    assert [hit.keyframe_id for hit in pool.results] == ["B", "A", "C"]
-    assert pool.results[0].stage1.source_modalities == ["text", "ocr"]
-    assert pool.results[1].stage1.source_modalities == ["text"]
-    assert pool.results[1].stage1.ocr.query_score == pytest.approx(0.0)
+    assert [hit.keyframe_id for hit in pool.results] == ["A", "B", "C"]
+    assert pool.results[0].score == pytest.approx(0.9)
+    assert pool.results[1].score == pytest.approx(0.8)
+    assert pool.results[1].stage1.source_modalities == ["text", "ocr"]
+    assert pool.results[1].stage1.ocr.query_score == pytest.approx(1.0)
+    assert pool.results[0].stage1.source_modalities == ["text"]
+    assert pool.results[0].stage1.ocr.query_score == pytest.approx(0.0)
 
 
 async def test_kis_stage1_multi_text_queries_union_deduplicate_and_fuse_true_cosines():

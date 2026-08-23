@@ -235,6 +235,9 @@ class Stage1TitleScore:
     video_title: str
     title_score: float
     rank: int
+    match_type: str | None = None
+    matched_text: str | None = None
+    matched_tokens: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

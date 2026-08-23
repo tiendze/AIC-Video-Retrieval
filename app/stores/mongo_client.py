@@ -69,6 +69,26 @@ class VideoDocument:
     channel_id: str
 
 
+@dataclass(frozen=True)
+class NormalizedTitleText:
+    text: str
+    tokens: list[str]
+    ascii_text: str
+    ascii_tokens: list[str]
+
+
+@dataclass(frozen=True)
+class TitleMatch:
+    detected: bool
+    match_type: str = "none"
+    matched_tokens: tuple[str, ...] = ()
+    score: float = 0.0
+
+    @property
+    def matched_text(self) -> str:
+        return " ".join(self.matched_tokens)
+
+
 class MongoStore:
     """Metadata store for the `keyframes` and `videos` collections."""
 
@@ -172,22 +192,22 @@ class MongoStore:
         small enough to score in process. This keeps Title independent from OCR
         while avoiding a new retrieval subsystem.
         """
-        query_tokens = _title_tokens(query_text)
-        if not query_tokens or top_k <= 0:
+        query = normalize_title_text(query_text)
+        if not query.tokens or top_k <= 0:
             return []
 
         scored: list[tuple[float, str, dict[str, Any]]] = []
         async for doc in self.scroll_all_videos():
             title = str(doc.get("title", ""))
-            normalized_title = _normalize_title(title)
-            if not normalized_title:
+            title_match = match_title_query(query_text, title)
+            if not title_match.detected:
                 continue
-            token_hits = sum(1 for token in query_tokens if token in normalized_title)
-            if token_hits == 0:
-                continue
-            exact_bonus = 1.0 if _normalize_title(query_text) in normalized_title else 0.0
-            score = token_hits / len(query_tokens) + exact_bonus
-            scored.append((score, str(doc.get("video_id", "")), doc))
+            scored.append((title_match.score, str(doc.get("video_id", "")), {
+                **doc,
+                "title_match_type": title_match.match_type,
+                "title_matched_text": title_match.matched_text,
+                "title_matched_tokens": list(title_match.matched_tokens),
+            }))
 
         scored.sort(key=lambda item: (-item[0], item[1]))
         return [{**doc, "score": score} for score, _, doc in scored[:top_k]]
@@ -270,13 +290,74 @@ def _video_document_to_dict(doc: VideoDocument) -> dict[str, Any]:
     }
 
 
-def _normalize_title(text: str) -> str:
-    normalized = unicodedata.normalize("NFKD", text).lower()
-    without_marks = "".join(
-        char for char in normalized if unicodedata.category(char) != "Mn"
-    ).replace("đ", "d")
-    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", without_marks)).strip()
+def normalize_title_text(text: str) -> NormalizedTitleText:
+    normalized = _normalize_title_form(text, strip_accents=False)
+    ascii_normalized = _normalize_title_form(text, strip_accents=True)
+    return NormalizedTitleText(
+        text=normalized,
+        tokens=normalized.split() if normalized else [],
+        ascii_text=ascii_normalized,
+        ascii_tokens=ascii_normalized.split() if ascii_normalized else [],
+    )
 
 
-def _title_tokens(text: str) -> list[str]:
-    return [token for token in _normalize_title(text).split() if token]
+def match_title_query(query_text: str, title: str) -> TitleMatch:
+    query = normalize_title_text(query_text)
+    candidate = normalize_title_text(title)
+    if not query.ascii_tokens or not candidate.ascii_tokens:
+        return TitleMatch(detected=False)
+
+    if len(query.ascii_tokens) == 1:
+        query_token = query.ascii_tokens[0]
+        for index, token in enumerate(candidate.ascii_tokens):
+            if token == query_token:
+                return TitleMatch(
+                    detected=True,
+                    match_type="token",
+                    matched_tokens=(candidate.tokens[index],),
+                    score=1.0,
+                )
+        return TitleMatch(detected=False)
+
+    phrase_start = _find_token_phrase(candidate.ascii_tokens, query.ascii_tokens)
+    if phrase_start is None:
+        return TitleMatch(detected=False)
+    phrase_end = phrase_start + len(query.ascii_tokens)
+    matched_tokens = tuple(candidate.tokens[phrase_start:phrase_end])
+    return TitleMatch(
+        detected=True,
+        match_type="phrase",
+        matched_tokens=matched_tokens,
+        score=2.0 + len(query.ascii_tokens),
+    )
+
+
+def _normalize_title_form(text: str, strip_accents: bool) -> str:
+    normalized = unicodedata.normalize("NFKC", text).lower()
+    if strip_accents:
+        normalized = _strip_title_accents(normalized)
+    chars: list[str] = []
+    for char in normalized:
+        category = unicodedata.category(char)
+        if category.startswith("L") or category.startswith("N"):
+            chars.append(char)
+        else:
+            chars.append(" ")
+    return re.sub(r"\s+", " ", "".join(chars)).strip()
+
+
+def _strip_title_accents(text: str) -> str:
+    text = text.replace("đ", "d")
+    decomposed = unicodedata.normalize("NFD", text)
+    without_marks = "".join(char for char in decomposed if unicodedata.category(char) != "Mn")
+    return unicodedata.normalize("NFC", without_marks)
+
+
+def _find_token_phrase(tokens: Sequence[str], phrase: Sequence[str]) -> int | None:
+    if len(phrase) > len(tokens):
+        return None
+    phrase_tuple = tuple(phrase)
+    for start in range(len(tokens) - len(phrase) + 1):
+        if tuple(tokens[start : start + len(phrase)]) == phrase_tuple:
+            return start
+    return None

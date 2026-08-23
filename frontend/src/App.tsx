@@ -112,12 +112,14 @@ function App() {
   const [viewMode, setViewMode] = useState<RetrievalViewMode>('ranked')
   const [groupSortMode, setGroupSortMode] = useState<VideoGroupSortMode>('best')
   const [videoFilter, setVideoFilter] = useState('')
+  const [excludedVideoIds, setExcludedVideoIds] = useState<Set<string>>(() => new Set())
   const [kisFrameSweepStep, setKisFrameSweepStep] = useState(10)
   const [kisFrameSweepMargin, setKisFrameSweepMargin] = useState(0)
-  const visibleResults = useMemo(
-    () => filterHitsByVideoIds(results, videoFilter),
-    [results, videoFilter],
-  )
+  const visibleResults = useMemo(() => {
+    const filtered = filterHitsByVideoIds(results, videoFilter)
+    if (excludedVideoIds.size === 0) return filtered
+    return filtered.filter((hit) => !excludedVideoIds.has(hit.video_id))
+  }, [excludedVideoIds, results, videoFilter])
 
   // QUEST (plan §P2.5, PRD §F5). Both branches push hits into the exact
   // same grid a regular search populates -- latencyMs resets to null
@@ -151,6 +153,7 @@ function App() {
   }, [visibleResults])
 
   useEffect(() => {
+    setExcludedVideoIds(new Set())
     setKisSelection((prev) => syncSearchSelectionWithResults(prev, results))
     setVqaSelection((prev) => syncVqaSelectionWithResults(prev, results))
   }, [results])
@@ -198,16 +201,24 @@ function App() {
 
   function exportKisCsv(): void {
     const validation = validateCsvFilename(kisExportName, 'kis')
-    if (!validation.isValid) return
+    if (!validation.isValid || kisSelection.length === 0) return
     const rows = buildKisFinalRanking(visibleResults, kisSelection)
     if (rows.length === 0) return
     downloadCsv(
       validation.filename,
       serializeKisCsv(rows, {
         step: kisFrameSweepStep,
-        marginCount: kisFrameSweepMargin,
+        margin: kisFrameSweepMargin,
       }),
     )
+  }
+
+  function excludeVideo(videoId: string): void {
+    setExcludedVideoIds((prev) => {
+      const next = new Set(prev)
+      next.add(videoId)
+      return next
+    })
   }
 
   function exportVqaCsv(): void {
@@ -415,6 +426,8 @@ function App() {
                 onGroupSortModeChange={setGroupSortMode}
                 videoFilter={videoFilter}
                 onVideoFilterChange={setVideoFilter}
+                excludedCount={excludedVideoIds.size}
+                onClearExcludedVideos={() => setExcludedVideoIds(new Set())}
                 filteredCount={visibleResults.length}
                 totalCount={results.length}
               />
@@ -446,6 +459,7 @@ function App() {
                   onFindSimilar={findSimilar}
                   onToggleManualSelection={toggleSearchManualSelection}
                   onOpenDetail={openDetail}
+                  onExcludeVideo={excludeVideo}
                 />
               )}
             </div>

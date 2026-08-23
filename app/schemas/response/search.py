@@ -12,7 +12,7 @@ for existing callers/tests/debugging."""
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class TextQueryScoreResponse(BaseModel):
@@ -123,6 +123,9 @@ class Stage1TitleScoreResponse(BaseModel):
     video_title: str
     title_score: float
     rank: int
+    match_type: str | None = None
+    matched_text: str | None = None
+    matched_tokens: list[str] = Field(default_factory=list)
 
 
 class Stage1RetrievalResponse(BaseModel):

@@ -2,7 +2,7 @@ import type { ReactNode } from 'react'
 import type { SearchHit } from '../api/types'
 import {
   buildKisFinalRanking,
-  buildRawFrameSweep,
+  buildKisSubmissionRows,
   buildVqaFinalRows,
   suggestedFilename,
   validateCsvFilename,
@@ -67,21 +67,16 @@ export function KisSelectionPanel({
   const activeName = mode === 'kis' ? kisExportName : vqaExportName
   const validation = validateCsvFilename(activeName, mode)
   const finalKisRows = buildKisFinalRanking(results, kisSelection)
-  const finalKisSubmissionRowCount = finalKisRows.reduce(
-    (count, hit) =>
-      count +
-      buildRawFrameSweep(hit.frame_idx, {
-        step: kisFrameSweepStep,
-        marginCount: kisFrameSweepMargin,
-      }).length,
-    0,
-  )
+  const finalKisSubmissionRows = buildKisSubmissionRows(finalKisRows, {
+    step: kisFrameSweepStep,
+    margin: kisFrameSweepMargin,
+  })
   const finalVqaRows = buildVqaFinalRows(vqaSelection)
   const missingAnswers = vqaSelection.filter((item) => item.answer.length === 0)
   const overLimitAnswers = vqaSelection.filter((item) => item.answer.length > 100)
   const disableReason =
     mode === 'kis'
-      ? kisDisableReason(validation.isValid, finalKisRows.length)
+      ? kisDisableReason(validation.isValid, kisSelection.length, finalKisSubmissionRows.length)
       : vqaDisableReason(
           validation.isValid,
           vqaSelection.length,
@@ -153,7 +148,7 @@ export function KisSelectionPanel({
         <KisSelectedList
           selection={kisSelection}
           finalCount={finalKisRows.length}
-          submissionRowCount={finalKisSubmissionRowCount}
+          submissionRows={finalKisSubmissionRows}
           frameSweepStep={kisFrameSweepStep}
           frameSweepMargin={kisFrameSweepMargin}
           onFrameSweepStepChange={onKisFrameSweepStepChange}
@@ -191,7 +186,7 @@ export function KisSelectionPanel({
 function KisSelectedList({
   selection,
   finalCount,
-  submissionRowCount,
+  submissionRows,
   frameSweepStep,
   frameSweepMargin,
   onFrameSweepStepChange,
@@ -202,7 +197,7 @@ function KisSelectedList({
 }: {
   selection: SelectedSearchItem[]
   finalCount: number
-  submissionRowCount: number
+  submissionRows: SearchHit[]
   frameSweepStep: number
   frameSweepMargin: number
   onFrameSweepStepChange: (value: number) => void
@@ -218,7 +213,7 @@ function KisSelectedList({
         <span>{selection.length}</span>
       </div>
       <div className={styles.hint}>
-        Final KIS ranking has {finalCount} center frame(s); CSV writes {submissionRowCount} row(s).
+        Final image ranking has {finalCount} frame(s); CSV writes {submissionRows.length} row(s).
       </div>
       <div className={styles.sweepGrid}>
         <label className={styles.label}>
@@ -232,7 +227,7 @@ function KisSelectedList({
           />
         </label>
         <label className={styles.label}>
-          Margin count
+          Margin
           <input
             className={styles.input}
             type="number"
@@ -263,6 +258,7 @@ function KisSelectedList({
               />
             ))}
           </div>
+          <SubmissionPreview rows={submissionRows} primaryKey={selection[0]?.key ?? null} />
         </>
       )}
     </section>
@@ -409,8 +405,43 @@ function isVqaItem(item: SelectedSearchItem): item is SelectedVqaItem {
   return 'answer' in item && typeof item.answer === 'string'
 }
 
-function kisDisableReason(isFilenameValid: boolean, finalRowCount: number): string | null {
+function SubmissionPreview({
+  rows,
+  primaryKey,
+}: {
+  rows: SearchHit[]
+  primaryKey: string | null
+}) {
+  if (rows.length === 0) return null
+  return (
+    <div className={styles.preview}>
+      <div className={styles.sectionHeader}>
+        <span>Submission order</span>
+        <span>{rows.length}</span>
+      </div>
+      {rows.slice(0, 12).map((hit, index) => {
+        const key = `${hit.video_id}:${hit.frame_idx}`
+        const isPrimary = primaryKey === key
+        return (
+          <div className={styles.previewRow} key={`${key}:${index}`}>
+            <span>{index + 1}</span>
+            <strong>{hit.video_id}</strong>
+            <span>frame {hit.frame_idx}</span>
+            {isPrimary && <em>selected</em>}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function kisDisableReason(
+  isFilenameValid: boolean,
+  selectedCount: number,
+  finalRowCount: number,
+): string | null {
   if (!isFilenameValid) return 'Fix the export filename before exporting.'
+  if (selectedCount === 0) return 'Select a primary KIS frame before exporting.'
   if (finalRowCount === 0) return 'No KIS rows available to export.'
   return null
 }

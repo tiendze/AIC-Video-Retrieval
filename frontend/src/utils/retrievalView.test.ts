@@ -46,6 +46,27 @@ describe('retrievalView utilities', () => {
     expect(groups[1]).toMatchObject({ videoId: 'B', bestRank: 2, matchCount: 1 })
   })
 
+  it('applies OCR and Title OCR priority before best image rank', () => {
+    const groups = buildVideoGroups(
+      [
+        withEvidence(hit('A', 10, 50), { ocr: true, title: true }),
+        withEvidence(hit('B', 20, 1), {}),
+        withEvidence(hit('C', 30, 4), { title: true }),
+        withEvidence(hit('D', 40, 10), { ocr: true }),
+      ],
+      'best',
+      60,
+    )
+
+    expect(groups.map((group) => group.videoId)).toEqual(['A', 'C', 'D', 'B'])
+    expect(groups.map((group) => group.finalVideoRank)).toEqual([1, 2, 3, 4])
+    expect(groups[0]).toMatchObject({
+      priorityTier: 0,
+      ocrDetected: true,
+      titleOcrDetected: true,
+    })
+  })
+
   it('sorts video groups by cross-query RRF from original per-query ranks', () => {
     const hits: SearchHit[] = [
       withOriginalRanks(hit('A', 10, 2), [
@@ -66,6 +87,32 @@ describe('retrievalView utilities', () => {
 
     expect(groups.map((group) => group.videoId)).toEqual(['A', 'B', 'C'])
   })
+
+  it('applies OCR priority before RRF and then RRF within the same priority tier', () => {
+    const hits: SearchHit[] = [
+      withEvidence(withOriginalRanks(hit('A', 10, 50), [[0, 40]]), {
+        ocr: true,
+        title: true,
+      }),
+      withEvidence(withOriginalRanks(hit('B', 20, 10), [[0, 30]]), { ocr: true }),
+      withEvidence(withOriginalRanks(hit('C', 30, 4), [[0, 5]]), { title: true }),
+      withEvidence(withOriginalRanks(hit('D', 40, 1), [[0, 1]]), {}),
+    ]
+
+    const groups = buildVideoGroups(hits, 'rrf', 60)
+
+    expect(groups.map((group) => group.videoId)).toEqual(['A', 'C', 'B', 'D'])
+  })
+
+  it('assigns final video ranks after the caller hides a video', () => {
+    const visibleHits = [hit('B', 20, 2), hit('C', 30, 3)]
+    const groups = buildVideoGroups(visibleHits, 'best', 60)
+
+    expect(groups.map((group) => [group.videoId, group.finalVideoRank])).toEqual([
+      ['B', 1],
+      ['C', 2],
+    ])
+  })
 })
 
 function withOriginalRanks(hitItem: SearchHit, ranks: Array<[number, number]>): SearchHit {
@@ -80,6 +127,37 @@ function withOriginalRanks(hitItem: SearchHit, ranks: Array<[number, number]>): 
         original_rank: originalRank,
         rank: originalRank,
       })),
+    },
+  }
+}
+
+function withEvidence(
+  hitItem: SearchHit,
+  evidence: { ocr?: boolean; title?: boolean },
+): SearchHit {
+  const sourceModalities = ['text']
+  if (evidence.ocr) sourceModalities.push('ocr')
+  if (evidence.title) sourceModalities.push('title')
+  return {
+    ...hitItem,
+    stage1: {
+      ...hitItem.stage1,
+      source_modalities: sourceModalities as Array<'text' | 'ocr' | 'title'>,
+      ocr: {
+        query: 'London Zoo',
+        raw_bm25: evidence.ocr ? 5 : 0,
+        bm25_reference: 5,
+        bm25_normalized: evidence.ocr ? 1 : 0,
+        coverage: evidence.ocr ? 1 : 0,
+        query_score: evidence.ocr ? 1 : 0,
+        rank: evidence.ocr ? 1 : 4,
+      },
+      title: {
+        query: 'chicken',
+        video_title: evidence.title ? 'chicken soup' : '',
+        title_score: evidence.title ? 1 : 0,
+        rank: evidence.title ? 1 : 4,
+      },
     },
   }
 }

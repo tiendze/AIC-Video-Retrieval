@@ -184,7 +184,7 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
             onChange={onOcrCandidateKChange}
           />
           <label className={styles.fieldWide}>
-            <span>Optional Title</span>
+            <span>Optional Title OCR</span>
             <QueryInput
               aria-label="stage 1 title"
               type="text"
@@ -194,7 +194,7 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
             />
           </label>
           <NumberField
-            label="Title candidates"
+            label="Title OCR candidates"
             ariaLabel="title candidates"
             value={titleCandidateK}
             min={1}
@@ -217,7 +217,7 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
           </button>
           {candidatePoolSize !== null && (
             <span className={styles.poolBreakdown}>
-              Text {textCandidateCount} · OCR {ocrCandidateCount} · Title {titleCandidateCount}
+              Text {textCandidateCount} · OCR {ocrCandidateCount} · Title OCR {titleCandidateCount}
             </span>
           )}
         </div>

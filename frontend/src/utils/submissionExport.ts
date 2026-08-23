@@ -26,8 +26,10 @@ export interface FilenameValidation {
 
 export interface RawFrameSweepOptions {
   step: number
-  marginCount: number
+  margin?: number
+  marginCount?: number
   maxFrameIdx?: number
+  maxRows?: number
 }
 
 const TASK_SUFFIX: Record<ExportTask, string> = {
@@ -124,35 +126,55 @@ export function buildRawFrameSweep(
 ): number[] {
   const center = Math.trunc(centerFrameIdx)
   const step = Math.max(1, Math.trunc(options.step))
-  const marginCount = Math.max(0, Math.trunc(options.marginCount))
+  const margin = Math.max(0, Math.trunc(options.margin ?? (options.marginCount ?? 0) * step))
+  const maxRows = Math.max(1, Math.trunc(options.maxRows ?? Number.MAX_SAFE_INTEGER))
   const frames: number[] = []
-  for (let offset = -marginCount; offset <= marginCount; offset += 1) {
-    const frame = center + offset * step
-    if (frame < 0) continue
-    if (options.maxFrameIdx !== undefined && frame > options.maxFrameIdx) continue
-    frames.push(frame)
+  pushFrame(frames, center, options.maxFrameIdx)
+  for (let distance = step; distance <= margin && frames.length < maxRows; distance += step) {
+    pushFrame(frames, center - distance, options.maxFrameIdx)
+    if (frames.length >= maxRows) break
+    pushFrame(frames, center + distance, options.maxFrameIdx)
   }
-  if (!frames.includes(center) && center >= 0) {
-    frames.push(center)
+  return Array.from(new Set(frames)).slice(0, maxRows)
+}
+
+export function buildKisSubmissionRows(
+  finalImageRanking: SearchHit[],
+  sweepOptions: RawFrameSweepOptions = { step: 1, margin: 0 },
+): SearchHit[] {
+  const primary = finalImageRanking[0]
+  if (!primary) return []
+  const maxRows = Math.max(1, Math.trunc(sweepOptions.maxRows ?? MAX_SUBMISSION_ROWS))
+  const seen = new Set<string>()
+  const rows: SearchHit[] = []
+
+  for (const frame of buildRawFrameSweep(primary.frame_idx, {
+    ...sweepOptions,
+    maxRows,
+  })) {
+    addSubmissionRow(rows, seen, {
+      ...primary,
+      frame_idx: frame,
+      keyframe_id:
+        frame === primary.frame_idx ? primary.keyframe_id : `${primary.keyframe_id}:raw:${frame}`,
+    })
+    if (rows.length >= maxRows) return rows
   }
-  return Array.from(new Set(frames)).sort((left, right) => left - right)
+
+  for (const candidate of finalImageRanking) {
+    addSubmissionRow(rows, seen, candidate)
+    if (rows.length >= maxRows) break
+  }
+  return rows
 }
 
 export function serializeKisCsv(
   results: SearchHit[],
-  sweepOptions: RawFrameSweepOptions = { step: 1, marginCount: 0 },
+  sweepOptions: RawFrameSweepOptions = { step: 1, margin: 0 },
 ): string {
-  const seen = new Set<string>()
-  const rows: string[] = []
-  for (const hit of results) {
-    for (const frame of buildRawFrameSweep(hit.frame_idx, sweepOptions)) {
-      const key = `${hit.video_id}:${frame}`
-      if (seen.has(key)) continue
-      seen.add(key)
-      rows.push(`${hit.video_id},${frame}`)
-    }
-  }
-  return rows.join('\n')
+  return buildKisSubmissionRows(results, sweepOptions)
+    .map((hit) => `${hit.video_id},${Math.trunc(hit.frame_idx)}`)
+    .join('\n')
 }
 
 export function serializeVqaCsv(rows: SelectedVqaItem[]): string {
@@ -193,4 +215,17 @@ export function downloadCsv(filename: string, content: string): void {
 
 function quoteCsv(value: string): string {
   return `"${value.replace(/"/g, '""')}"`
+}
+
+function pushFrame(frames: number[], frame: number, maxFrameIdx?: number): void {
+  if (frame < 0) return
+  if (maxFrameIdx !== undefined && frame > maxFrameIdx) return
+  frames.push(frame)
+}
+
+function addSubmissionRow(rows: SearchHit[], seen: Set<string>, hit: SearchHit): void {
+  const key = searchHitKey(hit)
+  if (seen.has(key)) return
+  seen.add(key)
+  rows.push(hit)
 }

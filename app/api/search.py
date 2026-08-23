@@ -234,6 +234,9 @@ def _to_stage1_response(stage1: Stage1RetrievalScore | None) -> Stage1RetrievalR
                 video_title=stage1.title.video_title,
                 title_score=stage1.title.title_score,
                 rank=stage1.title.rank,
+                match_type=stage1.title.match_type,
+                matched_text=stage1.title.matched_text,
+                matched_tokens=list(stage1.title.matched_tokens),
             )
             if stage1.title is not None
             else None

@@ -163,6 +163,9 @@ export interface Stage1TitleScore {
   video_title: string
   title_score: number
   rank: number
+  match_type?: string
+  matched_text?: string
+  matched_tokens?: string[]
 }
 
 export interface Stage1RetrievalScore {

@@ -375,10 +375,11 @@ class SearchService:
                 for keyframe_id in candidate_ids
             }
 
-        if fused_text_scores_by_id is not None and not ocr_query and not title_query:
-            stage1_fused_scores = fused_text_scores_by_id
+        if fused_text_scores_by_id is not None:
+            stage1_rank_scores = fused_text_scores_by_id
+            image_rankings = rank_percentiles(fused_text_scores_by_id, candidate_ids)
         else:
-            stage1_fused_scores = _stage1_fused_scores(
+            stage1_rank_scores = _stage1_fused_scores(
                 candidate_ids=candidate_ids,
                 text_scores_by_id=fused_text_scores_by_id,
                 ocr_scores_by_id=(
@@ -392,7 +393,7 @@ class SearchService:
                 title_scores_by_id=title_scores_by_id,
                 config=self._kis_config,
             )
-        fused_rankings = rank_percentiles(stage1_fused_scores, candidate_ids)
+            image_rankings = None
 
         mongo_docs = await self._mongo_store.get_keyframes_by_ids(candidate_ids)
         valid_candidate_ids: list[str] = []
@@ -435,8 +436,13 @@ class SearchService:
             seen_frame_keys.add(frame_key)
 
             valid_candidate_ids.append(keyframe_id)
-            fused_rank = fused_rankings[keyframe_id].rank
-            fused_score = stage1_fused_scores.get(
+            image_score = (
+                fused_text_scores_by_id.get(keyframe_id)
+                if fused_text_scores_by_id is not None
+                else None
+            )
+            image_rank = image_rankings[keyframe_id].rank if image_rankings is not None else None
+            display_score = stage1_rank_scores.get(
                 keyframe_id,
                 _stage1_display_score(text_score, ocr_score, title_score),
             )
@@ -446,16 +452,16 @@ class SearchService:
                 ocr=ocr_score,
                 title=title_score,
                 text_queries=text_query_scores_by_id.get(keyframe_id, ()),
-                fused_image_score=fused_score if fused_text_scores_by_id is not None else None,
-                fused_image_rank=fused_rank if fused_text_scores_by_id is not None else None,
+                fused_image_score=image_score,
+                fused_image_rank=image_rank,
             )
             results.append(
                 SearchHit(
                     keyframe_id=keyframe_id,
                     video_id=metadata["video_id"],
-                    score=fused_score,
-                    fused_image_score=fused_score if fused_text_scores_by_id is not None else None,
-                    fused_image_rank=fused_rank if fused_text_scores_by_id is not None else None,
+                    score=display_score,
+                    fused_image_score=image_score,
+                    fused_image_rank=image_rank,
                     video_title=title_score.video_title if title_score is not None else None,
                     frame_idx=metadata["frame_idx"],
                     timestamp=metadata["timestamp"],
@@ -557,6 +563,9 @@ class SearchService:
                     video_title=video_hit.get("title", ""),
                     title_score=float(video_hit.get("score", 0.0)),
                     rank=video_rank,
+                    match_type=video_hit.get("title_match_type"),
+                    matched_text=video_hit.get("title_matched_text"),
+                    matched_tokens=tuple(video_hit.get("title_matched_tokens", ())),
                 )
                 if len(candidate_ids) >= top_k:
                     return candidate_ids, title_stage1_by_id

@@ -94,12 +94,16 @@ export function KisScoreInspector({ hit, embedded = false }: KisScoreInspectorPr
           )}
           {hit.stage1.title && (
             <div className={styles.queryBlock}>
-              <div className={styles.queryTitle}>Stage 1 Title</div>
+              <div className={styles.queryTitle}>Stage 1 Title OCR</div>
               <div className={styles.queryText} title={hit.stage1.title.video_title}>
                 "{hit.stage1.title.video_title}"
               </div>
-              <ScoreRow label="Title score" value={hit.stage1.title.title_score} />
-              <ScoreRow label="Title rank" value={hit.stage1.title.rank} digits={0} />
+              <ScoreRow label="Title OCR score" value={hit.stage1.title.title_score} />
+              <ScoreRow label="Title OCR rank" value={hit.stage1.title.rank} digits={0} />
+              <ScoreTextRow label="Title match" value={hit.stage1.title.match_type ?? 'strict'} />
+              {hit.stage1.title.matched_text && (
+                <ScoreTextRow label="Matched text" value={hit.stage1.title.matched_text} />
+              )}
             </div>
           )}
         </section>

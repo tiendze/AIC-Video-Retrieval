@@ -13,8 +13,14 @@ export interface RankedHit {
 export interface VideoGroup {
   videoId: string
   bestRank: number
+  bestImageRank: number
+  bestImageScore: number | null
   matchCount: number
   rrfScore: number
+  ocrDetected: boolean
+  titleOcrDetected: boolean
+  priorityTier: number
+  finalVideoRank: number
   frames: RankedHit[]
 }
 
@@ -58,25 +64,45 @@ export function buildVideoGroups(
     frames.push(item)
     groupsByVideo.set(item.hit.video_id, frames)
   }
+  const ocrActive = hits.some((hit) => hit.stage1?.ocr !== undefined)
+  const titleOcrActive = hits.some((hit) => hit.stage1?.title !== undefined)
 
   const groups = Array.from(groupsByVideo.entries()).map(([videoId, frames]) => {
     const sortedFrames = [...frames].sort((a, b) => a.rank - b.rank)
+    const bestFrame = sortedFrames[0]
+    const ocrDetected = frames.some(({ hit }) => hitHasOcrEvidence(hit))
+    const titleOcrDetected = frames.some(({ hit }) => hitHasTitleOcrEvidence(hit))
+    const bestImageRank = bestFrame?.rank ?? Number.MAX_SAFE_INTEGER
     return {
       videoId,
-      bestRank: sortedFrames[0]?.rank ?? Number.MAX_SAFE_INTEGER,
+      bestRank: bestImageRank,
+      bestImageRank,
+      bestImageScore: bestFrame?.hit.fused_image_score ?? bestFrame?.hit.score ?? null,
       matchCount: sortedFrames.length,
       rrfScore: videoRrfScore(sortedFrames, rrfK),
+      ocrDetected,
+      titleOcrDetected,
+      priorityTier: videoPriorityTier({
+        ocrActive,
+        titleOcrActive,
+        ocrDetected,
+        titleOcrDetected,
+      }),
+      finalVideoRank: 0,
       frames: sortedFrames,
     }
   })
 
-  return groups.sort((left, right) => {
+  const sortedGroups = groups.sort((left, right) => {
+    const priorityDelta = left.priorityTier - right.priorityTier
+    if (priorityDelta !== 0) return priorityDelta
     if (sortMode === 'rrf') {
       const rrfDelta = right.rrfScore - left.rrfScore
       if (rrfDelta !== 0) return rrfDelta
     }
-    return left.bestRank - right.bestRank || left.videoId.localeCompare(right.videoId)
+    return left.bestImageRank - right.bestImageRank || left.videoId.localeCompare(right.videoId)
   })
+  return sortedGroups.map((group, index) => ({ ...group, finalVideoRank: index + 1 }))
 }
 
 function videoRrfScore(frames: RankedHit[], rrfK: number): number {
@@ -95,4 +121,35 @@ function videoRrfScore(frames: RankedHit[], rrfK: number): number {
     score += 1 / (rrfK + rank)
   }
   return score
+}
+
+function hitHasOcrEvidence(hit: SearchHit): boolean {
+  if (hit.stage1?.source_modalities?.includes('ocr')) return true
+  return (hit.stage1?.ocr?.query_score ?? 0) > 0
+}
+
+function hitHasTitleOcrEvidence(hit: SearchHit): boolean {
+  if (hit.stage1?.source_modalities?.includes('title')) return true
+  return (hit.stage1?.title?.title_score ?? 0) > 0
+}
+
+function videoPriorityTier({
+  ocrActive,
+  titleOcrActive,
+  ocrDetected,
+  titleOcrDetected,
+}: {
+  ocrActive: boolean
+  titleOcrActive: boolean
+  ocrDetected: boolean
+  titleOcrDetected: boolean
+}): number {
+  if (ocrActive && titleOcrActive) {
+    if (ocrDetected && titleOcrDetected) return 0
+    if (ocrDetected || titleOcrDetected) return 1
+    return 2
+  }
+  if (ocrActive) return ocrDetected ? 0 : 1
+  if (titleOcrActive) return titleOcrDetected ? 0 : 1
+  return 0
 }

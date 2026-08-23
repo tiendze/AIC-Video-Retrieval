@@ -14,6 +14,7 @@ export interface GroupedResultListProps {
   onFindSimilar: (hit: SearchHit) => void
   onToggleManualSelection?: (hit: SearchHit) => void
   onOpenDetail?: (hit: SearchHit) => void
+  onExcludeVideo?: (videoId: string) => void
 }
 
 export function GroupedResultList({
@@ -27,6 +28,7 @@ export function GroupedResultList({
   onFindSimilar,
   onToggleManualSelection,
   onOpenDetail,
+  onExcludeVideo,
 }: GroupedResultListProps) {
   const groups = buildVideoGroups(hits, sortMode, rrfK)
   if (groups.length === 0) {
@@ -38,10 +40,21 @@ export function GroupedResultList({
       {groups.map((group) => (
         <section className={styles.group} key={group.videoId}>
           <header className={styles.header}>
-            <strong>{group.videoId}</strong>
-            <span>Best rank #{group.bestRank}</span>
+            <strong>#{group.finalVideoRank} · {group.videoId}</strong>
+            {group.ocrDetected && <span className={styles.badge}>OCR</span>}
+            {group.titleOcrDetected && <span className={styles.badge}>TITLE OCR</span>}
+            <span>Best image rank #{group.bestImageRank}</span>
             <span>{group.matchCount} matches</span>
             {sortMode === 'rrf' && <span>RRF {group.rrfScore.toFixed(4)}</span>}
+            {onExcludeVideo && (
+              <button
+                type="button"
+                className={styles.exclude}
+                onClick={() => onExcludeVideo(group.videoId)}
+              >
+                Exclude
+              </button>
+            )}
           </header>
           <div className={styles.frames}>
             {group.frames.map(({ hit, rank }) => (

@@ -11,6 +11,8 @@ export interface ResultBrowserControlsProps {
   onGroupSortModeChange: (mode: VideoGroupSortMode) => void
   videoFilter: string
   onVideoFilterChange: (value: string) => void
+  excludedCount: number
+  onClearExcludedVideos?: () => void
   filteredCount: number
   totalCount: number
 }
@@ -22,6 +24,8 @@ export function ResultBrowserControls({
   onGroupSortModeChange,
   videoFilter,
   onVideoFilterChange,
+  excludedCount,
+  onClearExcludedVideos,
   filteredCount,
   totalCount,
 }: ResultBrowserControlsProps) {
@@ -34,7 +38,7 @@ export function ResultBrowserControls({
           aria-pressed={viewMode === 'ranked'}
           onClick={() => onViewModeChange('ranked')}
         >
-          Ranked
+          Images
         </button>
         <button
           type="button"
@@ -77,6 +81,11 @@ export function ResultBrowserControls({
       {videoFilter.trim() && (
         <button type="button" className={styles.clear} onClick={() => onVideoFilterChange('')}>
           Clear
+        </button>
+      )}
+      {excludedCount > 0 && (
+        <button type="button" className={styles.clear} onClick={onClearExcludedVideos}>
+          Clear excluded ({excludedCount})
         </button>
       )}
       <span className={styles.count}>
