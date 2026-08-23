@@ -6,6 +6,7 @@ from pathlib import Path
 import httpx
 import yaml
 from ddgs import DDGS
+from elasticsearch import ApiError
 from elasticsearch import ConnectionError as EsConnectionError
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,6 +23,7 @@ from app.api.videos import router as videos_router
 from app.config import CorsSettings, Settings
 from app.encoders.base import MultimodalEncoder
 from app.encoders.factory import build_encoder
+from app.services.asr_retrieval_service import AsrRetrievalConfig, AsrRetrievalService
 from app.services.query_translator import LocalNmtTranslator
 from app.services.quest_service import GeminiQueryRewriter, QueryRewriteService, QuestService
 from app.services.search_service import SearchService
@@ -34,7 +36,7 @@ from app.services.vqa_service import (
     VqaConfig,
     VqaService,
 )
-from app.stores.es_client import EsStore
+from app.stores.es_client import AsrEsStore, EsStore
 from app.stores.milvus_client import MilvusStore
 from app.stores.mongo_client import MongoStore
 
@@ -48,6 +50,7 @@ _QA_CONFIG_PATH = _REPO_ROOT / "configs" / "qa" / "vqa.yaml"
 # Mirrors scripts/run_ingest.py's _ES_OCR_INDEX_NAME -- the OCR branch writes
 # to this same index name, so the API must read from it, not a new default.
 _ES_OCR_INDEX_NAME = "ocr_keyframes"
+_ES_ASR_INDEX_NAME = "asr_segments"
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +83,19 @@ def _build_es_store(settings: Settings) -> EsStore:
         index_name=_ES_OCR_INDEX_NAME,
         api_key=settings.elastic_api_key.get_secret_value() if settings.elastic_api_key else None,
     )
+
+
+def _build_asr_es_store(settings: Settings) -> AsrEsStore:
+    return AsrEsStore(
+        url=settings.elasticsearch_url,
+        index_name=_ES_ASR_INDEX_NAME,
+        api_key=settings.elastic_api_key.get_secret_value() if settings.elastic_api_key else None,
+    )
+
+
+def _build_asr_retrieval_service(asr_store: AsrEsStore) -> AsrRetrievalService:
+    config = AsrRetrievalConfig.from_mapping(_load_yaml(_SEARCH_CONFIG_PATH))
+    return AsrRetrievalService(asr_store, config)
 
 
 def _build_mongo_store(settings: Settings) -> MongoStore:
@@ -173,6 +189,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.encoder = _build_encoder()
     app.state.milvus_store = _build_milvus_store(settings, app.state.encoder)
     app.state.es_store = _build_es_store(settings)
+    app.state.asr_es_store = _build_asr_es_store(settings)
+    app.state.asr_retrieval_service = _build_asr_retrieval_service(app.state.asr_es_store)
     app.state.mongo_store = _build_mongo_store(settings)
     app.state.query_translator = _build_query_translator()
     app.state.thumbnail_service = _build_thumbnail_service(app.state.mongo_store)
@@ -189,6 +207,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         es_store=app.state.es_store,
         mongo_store=app.state.mongo_store,
         query_translator=app.state.query_translator,
+        asr_retrieval_service=app.state.asr_retrieval_service,
     )
     app.state.search_service = search_service
     app.state.quest_service = _build_quest_service(search_service, app.state.quest_http_client)
@@ -206,11 +225,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             "Elasticsearch unreachable at startup -- starting in semantic-only "
             "degraded mode (OCR search will return a clear error until it recovers)"
         )
+    try:
+        await app.state.asr_es_store.ensure_index()
+    except (EsConnectionError, ApiError):
+        logger.warning(
+            "ASR index unavailable at startup -- starting in semantic-only degraded mode"
+        )
     # Loaded once per FastAPI process. With multiple uvicorn workers, each
     # worker owns one RAM copy of the TRAKE corpus cache.
     await app.state.trake_embedding_cache.load()
     yield
     await app.state.quest_http_client.aclose()
+    await app.state.asr_es_store.close()
     await app.state.es_store.close()
     await app.state.mongo_store.close()
 

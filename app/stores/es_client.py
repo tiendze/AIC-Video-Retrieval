@@ -248,6 +248,13 @@ class AsrEsStore:
             },
         )
 
+    async def index_exists(self) -> bool:
+        return bool(await self._client.indices.exists(index=self._index_name))
+
+    async def count_segments(self) -> int:
+        response = await self._client.count(index=self._index_name)
+        return int(response["count"])
+
     async def bulk_index(self, docs: Sequence[AsrSegmentDocument]) -> None:
         if not docs:
             return

@@ -22,4 +22,7 @@ async def health(service: HealthService = Depends(get_health_service)) -> Health
         milvus_ok=report.milvus_ok,
         elasticsearch_ok=report.elasticsearch_ok,
         mongodb_ok=report.mongodb_ok,
+        asr_status=report.asr_status,
+        asr_ready=report.asr_ready,
+        asr_segment_count=report.asr_segment_count,
     )

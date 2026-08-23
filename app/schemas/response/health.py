@@ -12,3 +12,6 @@ class HealthResponse(BaseModel):
     milvus_ok: bool
     elasticsearch_ok: bool
     mongodb_ok: bool
+    asr_status: Literal["unreachable", "unavailable", "empty", "ready"]
+    asr_ready: bool
+    asr_segment_count: int | None
