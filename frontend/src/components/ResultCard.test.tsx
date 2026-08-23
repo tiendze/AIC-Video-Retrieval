@@ -18,6 +18,21 @@ const HIT: SearchHit = {
   image_url: '/api/keyframes/L21_V001_f10/image',
 }
 
+const ASR_VIDEO = {
+  video_id: 'L21_V001',
+  video_rank: 1,
+  best_bm25_score: 8.73,
+  segments: [
+    {
+      segment_id: 'L21_V001_seg10',
+      text: 'công trình thủy lợi',
+      start_time: 151.2,
+      end_time: 158.4,
+      raw_bm25: 8.73,
+    },
+  ],
+}
+
 describe('ResultCard', () => {
   it('shows video_id and timestamp as always-visible text, not only on hover', () => {
     render(<ResultCard hit={HIT} onSelect={vi.fn()} onFindSimilar={vi.fn()} />)
@@ -27,6 +42,19 @@ describe('ResultCard', () => {
     // this is the behavioral check, not a class-name check.
     expect(screen.getByText('L21_V001')).toBeVisible()
     expect(screen.getByText('42.5s')).toBeVisible()
+  })
+
+  it('shows the ASR video rank without rendering transcript text in the card', () => {
+    render(
+      <ResultCard
+        hit={{ ...HIT, asr_evidence: ASR_VIDEO }}
+        onSelect={vi.fn()}
+        onFindSimilar={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('ASR #1')).toBeInTheDocument()
+    expect(screen.queryByText('công trình thủy lợi')).not.toBeInTheDocument()
   })
 
   it('calls onSelect with the hit when clicked', async () => {

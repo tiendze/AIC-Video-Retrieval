@@ -46,6 +46,9 @@ export function ResultCard({
         <span className={styles.videoId}>{hit.video_id}</span>
         <span>{hit.timestamp}s</span>
       </span>
+      {hit.asr_evidence && (
+        <span className={styles.asrBadge}>ASR #{hit.asr_evidence.video_rank}</span>
+      )}
       {hit.final_score !== undefined && (
         <span className={styles.scoreBadge}>Final {score.toFixed(3)}</span>
       )}

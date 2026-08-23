@@ -51,6 +51,18 @@
   white-space: nowrap;
 }
 
+.asrBadge {
+  position: absolute;
+  top: 0.35rem;
+  left: 0.35rem;
+  padding: 0.15rem 0.35rem;
+  border-radius: 0.35rem;
+  background: rgb(15 23 42 / 88%);
+  color: #e0f2fe;
+  font-size: 0.7rem;
+  line-height: 1;
+}
+
 .scoreBadge {
   position: absolute;
   left: 4px;
