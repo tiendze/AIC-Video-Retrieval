@@ -247,3 +247,6 @@ configs/eval/aic_eval_v1.json.sha256
 # Frontend (P1.6) -- regenerable, not source of truth.
 frontend/node_modules/
 frontend/dist/
+
+# Isolated feature worktrees used by agentic implementation workflows.
+.worktrees/
