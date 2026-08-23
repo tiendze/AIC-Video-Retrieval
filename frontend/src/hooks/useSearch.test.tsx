@@ -214,6 +214,50 @@ describe('useSearch staged KIS flow', () => {
     expect(result.current.results).toEqual([])
   })
 
+  it('drops ASR and invalidates an in-flight KIS request when readiness becomes non-ready', async () => {
+    const pending = deferred<KisCandidateResponse>()
+    vi.mocked(retrieveKisCandidates).mockReturnValueOnce(pending.promise)
+    const { result, rerender } = renderHook(
+      ({ asrReady }) => useSearch({ asrReady }),
+      { initialProps: { asrReady: true } },
+    )
+
+    act(() => {
+      result.current.setGlobalTextQuery('dam')
+      result.current.setOcrQuery('SAIGON')
+      result.current.setAsrQuery('hydraulic works')
+    })
+    act(() => result.current.retrieveCandidates())
+    const requestSignal = vi.mocked(retrieveKisCandidates).mock.calls[0]?.[1]
+
+    rerender({ asrReady: false })
+
+    await waitFor(() => expect(result.current.asrQuery).toBe(''))
+    expect(requestSignal?.aborted).toBe(true)
+    expect(result.current.ocrQuery).toBe('SAIGON')
+
+    await act(async () => {
+      pending.resolve({
+        candidate_ids: ['A'],
+        candidate_pool_size: 1,
+        text_candidate_count: 1,
+        ocr_candidate_count: 0,
+        asr_gate: ASR_GATE,
+        results: [STAGE1_HIT],
+      })
+      await pending.promise
+    })
+
+    expect(result.current.candidatePool).toBeNull()
+    expect(result.current.results).toEqual([])
+
+    act(() => result.current.retrieveCandidates())
+    expect(retrieveKisCandidates).toHaveBeenLastCalledWith(
+      expect.objectContaining({ ocr_query: 'SAIGON', asr_query: null }),
+      expect.any(AbortSignal),
+    )
+  })
+
   it('ignores a deferred Stage 2 response after the ASR video count changes', async () => {
     vi.mocked(retrieveKisCandidates).mockResolvedValueOnce({
       candidate_ids: ['A'],
@@ -268,6 +312,33 @@ describe('useSearch staged KIS flow', () => {
     act(() => result.current.setAsrQuery('thủy lợi'))
     act(() => result.current.setAsrVideoCandidateK(10))
 
+    expect(imageSignal?.aborted).toBe(false)
+    expect(result.current.isLoading).toBe(true)
+
+    await act(async () => {
+      pending.resolve({ results: [STAGE1_HIT] })
+      await pending.promise
+    })
+
+    expect(result.current.results).toEqual([STAGE1_HIT])
+    expect(result.current.isLoading).toBe(false)
+  })
+
+  it('keeps an unrelated image search active across a non-ready ASR transition', async () => {
+    const pending = deferred<SearchResponse>()
+    vi.mocked(searchByImage).mockReturnValueOnce(pending.promise)
+    const { result, rerender } = renderHook(
+      ({ asrReady }) => useSearch({ asrReady }),
+      { initialProps: { asrReady: true } },
+    )
+
+    act(() => result.current.setAsrQuery('hydraulic works'))
+    act(() => result.current.runImageSearch(new Blob(['image'], { type: 'image/jpeg' })))
+    const imageSignal = vi.mocked(searchByImage).mock.calls[0]?.[2]
+
+    rerender({ asrReady: false })
+
+    await waitFor(() => expect(result.current.asrQuery).toBe(''))
     expect(imageSignal?.aborted).toBe(false)
     expect(result.current.isLoading).toBe(true)
 

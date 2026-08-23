@@ -730,6 +730,62 @@ async def test_active_asr_filters_text_and_ocr_before_top_k():
     assert all("asr" not in hit.stage1.source_modalities for hit in pool.results)
 
 
+async def test_active_asr_drops_text_candidate_without_any_stored_frame_idx(caplog):
+    gate = gate_result(["V1"])
+    service, _, _, _, _ = _service(
+        milvus_hits=[
+            {
+                "keyframe_id": "malformed",
+                "distance": 0.9,
+                "entity": {"video_id": "V1", "timestamp": 0.4},
+            }
+        ],
+        mongo_docs={
+            "malformed": {
+                "video_id": "V1",
+                "timestamp": 0.4,
+                "thumbnail_path": "malformed.jpg",
+            }
+        },
+        query_vector=np.array([[1.0, 0.0]], dtype=np.float32),
+        asr_service=FakeAsrService(gate),
+    )
+
+    pool = await service.retrieve_kis_candidates("night boat", 300, None, 100, "hydraulic", 20)
+
+    assert pool.candidate_ids == []
+    assert pool.results == []
+    assert pool.asr_gate is gate
+    assert "dropping keyframe_id=malformed" in caplog.text
+
+
+async def test_active_asr_keeps_legitimate_stored_frame_idx_zero():
+    service, _, _, _, _ = _service(
+        milvus_hits=[
+            {
+                "keyframe_id": "first-frame",
+                "distance": 0.9,
+                "entity": {"video_id": "V1", "timestamp": 0.0},
+            }
+        ],
+        mongo_docs={
+            "first-frame": {
+                "video_id": "V1",
+                "frame_idx": 0,
+                "timestamp": 0.0,
+                "thumbnail_path": "first-frame.jpg",
+            }
+        },
+        query_vector=np.array([[1.0, 0.0]], dtype=np.float32),
+        asr_service=FakeAsrService(gate_result(["V1"])),
+    )
+
+    pool = await service.retrieve_kis_candidates("first frame", 300, None, 100, "hydraulic", 20)
+
+    assert pool.candidate_ids == ["first-frame"]
+    assert [hit.frame_idx for hit in pool.results] == [0]
+
+
 async def test_active_zero_hit_gate_never_runs_global_keyframe_search():
     # Deleting the early return must fail this test by allowing the old global
     # semantic query to run after ASR finds no eligible video.

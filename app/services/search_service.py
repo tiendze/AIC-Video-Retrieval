@@ -408,7 +408,8 @@ class SearchService:
             )
             if metadata is None:
                 logger.warning(
-                    "retrieve_kis_candidates: dropping keyframe_id=%s -- no Stage 1 metadata",
+                    "retrieve_kis_candidates: dropping keyframe_id=%s -- no stored Stage 1 "
+                    "metadata/frame_idx",
                     keyframe_id,
                 )
                 continue
@@ -930,9 +931,10 @@ def _union_stage1_candidate_ids(
 
 def _metadata_from_milvus_hit(hit: dict) -> dict:
     entity = hit.get("entity", {})
+    frame_idx = entity.get("frame_idx")
     return {
         "video_id": entity.get("video_id", ""),
-        "frame_idx": int(entity.get("frame_idx", 0)),
+        "frame_idx": int(frame_idx) if frame_idx is not None else None,
         "timestamp": float(entity.get("timestamp", 0.0)),
     }
 
@@ -945,13 +947,14 @@ def _stage1_candidate_metadata(
     text_metadata = text_metadata_by_id.get(keyframe_id)
     mongo_doc = mongo_docs.get(keyframe_id)
     if text_metadata is not None:
+        frame_idx = text_metadata["frame_idx"]
+        if frame_idx is None and mongo_doc is not None:
+            frame_idx = mongo_doc.get("frame_idx")
+        if frame_idx is None:
+            return None
         return {
             "video_id": text_metadata["video_id"] or (mongo_doc or {}).get("video_id", ""),
-            "frame_idx": int(
-                text_metadata["frame_idx"]
-                if text_metadata["frame_idx"] is not None
-                else (mongo_doc or {}).get("frame_idx", 0)
-            ),
+            "frame_idx": int(frame_idx),
             "timestamp": float(
                 text_metadata["timestamp"]
                 if text_metadata["timestamp"] is not None
@@ -959,7 +962,7 @@ def _stage1_candidate_metadata(
             ),
             "thumbnail_path": mongo_doc["thumbnail_path"] if mongo_doc else "",
         }
-    if mongo_doc is None:
+    if mongo_doc is None or mongo_doc.get("frame_idx") is None:
         return None
     return {
         "video_id": mongo_doc["video_id"],

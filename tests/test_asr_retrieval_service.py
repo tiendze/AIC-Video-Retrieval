@@ -1,6 +1,7 @@
 import pytest
 from elasticsearch import ApiError
 from elasticsearch import ConnectionError as EsConnectionError
+from elasticsearch import ConnectionTimeout as EsConnectionTimeout
 
 from app.services.asr_retrieval_service import (
     AsrRetrievalConfig,
@@ -115,7 +116,14 @@ async def test_blank_query_is_rejected_before_transcript_search():
     assert store.search_calls == []
 
 
-@pytest.mark.parametrize("error", [EsConnectionError("offline"), ApiError("503", {}, {})])
+@pytest.mark.parametrize(
+    "error",
+    [
+        EsConnectionError("offline"),
+        EsConnectionTimeout("timed out"),
+        ApiError("503", {}, {}),
+    ],
+)
 async def test_elasticsearch_failures_become_asr_unavailable(error):
     service = AsrRetrievalService(
         FailingAsrStore(error),

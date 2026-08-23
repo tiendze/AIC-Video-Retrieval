@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 from elasticsearch import ConnectionError as EsConnectionError
+from elasticsearch import ConnectionTimeout as EsConnectionTimeout
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
@@ -55,14 +56,15 @@ class _FakeAsrEsStore(_FakeEsStore):
 class FailingAsrStore:
     index_name = "asr_segments"
 
-    def __init__(self) -> None:
+    def __init__(self, error: Exception | None = None) -> None:
         self.closed = False
+        self._error = error or EsConnectionError("simulated ASR index failure")
 
     async def ensure_index(self) -> None:
-        raise EsConnectionError("simulated ASR index failure")
+        raise self._error
 
     async def index_exists(self) -> bool:
-        raise EsConnectionError("simulated ASR index failure")
+        raise self._error
 
     async def count_segments(self) -> int:
         raise AssertionError("count must not run after index probe failure")
@@ -331,6 +333,25 @@ def test_lifespan_survives_asr_ensure_index_failure(
     assert response.json()["asr_status"] == "unavailable"
     assert "ASR index unavailable" in caplog.text
     assert asr_store.closed is True
+
+
+def test_lifespan_survives_asr_ensure_index_timeout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-gemini-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "fake-openai-key")
+    _stub_real_infra(monkeypatch)
+    monkeypatch.setattr(
+        main_module,
+        "_build_asr_es_store",
+        lambda settings: FailingAsrStore(EsConnectionTimeout("simulated ASR timeout")),
+    )
+
+    with TestClient(create_app()) as client:
+        assert client.app.state.trake_embedding_cache.load_called is True
+
+    assert "ASR index unavailable" in caplog.text
 
 
 def test_health_endpoint_is_reachable_end_to_end(

@@ -67,6 +67,7 @@ function asrReadinessMessage(health: HealthStatus | null): string | null {
 }
 
 function App() {
+  const health = useHealth()
   const {
     globalTextQuery,
     setGlobalTextQuery,
@@ -105,13 +106,12 @@ function App() {
     runSearch,
     rerankCandidates,
     runImageSearch,
-  } = useSearch()
+  } = useSearch({ asrReady: health?.asr_ready !== false })
   const [selectedHit, setSelectedHit] = useState<SearchHit | null>(null)
   const [detailHit, setDetailHit] = useState<SearchHit | null>(null)
   const [detailHighlightFrames, setDetailHighlightFrames] = useState<DetailFrame[]>([])
   const queryInputRef = useRef<HTMLInputElement>(null)
   const kisLeftScrollRef = useRef<HTMLDivElement>(null)
-  const health = useHealth()
   const esDown = health?.elasticsearch_ok === false
   const asrMessage = asrReadinessMessage(health)
 

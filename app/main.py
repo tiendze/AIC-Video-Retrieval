@@ -8,6 +8,7 @@ import yaml
 from ddgs import DDGS
 from elasticsearch import ApiError
 from elasticsearch import ConnectionError as EsConnectionError
+from elasticsearch import ConnectionTimeout as EsConnectionTimeout
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -227,7 +228,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
     try:
         await app.state.asr_es_store.ensure_index()
-    except (EsConnectionError, ApiError):
+    except (EsConnectionError, EsConnectionTimeout, ApiError):
         logger.warning(
             "ASR index unavailable at startup -- starting in semantic-only degraded mode"
         )

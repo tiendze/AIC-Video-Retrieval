@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from elasticsearch import ApiError
 from elasticsearch import ConnectionError as EsConnectionError
+from elasticsearch import ConnectionTimeout as EsConnectionTimeout
 
 from app.stores.es_client import AsrEsStore, AsrSegmentSearchResult
 
@@ -86,7 +87,7 @@ class AsrRetrievalService:
             raise ValueError("ASR query must not be blank")
         try:
             response = await self._store.search(clean_query, self._config.segment_retrieval_k)
-        except (EsConnectionError, ApiError) as exc:
+        except (EsConnectionError, EsConnectionTimeout, ApiError) as exc:
             raise AsrRetrievalUnavailable("ASR transcript search is unavailable") from exc
         return _aggregate_gate(clean_query, response, video_top_k, self._config.evidence_per_video)
 

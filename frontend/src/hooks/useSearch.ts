@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   DEFAULT_ASR_VIDEO_CANDIDATE_K,
   DEFAULT_OCR_CANDIDATE_K,
@@ -89,6 +89,10 @@ export interface UseSearchResult {
   runImageSearch: (file: Blob) => void
 }
 
+export interface UseSearchOptions {
+  asrReady?: boolean
+}
+
 // KIS Stage 2 rows are keyed by a stable id so removing a middle row never
 // re-associates focus/caret with the wrong input. AbortController cancels
 // an in-flight request when a newer one starts, so a slow first response
@@ -135,7 +139,7 @@ function withAsrEvidence(
   return evidence ? { ...hit, asr_evidence: evidence } : hit
 }
 
-export function useSearch(): UseSearchResult {
+export function useSearch({ asrReady = true }: UseSearchOptions = {}): UseSearchResult {
   const [globalTextQueryValue, setGlobalTextQueryValue] = useState('')
   const [textCandidateKValue, setTextCandidateKValue] = useState(DEFAULT_TEXT_CANDIDATE_K)
   const [ocrQueryValue, setOcrQueryValue] = useState('')
@@ -171,6 +175,12 @@ export function useSearch(): UseSearchResult {
     setError(null)
     setLatencyMs(null)
   }, [])
+
+  useEffect(() => {
+    if (asrReady || !asrQueryValue) return
+    setAsrQueryValue('')
+    invalidateCandidatePool()
+  }, [asrQueryValue, asrReady, invalidateCandidatePool])
 
   const setGlobalTextQuery = useCallback((query: string) => {
     setGlobalTextQueryValue(query)
@@ -289,7 +299,7 @@ export function useSearch(): UseSearchResult {
   const retrieveCandidates = useCallback((overrideQuery?: string) => {
     const textQuery = (overrideQuery ?? globalTextQueryValue).trim()
     const ocrQuery = ocrQueryValue.trim()
-    const asrQuery = asrQueryValue.trim()
+    const asrQuery = asrReady ? asrQueryValue.trim() : ''
     if (!textQuery && !ocrQuery) return
     abortRef.current?.abort()
     const controller = new AbortController()
@@ -355,6 +365,7 @@ export function useSearch(): UseSearchResult {
       })
   }, [
     asrQueryValue,
+    asrReady,
     asrVideoCandidateKValue,
     finalTopK,
     globalTextQueryValue,

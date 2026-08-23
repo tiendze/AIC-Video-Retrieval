@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 from elasticsearch import ApiError
 from elasticsearch import ConnectionError as EsConnectionError
+from elasticsearch import ConnectionTimeout as EsConnectionTimeout
 
 from app.services.health_service import HealthReport, HealthService
 
@@ -164,6 +165,8 @@ async def test_health_reports_explicit_asr_readiness(
     ("index_error", "count_error"),
     [
         (EsConnectionError("probe failed"), None),
+        (EsConnectionTimeout("index probe timed out"), None),
+        (None, EsConnectionTimeout("count probe timed out")),
         (None, ApiError("503", {}, {})),
     ],
 )

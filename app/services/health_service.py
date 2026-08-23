@@ -17,6 +17,7 @@ from typing import Literal
 
 from elasticsearch import ApiError
 from elasticsearch import ConnectionError as EsConnectionError
+from elasticsearch import ConnectionTimeout as EsConnectionTimeout
 
 from app.stores.es_client import AsrEsStore, EsStore
 from app.stores.milvus_client import MilvusStore
@@ -64,7 +65,7 @@ class HealthService:
                 else:
                     asr_count = await self._asr_es_store.count_segments()
                     asr_status = "ready" if asr_count > 0 else "empty"
-            except (EsConnectionError, ApiError):
+            except (EsConnectionError, EsConnectionTimeout, ApiError):
                 asr_status, asr_count = "unavailable", None
         status = "ok" if milvus_ok and es_ok and mongo_ok and asr_status == "ready" else "degraded"
         return HealthReport(
