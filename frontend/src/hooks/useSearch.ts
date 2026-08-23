@@ -152,17 +152,22 @@ export function useSearch(): UseSearchResult {
   const [error, setError] = useState<string | null>(null)
   const [latencyMs, setLatencyMs] = useState<number | null>(null)
   const abortRef = useRef<AbortController | null>(null)
-  const requestGenerationRef = useRef(0)
+  const kisAbortRef = useRef<AbortController | null>(null)
+  const kisRequestGenerationRef = useRef(0)
   const primaryTextQuery = globalTextQueryValue
 
   const invalidateCandidatePool = useCallback(() => {
-    requestGenerationRef.current += 1
-    abortRef.current?.abort()
-    abortRef.current = null
+    kisRequestGenerationRef.current += 1
+    const kisController = kisAbortRef.current
+    kisController?.abort()
+    kisAbortRef.current = null
+    if (kisController && abortRef.current === kisController) {
+      abortRef.current = null
+      setIsLoading(false)
+    }
     setCandidatePool(null)
     setStage2Queries([])
     setResults([])
-    setIsLoading(false)
     setError(null)
     setLatencyMs(null)
   }, [])
@@ -289,8 +294,9 @@ export function useSearch(): UseSearchResult {
     abortRef.current?.abort()
     const controller = new AbortController()
     abortRef.current = controller
-    requestGenerationRef.current += 1
-    const requestGeneration = requestGenerationRef.current
+    kisAbortRef.current = controller
+    kisRequestGenerationRef.current += 1
+    const requestGeneration = kisRequestGenerationRef.current
     setIsLoading(true)
     setError(null)
     const start = performance.now()
@@ -307,7 +313,7 @@ export function useSearch(): UseSearchResult {
       controller.signal,
     )
       .then((response) => {
-        if (requestGeneration !== requestGenerationRef.current) return
+        if (requestGeneration !== kisRequestGenerationRef.current) return
         const asrGate = response.asr_gate ?? null
         const asrEvidenceByVideo = new Map(
           (asrGate?.videos ?? []).map((video) => [video.video_id, video]),
@@ -334,17 +340,18 @@ export function useSearch(): UseSearchResult {
         setLatencyMs(performance.now() - start)
       })
       .catch((err: unknown) => {
-        if (requestGeneration !== requestGenerationRef.current) return
+        if (requestGeneration !== kisRequestGenerationRef.current) return
         if (isAbortError(err)) return
         setError(messageFor(err, 'Candidate retrieval failed'))
       })
       .finally(() => {
         if (
-          requestGeneration === requestGenerationRef.current &&
+          requestGeneration === kisRequestGenerationRef.current &&
           abortRef.current === controller
         ) {
           setIsLoading(false)
         }
+        if (kisAbortRef.current === controller) kisAbortRef.current = null
       })
   }, [
     asrQueryValue,
@@ -371,8 +378,9 @@ export function useSearch(): UseSearchResult {
     abortRef.current?.abort()
     const controller = new AbortController()
     abortRef.current = controller
-    requestGenerationRef.current += 1
-    const requestGeneration = requestGenerationRef.current
+    kisAbortRef.current = controller
+    kisRequestGenerationRef.current += 1
+    const requestGeneration = kisRequestGenerationRef.current
     setIsLoading(true)
     setError(null)
     const start = performance.now()
@@ -390,7 +398,7 @@ export function useSearch(): UseSearchResult {
       controller.signal,
     )
       .then((response) => {
-        if (requestGeneration !== requestGenerationRef.current) return
+        if (requestGeneration !== kisRequestGenerationRef.current) return
         setResults(
           response.results.map((hit) =>
             withAsrEvidence(
@@ -406,22 +414,25 @@ export function useSearch(): UseSearchResult {
         setLatencyMs(performance.now() - start)
       })
       .catch((err: unknown) => {
-        if (requestGeneration !== requestGenerationRef.current) return
+        if (requestGeneration !== kisRequestGenerationRef.current) return
         if (isAbortError(err)) return
         setError(messageFor(err, 'Candidate reranking failed'))
       })
       .finally(() => {
         if (
-          requestGeneration === requestGenerationRef.current &&
+          requestGeneration === kisRequestGenerationRef.current &&
           abortRef.current === controller
         ) {
           setIsLoading(false)
         }
+        if (kisAbortRef.current === controller) kisAbortRef.current = null
       })
   }, [candidatePool, finalTopK, stage2Queries])
 
   const runImageSearch = useCallback((file: Blob) => {
     abortRef.current?.abort()
+    kisAbortRef.current = null
+    kisRequestGenerationRef.current += 1
     const controller = new AbortController()
     abortRef.current = controller
     setIsLoading(true)

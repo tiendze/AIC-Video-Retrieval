@@ -1,7 +1,12 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { rerankKisCandidates, retrieveKisCandidates } from '../api/client'
-import type { KisCandidateResponse, KisRerankResponse, SearchHit } from '../api/types'
+import { rerankKisCandidates, retrieveKisCandidates, searchByImage } from '../api/client'
+import type {
+  KisCandidateResponse,
+  KisRerankResponse,
+  SearchHit,
+  SearchResponse,
+} from '../api/types'
 import { useSearch } from './useSearch'
 
 vi.mock('../api/client', () => ({
@@ -249,6 +254,30 @@ describe('useSearch staged KIS flow', () => {
 
     expect(result.current.candidatePool).toBeNull()
     expect(result.current.results).toEqual([])
+  })
+
+  it('keeps an unrelated deferred image search active when ASR controls change', async () => {
+    const pending = deferred<SearchResponse>()
+    vi.mocked(searchByImage).mockReturnValueOnce(pending.promise)
+    const { result } = renderHook(() => useSearch())
+
+    act(() => result.current.runImageSearch(new Blob(['image'], { type: 'image/jpeg' })))
+    const imageSignal = vi.mocked(searchByImage).mock.calls[0]?.[2]
+    expect(result.current.isLoading).toBe(true)
+
+    act(() => result.current.setAsrQuery('thủy lợi'))
+    act(() => result.current.setAsrVideoCandidateK(10))
+
+    expect(imageSignal?.aborted).toBe(false)
+    expect(result.current.isLoading).toBe(true)
+
+    await act(async () => {
+      pending.resolve({ results: [STAGE1_HIT] })
+      await pending.promise
+    })
+
+    expect(result.current.results).toEqual([STAGE1_HIT])
+    expect(result.current.isLoading).toBe(false)
   })
 
   it('changing ASR query or candidate video count invalidates the candidate pool', async () => {
