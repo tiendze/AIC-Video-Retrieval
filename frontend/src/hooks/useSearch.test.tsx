@@ -1,7 +1,7 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { rerankKisCandidates, retrieveKisCandidates } from '../api/client'
-import type { SearchHit } from '../api/types'
+import type { KisCandidateResponse, KisRerankResponse, SearchHit } from '../api/types'
 import { useSearch } from './useSearch'
 
 vi.mock('../api/client', () => ({
@@ -52,6 +52,14 @@ const STAGE1_HIT: SearchHit = {
   thumbnail_url: '/api/keyframes/A/thumbnail',
   image_url: '/api/keyframes/A/image',
   stage1: { source_modalities: ['text'] },
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise
+  })
+  return { promise, resolve }
 }
 
 describe('useSearch staged KIS flow', () => {
@@ -166,9 +174,81 @@ describe('useSearch staged KIS flow', () => {
     act(() => result.current.setFinalTopK(1))
     act(() => result.current.rerankCandidates())
 
-    await waitFor(() => expect(rerankKisCandidates).toHaveBeenCalledTimes(1))
-    await waitFor(() => expect(result.current.results[0]?.asr_evidence).toEqual(ASR_VIDEO))
+    await waitFor(() => expect(result.current.results[0]?.final_score).toBe(0.95))
+    expect(result.current.results[0]?.asr_evidence).toEqual(ASR_VIDEO)
     expect(result.current.results[0]?.frame_idx).toBe(10)
+  })
+
+  it('ignores a deferred Stage 1 response after the ASR query changes', async () => {
+    const pending = deferred<KisCandidateResponse>()
+    vi.mocked(retrieveKisCandidates).mockReturnValueOnce(pending.promise)
+    const { result } = renderHook(() => useSearch())
+
+    act(() => result.current.setGlobalTextQuery('dam'))
+    act(() => result.current.setAsrQuery('old topic'))
+    act(() => result.current.retrieveCandidates())
+    expect(result.current.isLoading).toBe(true)
+
+    act(() => result.current.setAsrQuery('new topic'))
+    expect(result.current.candidatePool).toBeNull()
+    expect(result.current.results).toEqual([])
+
+    await act(async () => {
+      pending.resolve({
+        candidate_ids: ['A'],
+        candidate_pool_size: 1,
+        text_candidate_count: 1,
+        ocr_candidate_count: 0,
+        asr_gate: ASR_GATE,
+        results: [STAGE1_HIT],
+      })
+      await pending.promise
+    })
+
+    expect(result.current.candidatePool).toBeNull()
+    expect(result.current.results).toEqual([])
+  })
+
+  it('ignores a deferred Stage 2 response after the ASR video count changes', async () => {
+    vi.mocked(retrieveKisCandidates).mockResolvedValueOnce({
+      candidate_ids: ['A'],
+      candidate_pool_size: 1,
+      text_candidate_count: 1,
+      ocr_candidate_count: 0,
+      asr_gate: ASR_GATE,
+      results: [STAGE1_HIT],
+    })
+    const pending = deferred<KisRerankResponse>()
+    vi.mocked(rerankKisCandidates).mockReturnValueOnce(pending.promise)
+    const { result } = renderHook(() => useSearch())
+
+    act(() => result.current.setGlobalTextQuery('dam'))
+    act(() => result.current.setAsrQuery('thủy lợi'))
+    act(() => result.current.retrieveCandidates())
+    await waitFor(() => expect(result.current.candidatePool?.candidateIds).toEqual(['A']))
+
+    act(() => result.current.addStage2Query())
+    const queryId = result.current.stage2Queries[0]!.id
+    act(() => result.current.setStage2QueryText(queryId, 'night'))
+    act(() => result.current.setFinalTopK(1))
+    act(() => result.current.rerankCandidates())
+    expect(result.current.isLoading).toBe(true)
+
+    act(() => result.current.setAsrVideoCandidateK(10))
+    expect(result.current.candidatePool).toBeNull()
+    expect(result.current.results).toEqual([])
+
+    await act(async () => {
+      pending.resolve({
+        candidate_pool_size: 1,
+        final_top_k: 1,
+        results: [{ ...STAGE1_HIT, final_score: 0.99, active_modalities: 1 }],
+      })
+      await pending.promise
+    })
+
+    expect(result.current.candidatePool).toBeNull()
+    expect(result.current.results).toEqual([])
   })
 
   it('changing ASR query or candidate video count invalidates the candidate pool', async () => {

@@ -152,12 +152,17 @@ export function useSearch(): UseSearchResult {
   const [error, setError] = useState<string | null>(null)
   const [latencyMs, setLatencyMs] = useState<number | null>(null)
   const abortRef = useRef<AbortController | null>(null)
+  const requestGenerationRef = useRef(0)
   const primaryTextQuery = globalTextQueryValue
 
   const invalidateCandidatePool = useCallback(() => {
+    requestGenerationRef.current += 1
+    abortRef.current?.abort()
+    abortRef.current = null
     setCandidatePool(null)
     setStage2Queries([])
     setResults([])
+    setIsLoading(false)
     setError(null)
     setLatencyMs(null)
   }, [])
@@ -284,6 +289,8 @@ export function useSearch(): UseSearchResult {
     abortRef.current?.abort()
     const controller = new AbortController()
     abortRef.current = controller
+    requestGenerationRef.current += 1
+    const requestGeneration = requestGenerationRef.current
     setIsLoading(true)
     setError(null)
     const start = performance.now()
@@ -300,6 +307,7 @@ export function useSearch(): UseSearchResult {
       controller.signal,
     )
       .then((response) => {
+        if (requestGeneration !== requestGenerationRef.current) return
         const asrGate = response.asr_gate ?? null
         const asrEvidenceByVideo = new Map(
           (asrGate?.videos ?? []).map((video) => [video.video_id, video]),
@@ -326,11 +334,17 @@ export function useSearch(): UseSearchResult {
         setLatencyMs(performance.now() - start)
       })
       .catch((err: unknown) => {
+        if (requestGeneration !== requestGenerationRef.current) return
         if (isAbortError(err)) return
         setError(messageFor(err, 'Candidate retrieval failed'))
       })
       .finally(() => {
-        if (abortRef.current === controller) setIsLoading(false)
+        if (
+          requestGeneration === requestGenerationRef.current &&
+          abortRef.current === controller
+        ) {
+          setIsLoading(false)
+        }
       })
   }, [
     asrQueryValue,
@@ -357,6 +371,8 @@ export function useSearch(): UseSearchResult {
     abortRef.current?.abort()
     const controller = new AbortController()
     abortRef.current = controller
+    requestGenerationRef.current += 1
+    const requestGeneration = requestGenerationRef.current
     setIsLoading(true)
     setError(null)
     const start = performance.now()
@@ -374,6 +390,7 @@ export function useSearch(): UseSearchResult {
       controller.signal,
     )
       .then((response) => {
+        if (requestGeneration !== requestGenerationRef.current) return
         setResults(
           response.results.map((hit) =>
             withAsrEvidence(
@@ -389,11 +406,17 @@ export function useSearch(): UseSearchResult {
         setLatencyMs(performance.now() - start)
       })
       .catch((err: unknown) => {
+        if (requestGeneration !== requestGenerationRef.current) return
         if (isAbortError(err)) return
         setError(messageFor(err, 'Candidate reranking failed'))
       })
       .finally(() => {
-        if (abortRef.current === controller) setIsLoading(false)
+        if (
+          requestGeneration === requestGenerationRef.current &&
+          abortRef.current === controller
+        ) {
+          setIsLoading(false)
+        }
       })
   }, [candidatePool, finalTopK, stage2Queries])
 
