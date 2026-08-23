@@ -5,6 +5,14 @@
 default_top_k: 20
 max_top_k: 100
 
+# Optional ASR-assisted KIS video gate. BM25 retrieves transcript segments;
+# ASR constrains videos and supplies evidence but never enters keyframe scores.
+default_asr_video_candidate_k: 20
+max_asr_video_candidate_k: 100
+asr_segment_retrieval_k: 200
+asr_evidence_per_video: 3
+max_asr_query_length: 1000
+
 # KIS Stage 1 candidate-pool controls. These are intentionally separate from
 # max_top_k: operators may retrieve a high-recall pool (for example 300 text
 # candidates + 100 OCR candidates), then choose a contest-sized final Top-K

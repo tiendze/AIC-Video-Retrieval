@@ -37,6 +37,7 @@ class _FakeAsyncElasticsearch:
         self.delete_by_query_calls: list[dict] = []
         self.search_calls: list[dict] = []
         self.search_hits: list[dict] = []
+        self.search_response: dict | None = None
         self.ping_result = True
         self.mget_docs: dict[str, dict] = {}
 
@@ -60,7 +61,14 @@ class _FakeAsyncElasticsearch:
 
     async def search(self, **kwargs):
         self.search_calls.append(kwargs)
-        return {"hits": {"hits": self.search_hits}}
+        if self.search_response is not None:
+            return self.search_response
+        return {
+            "hits": {
+                "total": {"value": len(self.search_hits), "relation": "eq"},
+                "hits": self.search_hits,
+            }
+        }
 
 
 def _store(monkeypatch) -> AsrEsStore:
@@ -230,3 +238,32 @@ async def test_score_by_ids_returns_empty_dict_for_empty_input(monkeypatch):
 
     assert await store.score_by_ids("VINAMILK", []) == {}
     assert store._client.search_calls == []
+
+
+async def test_asr_search_returns_exact_total_hits_and_typed_hits(monkeypatch):
+    store = _store(monkeypatch)
+    store._client.search_response = {
+        "hits": {
+            "total": {"value": 57, "relation": "eq"},
+            "hits": [
+                {
+                    "_score": 8.73,
+                    "_source": {
+                        "segment_id": "L21_V001_seg10",
+                        "video_id": "L21_V001",
+                        "text": "cong trinh thuy loi",
+                        "start_time": 151.2,
+                        "end_time": 158.4,
+                        "start_frame_idx": 3780,
+                        "end_frame_idx": 3960,
+                    },
+                }
+            ],
+        }
+    }
+
+    result = await store.search("cong trinh thuy loi", 200)
+
+    assert result.total_hits == 57
+    assert result.hits[0].score == 8.73
+    assert store._client.search_calls[0]["track_total_hits"] is True

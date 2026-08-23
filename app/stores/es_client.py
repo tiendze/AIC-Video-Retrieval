@@ -199,6 +199,22 @@ class AsrSegmentDocument:
     end_frame_idx: int
 
 
+@dataclass(frozen=True)
+class AsrSegmentSearchHit:
+    segment_id: str
+    video_id: str
+    text: str
+    start_time: float
+    end_time: float
+    score: float
+
+
+@dataclass(frozen=True)
+class AsrSegmentSearchResult:
+    total_hits: int
+    hits: list[AsrSegmentSearchHit]
+
+
 class AsrEsStore:
     """ASR transcript store — deliberately separate from `EsStore`: that
     class hardcodes the `ocr_text`/`keyframe_id` mapping and can't be reused
@@ -253,14 +269,28 @@ class AsrEsStore:
         )
         await async_bulk(self._client, actions)
 
-    async def search(self, query_text: str, top_k: int, video_id: str | None = None) -> list[dict]:
-        """Full-text ASR search. `video_id` filter runs inside ES, never after the fact."""
-        query: dict = {"match": {"text": query_text}}
-        if video_id is not None:
-            query = {"bool": {"must": [query], "filter": [{"term": {"video_id": video_id}}]}}
-
-        response = await self._client.search(index=self._index_name, query=query, size=top_k)
-        return [hit["_source"] | {"score": hit["_score"]} for hit in response["hits"]["hits"]]
+    async def search(self, query_text: str, top_k: int) -> AsrSegmentSearchResult:
+        """Retrieve BM25-ranked ASR transcript segments with an exact hit count."""
+        response = await self._client.search(
+            index=self._index_name,
+            query={"match": {"text": query_text}},
+            size=top_k,
+            track_total_hits=True,
+        )
+        return AsrSegmentSearchResult(
+            total_hits=int(response["hits"]["total"]["value"]),
+            hits=[
+                AsrSegmentSearchHit(
+                    segment_id=hit["_source"]["segment_id"],
+                    video_id=hit["_source"]["video_id"],
+                    text=hit["_source"]["text"],
+                    start_time=float(hit["_source"]["start_time"]),
+                    end_time=float(hit["_source"]["end_time"]),
+                    score=float(hit["_score"]),
+                )
+                for hit in response["hits"]["hits"]
+            ],
+        )
 
     async def refresh(self) -> None:
         """Makes just-indexed segments visible to search/scroll immediately.
