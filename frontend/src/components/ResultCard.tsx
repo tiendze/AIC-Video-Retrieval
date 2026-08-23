@@ -47,7 +47,11 @@ export function ResultCard({
         <span>{hit.timestamp}s</span>
       </span>
       {hit.asr_evidence && (
-        <span className={styles.asrBadge}>ASR #{hit.asr_evidence.video_rank}</span>
+        <span
+          className={`${styles.asrBadge} ${onOpenDetail ? styles.asrBadgeBelowDetail : ''}`}
+        >
+          ASR #{hit.asr_evidence.video_rank}
+        </span>
       )}
       {hit.final_score !== undefined && (
         <span className={styles.scoreBadge}>Final {score.toFixed(3)}</span>

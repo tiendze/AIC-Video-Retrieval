@@ -41,6 +41,8 @@ function frameFromVideoKeyframe(videoId: string, keyframe: VideoKeyframe): Detai
   }
 }
 
+const DISTANCE_TIE_TOLERANCE_SECONDS = 1e-9
+
 // oxlint-disable-next-line react/only-export-components -- tested pure helper required by detail UI
 export function nearestKeyframe(
   segment: AsrEvidenceSegment,
@@ -51,8 +53,10 @@ export function nearestKeyframe(
     if (!best) return frame
     const frameDistance = Math.abs(frame.timestamp - midpoint)
     const bestDistance = Math.abs(best.timestamp - midpoint)
-    return frameDistance < bestDistance ||
-      (frameDistance === bestDistance && frame.timestamp < best.timestamp)
+    const distanceDelta = frameDistance - bestDistance
+    return distanceDelta < -DISTANCE_TIE_TOLERANCE_SECONDS ||
+      (Math.abs(distanceDelta) <= DISTANCE_TIE_TOLERANCE_SECONDS &&
+        frame.timestamp < best.timestamp)
       ? frame
       : best
   }, null)

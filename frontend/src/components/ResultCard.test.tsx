@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { ResultCard } from './ResultCard'
 import type { SearchHit } from '../api/types'
+import styles from './ResultCard.module.css'
 
 // RED reproducer for PRD §F9 / plan §P1.6 acceptance criterion:
 // "video_id + timestamp hiển thị NGAY TRÊN mỗi thumbnail, không cần hover."
@@ -44,17 +45,25 @@ describe('ResultCard', () => {
     expect(screen.getByText('42.5s')).toBeVisible()
   })
 
-  it('shows the ASR video rank without rendering transcript text in the card', () => {
+  it('keeps the ASR video rank visible when the detail control is present', async () => {
+    const onOpenDetail = vi.fn()
+    const hit = { ...HIT, asr_evidence: ASR_VIDEO }
     render(
       <ResultCard
-        hit={{ ...HIT, asr_evidence: ASR_VIDEO }}
+        hit={hit}
         onSelect={vi.fn()}
         onFindSimilar={vi.fn()}
+        onOpenDetail={onOpenDetail}
       />,
     )
 
-    expect(screen.getByText('ASR #1')).toBeInTheDocument()
+    const badge = screen.getByText('ASR #1')
+    expect(badge).toBeVisible()
+    expect(badge).toHaveClass(styles.asrBadgeBelowDetail)
     expect(screen.queryByText('công trình thủy lợi')).not.toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Details' }))
+    expect(onOpenDetail).toHaveBeenCalledWith(hit)
   })
 
   it('calls onSelect with the hit when clicked', async () => {

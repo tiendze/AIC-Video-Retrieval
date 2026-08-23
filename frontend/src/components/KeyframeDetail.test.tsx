@@ -228,11 +228,11 @@ describe('KeyframeDetail', () => {
     )
   })
 
-  it('selects the earlier timestamp when keyframes tie around the evidence midpoint', () => {
-    const segment = { ...ASR_VIDEO.segments[0], start_time: 10, end_time: 14 }
+  it('selects the earlier decimal timestamp when distances tie around the midpoint', () => {
+    const segment = ASR_VIDEO.segments[0]
 
-    expect(nearestKeyframe(segment, [frame('f13', 13), frame('f11', 11)])).toEqual(
-      frame('f11', 11),
+    expect(nearestKeyframe(segment, [frame('f1', 158.4), frame('f2', 151.2)])).toEqual(
+      frame('f2', 151.2),
     )
   })
 
