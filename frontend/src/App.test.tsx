@@ -1,8 +1,9 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import {
   findImageCandidates,
+  getHealth,
   getVideo,
   getVideoKeyframes,
   rerankKisCandidates,
@@ -70,6 +71,14 @@ function stubViewportSizeGlobally(size: number): () => void {
 }
 
 describe('App', () => {
+  it('leaves ASR controls enabled without an unavailable message before health loads', () => {
+    render(<App />)
+
+    expect(screen.getByLabelText('stage 1 asr')).toBeEnabled()
+    expect(screen.getByLabelText('asr candidate videos')).toBeEnabled()
+    expect(screen.queryByText(/ASR transcript index|ASR is unavailable/)).not.toBeInTheDocument()
+  })
+
   it('preserves the typed query when switching search mode', async () => {
     const user = userEvent.setup()
     render(<App />)
@@ -409,6 +418,104 @@ describe('App', () => {
       expect(screen.getByLabelText('KIS score details')).toBeInTheDocument()
     } finally {
       restoreViewportSize()
+    }
+  })
+
+  it.each([
+    {
+      asr_status: 'unreachable' as const,
+      elasticsearch_ok: false,
+      message: 'Elasticsearch is unreachable; ASR is unavailable.',
+    },
+    {
+      asr_status: 'unavailable' as const,
+      elasticsearch_ok: true,
+      message: 'The ASR transcript index is unavailable.',
+    },
+    {
+      asr_status: 'empty' as const,
+      elasticsearch_ok: true,
+      message: 'The ASR transcript index is empty.',
+    },
+  ])('disables ASR controls for $asr_status health with the exact reason', async (state) => {
+    vi.mocked(getHealth).mockResolvedValue({
+      status: 'degraded',
+      milvus_ok: true,
+      elasticsearch_ok: state.elasticsearch_ok,
+      mongodb_ok: true,
+      asr_status: state.asr_status,
+      asr_ready: false,
+      asr_segment_count: state.asr_status === 'empty' ? 0 : null,
+    })
+
+    render(<App />)
+
+    await waitFor(() => expect(screen.getByText(state.message)).toBeInTheDocument())
+    expect(screen.getByLabelText('stage 1 asr')).toBeDisabled()
+    expect(screen.getByLabelText('asr candidate videos')).toBeDisabled()
+    if (state.elasticsearch_ok) {
+      expect(screen.getByLabelText('stage 1 ocr')).toBeEnabled()
+      expect(screen.getByLabelText('ocr candidates')).toBeEnabled()
+    }
+  })
+
+  it('clears stale ASR on a ready-to-empty transition while preserving OCR requests', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    vi.mocked(getHealth)
+      .mockReset()
+      .mockResolvedValueOnce({
+        status: 'ok',
+        milvus_ok: true,
+        elasticsearch_ok: true,
+        mongodb_ok: true,
+        asr_status: 'ready',
+        asr_ready: true,
+        asr_segment_count: 873,
+      })
+      .mockResolvedValue({
+        status: 'degraded',
+        milvus_ok: true,
+        elasticsearch_ok: true,
+        mongodb_ok: true,
+        asr_status: 'empty',
+        asr_ready: false,
+        asr_segment_count: 0,
+      })
+    vi.mocked(retrieveKisCandidates).mockClear().mockResolvedValue({
+      candidate_ids: [],
+      candidate_pool_size: 0,
+      text_candidate_count: 0,
+      ocr_candidate_count: 0,
+      title_candidate_count: 0,
+      rrf_k: 60,
+      results: [],
+    })
+
+    try {
+      render(<App />)
+      await vi.waitFor(() => expect(getHealth).toHaveBeenCalledTimes(1))
+
+      await user.type(screen.getByLabelText('text q0'), 'dam')
+      await user.type(screen.getByLabelText('stage 1 ocr'), 'SAIGON')
+      await user.type(screen.getByLabelText('stage 1 asr'), 'hydraulic works')
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_000)
+      })
+
+      await vi.waitFor(() => expect(screen.getByLabelText('stage 1 asr')).toBeDisabled())
+      expect(screen.getByLabelText('stage 1 asr')).toHaveValue('')
+      expect(screen.getByLabelText('stage 1 ocr')).toHaveValue('SAIGON')
+
+      await user.click(screen.getByRole('button', { name: 'Retrieve Candidates' }))
+
+      expect(retrieveKisCandidates).toHaveBeenLastCalledWith(
+        expect.objectContaining({ ocr_query: 'SAIGON', asr_query: null }),
+        expect.any(AbortSignal),
+      )
+    } finally {
+      vi.useRealTimers()
     }
   })
 })

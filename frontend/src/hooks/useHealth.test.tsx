@@ -11,12 +11,23 @@ vi.mock('../api/client', () => ({
   getHealth: vi.fn(),
 }))
 
-const OK_STATUS = { status: 'ok' as const, milvus_ok: true, elasticsearch_ok: true, mongodb_ok: true }
+const OK_STATUS = {
+  status: 'ok' as const,
+  milvus_ok: true,
+  elasticsearch_ok: true,
+  mongodb_ok: true,
+  asr_status: 'ready' as const,
+  asr_ready: true,
+  asr_segment_count: 873,
+}
 const DEGRADED_STATUS = {
   status: 'degraded' as const,
   milvus_ok: true,
   elasticsearch_ok: false,
   mongodb_ok: true,
+  asr_status: 'unreachable' as const,
+  asr_ready: false,
+  asr_segment_count: null,
 }
 
 afterEach(() => {
@@ -48,6 +59,9 @@ describe('useHealth', () => {
 
     await waitFor(() => expect(result.current?.elasticsearch_ok).toBe(false))
     expect(result.current?.status).toBe('degraded')
+    expect(result.current?.asr_status).toBe('unreachable')
+    expect(result.current?.asr_ready).toBe(false)
+    expect(result.current?.asr_segment_count).toBeNull()
   })
 
   it('polls again after the interval elapses', async () => {

@@ -86,7 +86,7 @@ async def test_search_matches_one_character_ocr_error_with_fuzziness(store: EsSt
     assert results[0]["keyframe_id"] == "video1_0"
 
 
-async def test_search_video_id_filter_is_passed_to_engine_not_applied_after(
+async def test_search_video_filter_is_passed_to_engine_not_applied_after(
     store: EsStore,
 ) -> None:
     await store.bulk_index(
@@ -101,10 +101,10 @@ async def test_search_video_id_filter_is_passed_to_engine_not_applied_after(
     )
     await store._client.indices.refresh(index=store.index_name)
 
-    results = await store.search(query_text="tin tức", top_k=10, video_id="video_b")
+    results = await store.search(query_text="tin tức", top_k=10, video_ids=["video_b"])
 
-    assert len(results) == 1
-    assert results[0]["video_id"] == "video_b"
+    assert results
+    assert {hit["video_id"] for hit in results} == {"video_b"}
 
 
 @pytest.fixture()

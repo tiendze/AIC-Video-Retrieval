@@ -43,6 +43,8 @@ export interface KisCandidatePayload {
   ocr_top_k: number
   title_query?: string | null
   title_top_k: number
+  asr_query?: string | null
+  asr_video_top_k: number
 }
 
 export interface KisRerankPayload {
@@ -178,6 +180,28 @@ export interface Stage1RetrievalScore {
   fused_image_rank?: number
 }
 
+export interface AsrEvidenceSegment {
+  segment_id: string
+  text: string
+  start_time: number
+  end_time: number
+  raw_bm25: number
+}
+
+export interface AsrVideoEvidence {
+  video_id: string
+  video_rank: number
+  best_bm25_score: number
+  segments: AsrEvidenceSegment[]
+}
+
+export interface AsrGate {
+  query: string
+  segment_hit_count: number
+  candidate_video_count: number
+  videos: AsrVideoEvidence[]
+}
+
 // app/schemas/response/search.py: SearchHitResponse
 export interface SearchHit {
   keyframe_id: string
@@ -196,6 +220,9 @@ export interface SearchHit {
   thumbnail_path: string
   thumbnail_url: string
   image_url: string
+  // UI-only decoration sourced from the top-level ASR gate. The backend
+  // deliberately does not duplicate this video evidence on every hit.
+  asr_evidence?: AsrVideoEvidence
 }
 
 // app/schemas/response/search.py: SearchResponse
@@ -211,6 +238,7 @@ export interface KisCandidateResponse {
   title_candidate_count: number
   rrf_k: number
   results: SearchHit[]
+  asr_gate?: AsrGate | null
 }
 
 export interface KisRerankResponse {
@@ -294,6 +322,8 @@ export interface ApiErrorBody {
   request_id: string
 }
 
+export type AsrStatus = 'unreachable' | 'unavailable' | 'empty' | 'ready'
+
 // app/schemas/response/health.py: HealthResponse -- polled by useHealth
 // (plan §P1.8) to detect Elasticsearch being down (degraded mode, PRD T5).
 export interface HealthStatus {
@@ -301,6 +331,9 @@ export interface HealthStatus {
   milvus_ok: boolean
   elasticsearch_ok: boolean
   mongodb_ok: boolean
+  asr_status: AsrStatus
+  asr_ready: boolean
+  asr_segment_count: number | null
 }
 
 // app/schemas/response/video.py: VideoResponse

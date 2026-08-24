@@ -58,6 +58,11 @@ from PIL import Image
 
 from app.encoders.base import MultimodalEncoder
 from app.services.abe import AbeConceptBank, AbeError, AbePatchCache, AbeRankedQuery, AbeScorer
+from app.services.asr_retrieval_service import (
+    AsrGateResult,
+    AsrRetrievalService,
+    AsrRetrievalUnavailable,
+)
 from app.services.kis_scoring import (
     AbeModalityScore,
     AbeQueryScore,
@@ -161,6 +166,7 @@ class KisCandidatePool:
     results: list[SearchHit]
     title_candidate_count: int = 0
     rrf_k: int = _DEFAULT_RRF_K
+    asr_gate: AsrGateResult | None = None
 
     @property
     def candidate_pool_size(self) -> int:
@@ -178,6 +184,7 @@ class SearchService:
         kis_config: KisConfig | None = None,
         abe_concept_bank: AbeConceptBank | None = None,
         abe_patch_cache: AbePatchCache | None = None,
+        asr_retrieval_service: AsrRetrievalService | None = None,
     ) -> None:
         self._encoder = encoder
         self._milvus_store = milvus_store
@@ -190,6 +197,7 @@ class SearchService:
             dtype=self._kis_config.abe_patch_cache_dtype
         )
         self._abe_scorer: AbeScorer | None = None
+        self._asr_retrieval_service = asr_retrieval_service
 
     async def search(self, query: str, mode: SearchMode, top_k: int) -> list[SearchHit]:
         if mode == "semantic":
@@ -223,10 +231,13 @@ class SearchService:
         text_queries: Sequence[str] | None = None,
         title_query: str | None = None,
         title_top_k: int = 0,
+        asr_query: str | None = None,
+        asr_video_top_k: int = 20,
     ) -> KisCandidatePool:
         text_queries = _normalize_stage1_text_queries(text_query, text_queries)
         ocr_query = ocr_query.strip() if ocr_query is not None else None
         title_query = title_query.strip() if title_query is not None else None
+        asr_query = asr_query.strip() if asr_query is not None else None
         if not text_queries and not ocr_query and not title_query:
             raise SearchServiceError(
                 "Stage 1 requires Text, OCR, or Title query",
@@ -235,6 +246,27 @@ class SearchService:
             )
 
         text_query_scores_by_id: dict[str, tuple[Stage1TextQueryScore, ...]] = {}
+        asr_gate: AsrGateResult | None = None
+        video_ids: list[str] | None = None
+        if asr_query:
+            if self._asr_retrieval_service is None:
+                raise self._asr_unavailable_error()
+            try:
+                asr_gate = await self._asr_retrieval_service.retrieve(asr_query, asr_video_top_k)
+            except AsrRetrievalUnavailable as exc:
+                raise self._asr_unavailable_error() from exc
+            video_ids = asr_gate.video_ids
+            if not video_ids:
+                return KisCandidatePool(
+                    [],
+                    0,
+                    0,
+                    [],
+                    title_candidate_count=0,
+                    rrf_k=self._kis_config.rrf_k,
+                    asr_gate=asr_gate,
+                )
+
         text_metadata_by_id: dict[str, dict] = {}
         text_candidate_ids: list[str] = []
         text_source_ids: set[str] = set()
@@ -247,7 +279,9 @@ class SearchService:
             text_vectors = await asyncio.to_thread(self._encoder.encode_text, text_inputs)
             text_searches = await asyncio.gather(
                 *[
-                    asyncio.to_thread(self._milvus_store.search, vector, text_top_k)
+                    asyncio.to_thread(
+                        self._milvus_store.search, vector, text_top_k, "", video_ids
+                    )
                     for vector in text_vectors
                 ]
             )
@@ -264,7 +298,9 @@ class SearchService:
         ocr_stage1_by_id: dict[str, Stage1OcrScore] = {}
         ocr_candidate_ids: list[str] = []
         if ocr_query:
-            ocr_candidates = await self._retrieve_stage1_ocr_candidates(ocr_query, ocr_top_k)
+            ocr_candidates = await self._retrieve_stage1_ocr_candidates(
+                ocr_query, ocr_top_k, video_ids=video_ids
+            )
             for candidate in ocr_candidates:
                 keyframe_id = candidate.hit["keyframe_id"]
                 if keyframe_id not in ocr_stage1_by_id:
@@ -282,6 +318,17 @@ class SearchService:
             text_candidate_ids, ocr_candidate_ids, title_candidate_ids
         )
         if not candidate_ids:
+            if asr_gate is not None:
+                logger.warning(
+                    "retrieve_kis_candidates: ASR gate returned %d video(s) but no valid "
+                    "keyframe hits",
+                    asr_gate.candidate_video_count,
+                )
+                for video_id in asr_gate.video_ids:
+                    logger.warning(
+                        "retrieve_kis_candidates: ASR-gated video_id=%s has no valid keyframe hit",
+                        video_id,
+                    )
             return KisCandidatePool(
                 candidate_ids=[],
                 text_candidate_count=0,
@@ -289,6 +336,7 @@ class SearchService:
                 title_candidate_count=0,
                 rrf_k=self._kis_config.rrf_k,
                 results=[],
+                asr_gate=asr_gate,
             )
 
         ocr_source_ids = set(ocr_candidate_ids)
@@ -410,7 +458,8 @@ class SearchService:
             )
             if metadata is None:
                 logger.warning(
-                    "retrieve_kis_candidates: dropping keyframe_id=%s -- no Stage 1 metadata",
+                    "retrieve_kis_candidates: dropping keyframe_id=%s -- no stored Stage 1 "
+                    "metadata/frame_idx",
                     keyframe_id,
                 )
                 continue
@@ -470,7 +519,19 @@ class SearchService:
                 )
             )
 
-        results.sort(key=lambda hit: hit.score, reverse=True)
+        asr_video_ids = set(asr_gate.video_ids) if asr_gate is not None else set()
+        results.sort(
+            key=lambda hit: (_stage1_asr_priority(hit, asr_video_ids), hit.score),
+            reverse=True,
+        )
+        if asr_gate is not None:
+            returned_video_ids = {hit.video_id for hit in results}
+            for video_id in asr_gate.video_ids:
+                if video_id not in returned_video_ids:
+                    logger.warning(
+                        "retrieve_kis_candidates: ASR-gated video_id=%s has no valid keyframe hit",
+                        video_id,
+                    )
         return KisCandidatePool(
             candidate_ids=valid_candidate_ids,
             text_candidate_count=len(valid_text_ids),
@@ -478,14 +539,18 @@ class SearchService:
             title_candidate_count=len(valid_title_ids),
             rrf_k=self._kis_config.rrf_k,
             results=results,
+            asr_gate=asr_gate,
         )
 
     async def _retrieve_stage1_ocr_candidates(
-        self, query_text: str, top_k: int
+        self,
+        query_text: str,
+        top_k: int,
+        video_ids: Sequence[str] | None = None,
     ) -> list[_Stage1OcrCandidate]:
         retrieval_k = candidate_depth(top_k, self._kis_config)
         try:
-            hits = await self._es_store.search(query_text, retrieval_k)
+            hits = await self._es_store.search(query_text, retrieval_k, video_ids=video_ids)
         except EsConnectionError as exc:
             raise self._ocr_unavailable_error() from exc
 
@@ -910,6 +975,14 @@ class SearchService:
             status_code=503,
         )
 
+    @staticmethod
+    def _asr_unavailable_error() -> SearchServiceError:
+        return SearchServiceError(
+            "ASR search is unavailable: transcript retrieval is unreachable",
+            error_code="asr_unavailable",
+            status_code=503,
+        )
+
 
 def _load_kis_config() -> KisConfig:
     with _SEARCH_CONFIG_PATH.open(encoding="utf-8") as f:
@@ -1110,9 +1183,10 @@ def _candidate_query_similarity_matrix(
 
 def _metadata_from_milvus_hit(hit: dict) -> dict:
     entity = hit.get("entity", {})
+    frame_idx = entity.get("frame_idx")
     return {
         "video_id": entity.get("video_id", ""),
-        "frame_idx": int(entity.get("frame_idx", 0)),
+        "frame_idx": int(frame_idx) if frame_idx is not None else None,
         "timestamp": float(entity.get("timestamp", 0.0)),
     }
 
@@ -1130,13 +1204,14 @@ def _stage1_candidate_metadata(
     text_metadata = text_metadata_by_id.get(keyframe_id)
     mongo_doc = mongo_docs.get(keyframe_id)
     if text_metadata is not None:
+        frame_idx = text_metadata["frame_idx"]
+        if frame_idx is None and mongo_doc is not None:
+            frame_idx = mongo_doc.get("frame_idx")
+        if frame_idx is None:
+            return None
         return {
             "video_id": text_metadata["video_id"] or (mongo_doc or {}).get("video_id", ""),
-            "frame_idx": int(
-                text_metadata["frame_idx"]
-                if text_metadata["frame_idx"] is not None
-                else (mongo_doc or {}).get("frame_idx", 0)
-            ),
+            "frame_idx": int(frame_idx),
             "timestamp": float(
                 text_metadata["timestamp"]
                 if text_metadata["timestamp"] is not None
@@ -1144,7 +1219,7 @@ def _stage1_candidate_metadata(
             ),
             "thumbnail_path": mongo_doc["thumbnail_path"] if mongo_doc else "",
         }
-    if mongo_doc is None:
+    if mongo_doc is None or mongo_doc.get("frame_idx") is None:
         return None
     return {
         "video_id": mongo_doc["video_id"],
@@ -1166,6 +1241,13 @@ def _stage1_display_score(
     if title_score is not None:
         return title_score.title_score
     return 0.0
+
+
+def _stage1_asr_priority(hit: SearchHit, asr_video_ids: set[str]) -> int:
+    if not asr_video_ids or hit.stage1 is None or hit.video_id not in asr_video_ids:
+        return 0
+    source_modalities = set(hit.stage1.source_modalities)
+    return int("ocr" in source_modalities and "title" in source_modalities)
 
 
 def _stage1_ocr_reference(ocr_scores_by_id: dict[str, Stage1OcrScore]) -> float:

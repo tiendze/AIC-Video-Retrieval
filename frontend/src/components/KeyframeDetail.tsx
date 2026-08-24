@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { getVideo, getVideoKeyframes } from '../api/client'
-import type { SearchHit, VideoInfo, VideoKeyframe } from '../api/types'
+import type { AsrEvidenceSegment, SearchHit, VideoInfo, VideoKeyframe } from '../api/types'
 import styles from './KeyframeDetail.module.css'
 
 export interface KeyframeDetailProps {
@@ -41,6 +41,35 @@ function frameFromVideoKeyframe(videoId: string, keyframe: VideoKeyframe): Detai
   }
 }
 
+const DISTANCE_TIE_TOLERANCE_SECONDS = 1e-9
+
+// oxlint-disable-next-line react/only-export-components -- tested pure helper required by detail UI
+export function nearestKeyframe(
+  segment: AsrEvidenceSegment,
+  keyframes: VideoKeyframe[],
+): VideoKeyframe | null {
+  const midpoint = (segment.start_time + segment.end_time) / 2
+  return keyframes.reduce<VideoKeyframe | null>((best, frame) => {
+    if (!best) return frame
+    const frameDistance = Math.abs(frame.timestamp - midpoint)
+    const bestDistance = Math.abs(best.timestamp - midpoint)
+    const distanceDelta = frameDistance - bestDistance
+    return distanceDelta < -DISTANCE_TIE_TOLERANCE_SECONDS ||
+      (Math.abs(distanceDelta) <= DISTANCE_TIE_TOLERANCE_SECONDS &&
+        frame.timestamp < best.timestamp)
+      ? frame
+      : best
+  }, null)
+}
+
+// oxlint-disable-next-line react/only-export-components -- tested pure helper required by detail UI
+export function isInsideEvidence(
+  frame: { timestamp: number },
+  segment: AsrEvidenceSegment,
+): boolean {
+  return frame.timestamp >= segment.start_time && frame.timestamp <= segment.end_time
+}
+
 // PRD §F9 (C): full-res image + "Play YouTube" + "Find Similar Images".
 // The neighboring-keyframes strip is not in the paper -- added because a
 // Textual KIS top-1 hit is often a few shots off from the real answer, and
@@ -55,11 +84,13 @@ export function KeyframeDetail({
   const [video, setVideo] = useState<VideoInfo | null>(null)
   const [neighbors, setNeighbors] = useState<VideoKeyframe[]>([])
   const [currentFrame, setCurrentFrame] = useState<DetailFrame>(() => frameFromHit(hit))
+  const [activeEvidence, setActiveEvidence] = useState<AsrEvidenceSegment | null>(null)
   const [error, setError] = useState<string | null>(null)
   const stripRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     setCurrentFrame(frameFromHit(hit))
+    setActiveEvidence(null)
   }, [hit])
 
   useEffect(() => {
@@ -119,6 +150,12 @@ export function KeyframeDetail({
     if (next) setCurrentFrame(next)
   }
 
+  function selectEvidence(segment: AsrEvidenceSegment): void {
+    setActiveEvidence(segment)
+    const nearest = nearestKeyframe(segment, neighbors)
+    if (nearest) setCurrentFrame(frameFromVideoKeyframe(hit.video_id, nearest))
+  }
+
   return (
     <div className={styles.overlay} role="dialog" aria-label="Keyframe detail">
       <div className={styles.panel}>
@@ -134,7 +171,7 @@ export function KeyframeDetail({
         </div>
         <div className={styles.meta}>
           <div>
-            <strong>{currentFrame.video_id}</strong> · frame {currentFrame.frame_idx} ·{' '}
+            <strong>{currentFrame.video_id}</strong> · <span>frame {currentFrame.frame_idx}</span> ·{' '}
             {currentFrame.timestamp}s
           </div>
           {video && <div className={styles.title}>{video.title}</div>}
@@ -161,6 +198,25 @@ export function KeyframeDetail({
             </button>
           </div>
         </div>
+        {hit.asr_evidence && (
+          <section className={styles.asrEvidence} aria-label="ASR evidence">
+            {hit.asr_evidence.segments.slice(0, 3).map((segment) => (
+              <button
+                type="button"
+                key={segment.segment_id}
+                className={styles.asrSegment}
+                onClick={() => selectEvidence(segment)}
+                aria-pressed={activeEvidence?.segment_id === segment.segment_id}
+                aria-label={`${segment.start_time}s–${segment.end_time}s: ${segment.text}`}
+              >
+                <span>
+                  {segment.start_time}s–{segment.end_time}s
+                </span>
+                <span>{segment.text}</span>
+              </button>
+            ))}
+          </section>
+        )}
         {stripFrames.length > 0 && (
           <div className={styles.neighborStrip}>
             <button
@@ -175,7 +231,9 @@ export function KeyframeDetail({
             <div className={styles.neighbors} ref={stripRef}>
               {stripFrames.map((frame) => {
                 const active = frame.keyframe_id === currentFrame.keyframe_id
-                const highlighted = highlightedKeyframeIds.has(frame.keyframe_id)
+                const highlighted =
+                  highlightedKeyframeIds.has(frame.keyframe_id) ||
+                  (activeEvidence !== null && isInsideEvidence(frame, activeEvidence))
                 return (
                   <button
                     type="button"

@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
+from dataclasses import asdict
 from io import BytesIO
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
@@ -47,6 +48,9 @@ from app.schemas.response.search import (
     AbePatchHeatmapResponse,
     AbePatchHitResponse,
     AbeQueryScoreResponse,
+    AsrEvidenceSegmentResponse,
+    AsrGateResponse,
+    AsrVideoEvidenceResponse,
     KisCandidateHitResponse,
     KisCandidateResponse,
     KisRerankResponse,
@@ -65,6 +69,7 @@ from app.schemas.response.search import (
     TextModalityScoreResponse,
     TextQueryScoreResponse,
 )
+from app.services.asr_retrieval_service import AsrGateResult
 from app.services.kis_scoring import (
     AbeModalityScore,
     AbePair,
@@ -137,9 +142,11 @@ def _to_kis_response(hits: list[SearchHit]) -> KisSearchResponse:
                 thumbnail_url=f"/api/keyframes/{hit.keyframe_id}/thumbnail",
                 image_url=f"/api/keyframes/{hit.keyframe_id}/image",
                 final_score=hit.final_score if hit.final_score is not None else hit.score,
-                active_modalities=hit.active_modalities
-                if hit.active_modalities is not None
-                else len(hit.modalities or {}),
+                active_modalities=(
+                    hit.active_modalities
+                    if hit.active_modalities is not None
+                    else len(hit.modalities or {})
+                ),
                 modalities=_to_modalities_response(hit.modalities) or SearchModalitiesResponse(),
             )
             for hit in hits
@@ -155,6 +162,7 @@ def _to_kis_candidate_response(pool: KisCandidatePool) -> KisCandidateResponse:
         ocr_candidate_count=pool.ocr_candidate_count,
         title_candidate_count=pool.title_candidate_count,
         rrf_k=pool.rrf_k,
+        asr_gate=_to_asr_gate_response(pool.asr_gate),
         results=[
             KisCandidateHitResponse(
                 keyframe_id=hit.keyframe_id,
@@ -171,6 +179,27 @@ def _to_kis_candidate_response(pool: KisCandidatePool) -> KisCandidateResponse:
                 stage1=_to_stage1_response(hit.stage1),
             )
             for hit in pool.results
+        ],
+    )
+
+
+def _to_asr_gate_response(gate: AsrGateResult | None) -> AsrGateResponse | None:
+    if gate is None:
+        return None
+    return AsrGateResponse(
+        query=gate.query,
+        segment_hit_count=gate.segment_hit_count,
+        candidate_video_count=gate.candidate_video_count,
+        videos=[
+            AsrVideoEvidenceResponse(
+                video_id=video.video_id,
+                video_rank=video.video_rank,
+                best_bm25_score=video.best_bm25_score,
+                segments=[
+                    AsrEvidenceSegmentResponse(**asdict(segment)) for segment in video.segments
+                ],
+            )
+            for video in gate.videos
         ],
     )
 
@@ -401,6 +430,8 @@ async def retrieve_kis_candidates(
             ocr_top_k=body.ocr_top_k,
             title_query=body.title_query,
             title_top_k=body.title_top_k,
+            asr_query=body.asr_query,
+            asr_video_top_k=body.asr_video_top_k,
         )
     except SearchServiceError as exc:
         raise APIError(
@@ -410,12 +441,13 @@ async def retrieve_kis_candidates(
     latency_ms = (time.perf_counter() - start) * 1000
     logger.info(
         "search request completed: mode=kis_stage1 latency_ms=%.1f candidate_pool_size=%d "
-        "text_candidates=%d ocr_candidates=%d title_candidates=%d",
+        "text_candidates=%d ocr_candidates=%d title_candidates=%d asr_candidates=%d",
         latency_ms,
         pool.candidate_pool_size,
         pool.text_candidate_count,
         pool.ocr_candidate_count,
         pool.title_candidate_count,
+        pool.asr_gate.candidate_video_count if pool.asr_gate is not None else 0,
     )
     return _to_kis_candidate_response(pool)
 

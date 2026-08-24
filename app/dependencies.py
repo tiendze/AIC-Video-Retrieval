@@ -19,7 +19,7 @@ from app.services.thumbnail_service import ThumbnailService
 from app.services.trake_embedding_cache import TrakeEmbeddingCache
 from app.services.trake_service import TrakeService
 from app.services.vqa_service import QaService
-from app.stores.es_client import EsStore
+from app.stores.es_client import AsrEsStore, EsStore
 from app.stores.milvus_client import MilvusStore
 from app.stores.mongo_client import MongoStore
 
@@ -41,6 +41,10 @@ def get_milvus_store(request: Request) -> MilvusStore:
 
 def get_es_store(request: Request) -> EsStore:
     return request.app.state.es_store
+
+
+def get_asr_es_store(request: Request) -> AsrEsStore:
+    return request.app.state.asr_es_store
 
 
 def get_mongo_store(request: Request) -> MongoStore:
@@ -71,8 +75,14 @@ def get_health_service(
     milvus_store: MilvusStore = Depends(get_milvus_store),
     es_store: EsStore = Depends(get_es_store),
     mongo_store: MongoStore = Depends(get_mongo_store),
+    asr_es_store: AsrEsStore = Depends(get_asr_es_store),
 ) -> HealthService:
-    return HealthService(milvus_store=milvus_store, es_store=es_store, mongo_store=mongo_store)
+    return HealthService(
+        milvus_store=milvus_store,
+        es_store=es_store,
+        mongo_store=mongo_store,
+        asr_es_store=asr_es_store,
+    )
 
 
 def get_trake_service(

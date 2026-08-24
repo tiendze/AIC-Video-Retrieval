@@ -49,6 +49,13 @@ export function ResultCard({
         <span>frame {hit.frame_idx}</span>
       </span>
       {rank !== undefined && <span className={styles.rankBadge}>#{rank}</span>}
+      {hit.asr_evidence && (
+        <span
+          className={`${styles.asrBadge} ${onOpenDetail ? styles.asrBadgeBelowDetail : ''}`}
+        >
+          ASR #{hit.asr_evidence.video_rank}
+        </span>
+      )}
       {hit.final_score !== undefined && (
         <span className={styles.scoreBadge}>Final {score.toFixed(3)}</span>
       )}

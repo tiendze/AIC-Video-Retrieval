@@ -8,6 +8,7 @@ the router + dependency wiring independent of that.
 
 from __future__ import annotations
 
+from elasticsearch import ApiError
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -38,12 +39,40 @@ class _FakeMongoStore:
         return self._healthy
 
 
-def _client(milvus_ok: bool, es_ok: bool, mongo_ok: bool) -> TestClient:
+class _FakeAsrEsStore:
+    def __init__(
+        self,
+        index_exists: bool = True,
+        segment_count: int = 873,
+        error: Exception | None = None,
+    ) -> None:
+        self._index_exists = index_exists
+        self._segment_count = segment_count
+        self._error = error
+
+    async def index_exists(self) -> bool:
+        if self._error is not None:
+            raise self._error
+        return self._index_exists
+
+    async def count_segments(self) -> int:
+        if self._error is not None:
+            raise self._error
+        return self._segment_count
+
+
+def _client(
+    milvus_ok: bool,
+    es_ok: bool,
+    mongo_ok: bool,
+    asr_store: _FakeAsrEsStore | None = None,
+) -> TestClient:
     app = FastAPI()
     app.include_router(health_router)
     app.state.milvus_store = _FakeMilvusStore(milvus_ok)
     app.state.es_store = _FakeEsStore(es_ok)
     app.state.mongo_store = _FakeMongoStore(mongo_ok)
+    app.state.asr_es_store = asr_store or _FakeAsrEsStore()
     return TestClient(app)
 
 
@@ -58,6 +87,9 @@ def test_health_returns_200_and_ok_when_all_stores_are_healthy():
         "milvus_ok": True,
         "elasticsearch_ok": True,
         "mongodb_ok": True,
+        "asr_status": "ready",
+        "asr_ready": True,
+        "asr_segment_count": 873,
     }
 
 
@@ -72,3 +104,28 @@ def test_health_returns_200_and_degraded_when_a_store_is_down():
     body = response.json()
     assert body["status"] == "degraded"
     assert body["elasticsearch_ok"] is False
+    assert body["asr_status"] == "unreachable"
+    assert body["asr_ready"] is False
+    assert body["asr_segment_count"] is None
+
+
+def test_health_returns_200_when_asr_probe_raises_api_error():
+    client = _client(
+        milvus_ok=True,
+        es_ok=True,
+        mongo_ok=True,
+        asr_store=_FakeAsrEsStore(error=ApiError("503", {}, {})),
+    )
+
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "degraded",
+        "milvus_ok": True,
+        "elasticsearch_ok": True,
+        "mongodb_ok": True,
+        "asr_status": "unavailable",
+        "asr_ready": False,
+        "asr_segment_count": None,
+    }

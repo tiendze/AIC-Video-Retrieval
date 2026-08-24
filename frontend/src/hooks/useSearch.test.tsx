@@ -1,9 +1,16 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { rerankKisCandidates, retrieveKisCandidates } from '../api/client'
+import { rerankKisCandidates, retrieveKisCandidates, searchByImage } from '../api/client'
+import type {
+  KisCandidateResponse,
+  KisRerankResponse,
+  SearchHit,
+  SearchResponse,
+} from '../api/types'
 import { useSearch } from './useSearch'
 
 vi.mock('../api/client', () => ({
+  ApiError: class ApiError extends Error {},
   retrieveKisCandidates: vi.fn().mockResolvedValue({
     candidate_ids: [],
     candidate_pool_size: 0,
@@ -20,6 +27,48 @@ vi.mock('../api/client', () => ({
   }),
   searchByImage: vi.fn().mockResolvedValue({ results: [] }),
 }))
+
+const ASR_VIDEO = {
+  video_id: 'V1',
+  video_rank: 1,
+  best_bm25_score: 8.73,
+  segments: [
+    {
+      segment_id: 'V1_seg1',
+      text: 'công trình thủy lợi',
+      start_time: 151.2,
+      end_time: 158.4,
+      raw_bm25: 8.73,
+    },
+  ],
+}
+
+const ASR_GATE = {
+  query: 'thủy lợi',
+  segment_hit_count: 57,
+  candidate_video_count: 1,
+  videos: [ASR_VIDEO],
+}
+
+const STAGE1_HIT: SearchHit = {
+  keyframe_id: 'A',
+  video_id: 'V1',
+  score: 0.9,
+  frame_idx: 10,
+  timestamp: 154.0,
+  thumbnail_path: 'a.jpg',
+  thumbnail_url: '/api/keyframes/A/thumbnail',
+  image_url: '/api/keyframes/A/image',
+  stage1: { source_modalities: ['text'] },
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise
+  })
+  return { promise, resolve }
+}
 
 describe('useSearch staged KIS flow', () => {
   beforeEach(() => {
@@ -78,7 +127,7 @@ describe('useSearch staged KIS flow', () => {
     expect(result.current.candidatePool).toBeNull()
   })
 
-  it('sends Stage 1 Text Q0 and optional OCR with independent candidate counts', () => {
+  it('sends Stage 1 Text Q0 and optional OCR with independent candidate counts', async () => {
     const { result } = renderHook(() => useSearch())
 
     act(() => result.current.setGlobalTextQuery('  people on a boat  '))
@@ -96,9 +145,339 @@ describe('useSearch staged KIS flow', () => {
         ocr_top_k: 100,
         title_query: null,
         title_top_k: 100,
+        asr_query: null,
+        asr_video_top_k: 20,
       },
       expect.any(AbortSignal),
     )
+    await waitFor(() => expect(result.current.isLoading).toBe(false))
+  })
+
+  it('sends trimmed ASR Stage 1 fields and retains video evidence across Stage 2', async () => {
+    vi.mocked(retrieveKisCandidates).mockResolvedValueOnce({
+      candidate_ids: ['A'],
+      candidate_pool_size: 1,
+      text_candidate_count: 1,
+      ocr_candidate_count: 0,
+      title_candidate_count: 0,
+      rrf_k: 60,
+      asr_gate: ASR_GATE,
+      results: [STAGE1_HIT],
+    })
+    vi.mocked(rerankKisCandidates).mockResolvedValueOnce({
+      candidate_pool_size: 1,
+      final_top_k: 1,
+      results: [{ ...STAGE1_HIT, final_score: 0.95, active_modalities: 1 }],
+    })
+    const { result } = renderHook(() => useSearch())
+
+    act(() => {
+      result.current.setGlobalTextQuery('dam')
+      result.current.setAsrQuery('  thủy lợi  ')
+      result.current.setAsrVideoCandidateK(20)
+    })
+    act(() => result.current.retrieveCandidates())
+
+    await waitFor(() => expect(result.current.candidatePool?.asrGate).toEqual(ASR_GATE))
+    expect(retrieveKisCandidates).toHaveBeenCalledWith(
+      expect.objectContaining({ asr_query: 'thủy lợi', asr_video_top_k: 20 }),
+      expect.any(AbortSignal),
+    )
+    expect(result.current.results[0]?.asr_evidence).toEqual(ASR_VIDEO)
+    expect(result.current.results[0]?.frame_idx).toBe(10)
+
+    act(() => result.current.addStage2Query())
+    const queryId = result.current.stage2Queries[0]!.id
+    act(() => result.current.setStage2QueryText(queryId, 'night'))
+    act(() => result.current.setFinalTopK(1))
+    act(() => result.current.rerankCandidates())
+
+    await waitFor(() => expect(result.current.results[0]?.final_score).toBe(0.95))
+    expect(result.current.results[0]?.asr_evidence).toEqual(ASR_VIDEO)
+    expect(result.current.results[0]?.frame_idx).toBe(10)
+  })
+
+  it('ignores a deferred Stage 1 response after the ASR query changes', async () => {
+    const pending = deferred<KisCandidateResponse>()
+    vi.mocked(retrieveKisCandidates).mockReturnValueOnce(pending.promise)
+    const { result } = renderHook(() => useSearch())
+
+    act(() => result.current.setGlobalTextQuery('dam'))
+    act(() => result.current.setAsrQuery('old topic'))
+    act(() => result.current.retrieveCandidates())
+    expect(result.current.isLoading).toBe(true)
+
+    act(() => result.current.setAsrQuery('new topic'))
+    expect(result.current.candidatePool).toBeNull()
+    expect(result.current.results).toEqual([])
+
+    await act(async () => {
+      pending.resolve({
+        candidate_ids: ['A'],
+        candidate_pool_size: 1,
+        text_candidate_count: 1,
+        ocr_candidate_count: 0,
+        title_candidate_count: 0,
+        rrf_k: 60,
+        asr_gate: ASR_GATE,
+        results: [STAGE1_HIT],
+      })
+      await pending.promise
+    })
+
+    expect(result.current.candidatePool).toBeNull()
+    expect(result.current.results).toEqual([])
+  })
+
+  it('drops ASR and invalidates an in-flight KIS request when readiness becomes non-ready', async () => {
+    const pending = deferred<KisCandidateResponse>()
+    vi.mocked(retrieveKisCandidates).mockReturnValueOnce(pending.promise)
+    const { result, rerender } = renderHook(
+      ({ asrReady }) => useSearch({ asrReady }),
+      { initialProps: { asrReady: true } },
+    )
+
+    act(() => {
+      result.current.setGlobalTextQuery('dam')
+      result.current.setOcrQuery('SAIGON')
+      result.current.setAsrQuery('hydraulic works')
+    })
+    act(() => result.current.retrieveCandidates())
+    const requestSignal = vi.mocked(retrieveKisCandidates).mock.calls[0]?.[1]
+
+    rerender({ asrReady: false })
+
+    await waitFor(() => expect(result.current.asrQuery).toBe(''))
+    expect(requestSignal?.aborted).toBe(true)
+    expect(result.current.ocrQuery).toBe('SAIGON')
+
+    await act(async () => {
+      pending.resolve({
+        candidate_ids: ['A'],
+        candidate_pool_size: 1,
+        text_candidate_count: 1,
+        ocr_candidate_count: 0,
+        title_candidate_count: 0,
+        rrf_k: 60,
+        asr_gate: ASR_GATE,
+        results: [STAGE1_HIT],
+      })
+      await pending.promise
+    })
+
+    expect(result.current.candidatePool).toBeNull()
+    expect(result.current.results).toEqual([])
+
+    act(() => result.current.retrieveCandidates())
+    expect(retrieveKisCandidates).toHaveBeenLastCalledWith(
+      expect.objectContaining({ ocr_query: 'SAIGON', asr_query: null }),
+      expect.any(AbortSignal),
+    )
+  })
+
+  it('ignores a deferred Stage 2 response after the ASR video count changes', async () => {
+    vi.mocked(retrieveKisCandidates).mockResolvedValueOnce({
+      candidate_ids: ['A'],
+      candidate_pool_size: 1,
+      text_candidate_count: 1,
+      ocr_candidate_count: 0,
+      title_candidate_count: 0,
+      rrf_k: 60,
+      asr_gate: ASR_GATE,
+      results: [STAGE1_HIT],
+    })
+    const pending = deferred<KisRerankResponse>()
+    vi.mocked(rerankKisCandidates).mockReturnValueOnce(pending.promise)
+    const { result } = renderHook(() => useSearch())
+
+    act(() => result.current.setGlobalTextQuery('dam'))
+    act(() => result.current.setAsrQuery('thủy lợi'))
+    act(() => result.current.retrieveCandidates())
+    await waitFor(() => expect(result.current.candidatePool?.candidateIds).toEqual(['A']))
+
+    act(() => result.current.addStage2Query())
+    const queryId = result.current.stage2Queries[0]!.id
+    act(() => result.current.setStage2QueryText(queryId, 'night'))
+    act(() => result.current.setFinalTopK(1))
+    act(() => result.current.rerankCandidates())
+    expect(result.current.isLoading).toBe(true)
+
+    act(() => result.current.setAsrVideoCandidateK(10))
+    expect(result.current.candidatePool).toBeNull()
+    expect(result.current.results).toEqual([])
+
+    await act(async () => {
+      pending.resolve({
+        candidate_pool_size: 1,
+        final_top_k: 1,
+        results: [{ ...STAGE1_HIT, final_score: 0.99, active_modalities: 1 }],
+      })
+      await pending.promise
+    })
+
+    expect(result.current.candidatePool).toBeNull()
+    expect(result.current.results).toEqual([])
+  })
+
+  it('keeps an unrelated deferred image search active when ASR controls change', async () => {
+    const pending = deferred<SearchResponse>()
+    vi.mocked(searchByImage).mockReturnValueOnce(pending.promise)
+    const { result } = renderHook(() => useSearch())
+
+    act(() => result.current.runImageSearch(new Blob(['image'], { type: 'image/jpeg' })))
+    const imageSignal = vi.mocked(searchByImage).mock.calls[0]?.[2]
+    expect(result.current.isLoading).toBe(true)
+
+    act(() => result.current.setAsrQuery('thủy lợi'))
+    act(() => result.current.setAsrVideoCandidateK(10))
+
+    expect(imageSignal?.aborted).toBe(false)
+    expect(result.current.isLoading).toBe(true)
+
+    await act(async () => {
+      pending.resolve({ results: [STAGE1_HIT] })
+      await pending.promise
+    })
+
+    expect(result.current.results).toEqual([STAGE1_HIT])
+    expect(result.current.isLoading).toBe(false)
+  })
+
+  it('keeps an unrelated image search active across a non-ready ASR transition', async () => {
+    const pending = deferred<SearchResponse>()
+    vi.mocked(searchByImage).mockReturnValueOnce(pending.promise)
+    const { result, rerender } = renderHook(
+      ({ asrReady }) => useSearch({ asrReady }),
+      { initialProps: { asrReady: true } },
+    )
+
+    act(() => result.current.setAsrQuery('hydraulic works'))
+    act(() => result.current.runImageSearch(new Blob(['image'], { type: 'image/jpeg' })))
+    const imageSignal = vi.mocked(searchByImage).mock.calls[0]?.[2]
+
+    rerender({ asrReady: false })
+
+    await waitFor(() => expect(result.current.asrQuery).toBe(''))
+    expect(imageSignal?.aborted).toBe(false)
+    expect(result.current.isLoading).toBe(true)
+
+    await act(async () => {
+      pending.resolve({ results: [STAGE1_HIT] })
+      await pending.promise
+    })
+
+    expect(result.current.results).toEqual([STAGE1_HIT])
+    expect(result.current.isLoading).toBe(false)
+  })
+
+  it('keeps completed image results across a non-ready ASR transition', async () => {
+    vi.mocked(searchByImage).mockResolvedValueOnce({ results: [STAGE1_HIT] })
+    const { result, rerender } = renderHook(
+      ({ asrReady }) => useSearch({ asrReady }),
+      { initialProps: { asrReady: true } },
+    )
+
+    act(() => result.current.setAsrQuery('hydraulic works'))
+    act(() => result.current.runImageSearch(new Blob(['image'], { type: 'image/jpeg' })))
+    await waitFor(() => expect(result.current.results).toEqual([STAGE1_HIT]))
+
+    rerender({ asrReady: false })
+
+    await waitFor(() => expect(result.current.asrQuery).toBe(''))
+    expect(result.current.results).toEqual([STAGE1_HIT])
+  })
+
+  it('clears stale KIS feedback while retaining completed image results', async () => {
+    vi.mocked(searchByImage).mockResolvedValueOnce({ results: [STAGE1_HIT] })
+    vi.mocked(retrieveKisCandidates).mockRejectedValueOnce(new Error('network down'))
+    const { result, rerender } = renderHook(
+      ({ asrReady }) => useSearch({ asrReady }),
+      { initialProps: { asrReady: true } },
+    )
+
+    act(() => {
+      result.current.setGlobalTextQuery('dam')
+      result.current.setAsrQuery('hydraulic works')
+      result.current.runImageSearch(new Blob(['image'], { type: 'image/jpeg' }))
+    })
+    await waitFor(() => expect(result.current.results).toEqual([STAGE1_HIT]))
+    expect(result.current.latencyMs).not.toBeNull()
+
+    act(() => result.current.retrieveCandidates())
+    await waitFor(() => expect(result.current.error).toBe('Candidate retrieval failed'))
+
+    rerender({ asrReady: false })
+
+    await waitFor(() => expect(result.current.asrQuery).toBe(''))
+    expect(result.current.results).toEqual([STAGE1_HIT])
+    expect(result.current.error).toBeNull()
+    expect(result.current.latencyMs).toBeNull()
+  })
+
+  it('changing ASR query or candidate video count invalidates the candidate pool', async () => {
+    vi.mocked(retrieveKisCandidates)
+      .mockResolvedValueOnce({
+        candidate_ids: ['A'],
+        candidate_pool_size: 1,
+        text_candidate_count: 1,
+        ocr_candidate_count: 0,
+        title_candidate_count: 0,
+        rrf_k: 60,
+        asr_gate: ASR_GATE,
+        results: [STAGE1_HIT],
+      })
+      .mockResolvedValueOnce({
+        candidate_ids: ['A'],
+        candidate_pool_size: 1,
+        text_candidate_count: 1,
+        ocr_candidate_count: 0,
+        title_candidate_count: 0,
+        rrf_k: 60,
+        asr_gate: ASR_GATE,
+        results: [STAGE1_HIT],
+      })
+    const { result } = renderHook(() => useSearch())
+
+    act(() => result.current.setGlobalTextQuery('dam'))
+    act(() => result.current.retrieveCandidates())
+    await waitFor(() => expect(result.current.candidatePool).not.toBeNull())
+
+    act(() => result.current.setAsrQuery('new topic'))
+    expect(result.current.candidatePool).toBeNull()
+
+    act(() => result.current.retrieveCandidates())
+    await waitFor(() => expect(result.current.candidatePool).not.toBeNull())
+
+    act(() => result.current.setAsrVideoCandidateK(10))
+    expect(result.current.candidatePool).toBeNull()
+  })
+
+  it('keeps an active zero-hit ASR gate distinct from an inactive gate', async () => {
+    const zeroHitGate = {
+      query: 'không có kết quả',
+      segment_hit_count: 0,
+      candidate_video_count: 0,
+      videos: [],
+    }
+    vi.mocked(retrieveKisCandidates).mockResolvedValueOnce({
+      candidate_ids: [],
+      candidate_pool_size: 0,
+      text_candidate_count: 0,
+      ocr_candidate_count: 0,
+      title_candidate_count: 0,
+      rrf_k: 60,
+      asr_gate: zeroHitGate,
+      results: [],
+    })
+    const { result } = renderHook(() => useSearch())
+
+    act(() => {
+      result.current.setGlobalTextQuery('dam')
+      result.current.setAsrQuery('không có kết quả')
+    })
+    act(() => result.current.retrieveCandidates())
+
+    await waitFor(() => expect(result.current.candidatePool?.asrGate).toEqual(zeroHitGate))
   })
 
   it('stores the full Stage 1 pool and reranks that original pool after subquery changes', async () => {

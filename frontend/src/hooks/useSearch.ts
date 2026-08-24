@@ -1,5 +1,6 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
+  DEFAULT_ASR_VIDEO_CANDIDATE_K,
   DEFAULT_OCR_CANDIDATE_K,
   DEFAULT_TITLE_CANDIDATE_K,
   DEFAULT_TEXT_CANDIDATE_K,
@@ -11,7 +12,14 @@ import {
   searchByImage as searchByImageApi,
 } from '../api/client'
 import { isAbortError, messageFor } from '../api/requestHelpers'
-import type { KisQueryPayload, KisQueryRow, KisQueryType, SearchHit } from '../api/types'
+import type {
+  AsrGate,
+  AsrVideoEvidence,
+  KisQueryPayload,
+  KisQueryRow,
+  KisQueryType,
+  SearchHit,
+} from '../api/types'
 
 export interface KisCandidatePoolState {
   candidateIds: string[]
@@ -20,6 +28,7 @@ export interface KisCandidatePoolState {
   ocrCandidateCount: number
   titleCandidateCount: number
   rrfK: number
+  asrGate: AsrGate | null
   hits: SearchHit[]
 }
 
@@ -40,6 +49,10 @@ export interface UseSearchResult {
   setTitleQuery: (query: string) => void
   titleCandidateK: number
   setTitleCandidateK: (topK: number) => void
+  asrQuery: string
+  setAsrQuery: (query: string) => void
+  asrVideoCandidateK: number
+  setAsrVideoCandidateK: (topK: number) => void
   candidatePool: KisCandidatePoolState | null
   stage2Queries: KisQueryRow[]
   setStage2QueryText: (id: string, text: string) => void
@@ -68,12 +81,6 @@ export interface UseSearchResult {
   setResults: (hits: SearchHit[]) => void
   isLoading: boolean
   error: string | null
-  // Measured client-side (request start -> response parsed) -- prep for
-  // P1.7's p50/p95 latency table (plan §P1.6: "useSearch.ts đã đo latency
-  // sẵn để P1.7 chỉ việc thu thập"). QUEST-populated results reset this to
-  // null (via setLatencyMs) -- P1.7's measurement is specific to
-  // POST /api/search, so a stale number here would misrepresent a result
-  // set that came from a different endpoint entirely.
   latencyMs: number | null
   setLatencyMs: (latencyMs: number | null) => void
   // `overrideQuery` lets a caller search by exact text without first
@@ -87,10 +94,12 @@ export interface UseSearchResult {
   runImageSearch: (file: Blob) => void
 }
 
-// KIS Stage 2 rows are keyed by a stable id so removing a middle row never
-// re-associates focus/caret with the wrong input. AbortController cancels
-// an in-flight request when a newer one starts, so a slow first response
-// can't overwrite a later one's results.
+export interface UseSearchOptions {
+  asrReady?: boolean
+}
+
+type ResultsOwner = 'kis' | 'image' | 'external' | null
+
 let kisRowIdCounter = 0
 function nextKisRowId(): string {
   kisRowIdCounter += 1
@@ -125,13 +134,25 @@ function activePayload(rows: KisQueryRow[]): KisQueryPayload[] {
     .filter((row): row is KisQueryPayload => row !== null)
 }
 
-export function useSearch(): UseSearchResult {
+function withAsrEvidence(
+  hit: SearchHit,
+  evidenceByVideo: Map<string, AsrVideoEvidence>,
+): SearchHit {
+  const evidence = evidenceByVideo.get(hit.video_id)
+  return evidence ? { ...hit, asr_evidence: evidence } : hit
+}
+
+export function useSearch({ asrReady = true }: UseSearchOptions = {}): UseSearchResult {
   const [textQueriesValue, setTextQueriesValue] = useState<string[]>([''])
   const [textCandidateKValue, setTextCandidateKValue] = useState(DEFAULT_TEXT_CANDIDATE_K)
   const [ocrQueryValue, setOcrQueryValue] = useState('')
   const [ocrCandidateKValue, setOcrCandidateKValue] = useState(DEFAULT_OCR_CANDIDATE_K)
   const [titleQueryValue, setTitleQueryValue] = useState('')
   const [titleCandidateKValue, setTitleCandidateKValue] = useState(DEFAULT_TITLE_CANDIDATE_K)
+  const [asrQueryValue, setAsrQueryValue] = useState('')
+  const [asrVideoCandidateKValue, setAsrVideoCandidateKValue] = useState(
+    DEFAULT_ASR_VIDEO_CANDIDATE_K,
+  )
   const [candidatePool, setCandidatePool] = useState<KisCandidatePoolState | null>(null)
   const [stage2Queries, setStage2Queries] = useState<KisQueryRow[]>([])
   const [finalTopK, setFinalTopK] = useState(DEFAULT_TOP_K)
@@ -140,15 +161,38 @@ export function useSearch(): UseSearchResult {
   const [error, setError] = useState<string | null>(null)
   const [latencyMs, setLatencyMs] = useState<number | null>(null)
   const abortRef = useRef<AbortController | null>(null)
+  const kisAbortRef = useRef<AbortController | null>(null)
+  const kisRequestGenerationRef = useRef(0)
+  const resultsOwnerRef = useRef<ResultsOwner>(null)
   const primaryTextQuery = textQueriesValue[0] ?? ''
 
-  const invalidateCandidatePool = useCallback(() => {
+  const invalidateCandidatePool = useCallback((preserveNonKisResults = false) => {
+    kisRequestGenerationRef.current += 1
+    const kisController = kisAbortRef.current
+    kisController?.abort()
+    kisAbortRef.current = null
+    if (kisController && abortRef.current === kisController) {
+      abortRef.current = null
+      setIsLoading(false)
+    }
     setCandidatePool(null)
     setStage2Queries([])
-    setResults([])
+    const keepResults =
+      preserveNonKisResults &&
+      (resultsOwnerRef.current === 'image' || resultsOwnerRef.current === 'external')
     setError(null)
     setLatencyMs(null)
+    if (!keepResults) {
+      setResults([])
+      resultsOwnerRef.current = null
+    }
   }, [])
+
+  useEffect(() => {
+    if (asrReady || !asrQueryValue) return
+    setAsrQueryValue('')
+    invalidateCandidatePool(true)
+  }, [asrQueryValue, asrReady, invalidateCandidatePool])
 
   const setGlobalTextQuery = useCallback((query: string) => {
     setTextQueriesValue((prev) => {
@@ -187,6 +231,11 @@ export function useSearch(): UseSearchResult {
     invalidateCandidatePool()
   }, [invalidateCandidatePool])
 
+  const setAsrQuery = useCallback((query: string) => {
+    setAsrQueryValue(query)
+    invalidateCandidatePool()
+  }, [invalidateCandidatePool])
+
   const setTextCandidateK = useCallback((topK: number) => {
     setTextCandidateKValue(topK)
     invalidateCandidatePool()
@@ -199,6 +248,11 @@ export function useSearch(): UseSearchResult {
 
   const setTitleCandidateK = useCallback((topK: number) => {
     setTitleCandidateKValue(topK)
+    invalidateCandidatePool()
+  }, [invalidateCandidatePool])
+
+  const setAsrVideoCandidateK = useCallback((topK: number) => {
+    setAsrVideoCandidateKValue(topK)
     invalidateCandidatePool()
   }, [invalidateCandidatePool])
 
@@ -283,6 +337,7 @@ export function useSearch(): UseSearchResult {
 
   const applyExternalResults = useCallback((hits: SearchHit[]) => {
     setCandidatePool(null)
+    resultsOwnerRef.current = 'external'
     setResults(hits)
   }, [])
 
@@ -292,10 +347,14 @@ export function useSearch(): UseSearchResult {
       : textQueriesValue.map((query) => query.trim()).filter(Boolean)
     const ocrQuery = ocrQueryValue.trim()
     const titleQuery = titleQueryValue.trim()
+    const asrQuery = asrReady ? asrQueryValue.trim() : ''
     if (textQueries.length === 0 && !ocrQuery && !titleQuery) return
     abortRef.current?.abort()
     const controller = new AbortController()
     abortRef.current = controller
+    kisAbortRef.current = controller
+    kisRequestGenerationRef.current += 1
+    const requestGeneration = kisRequestGenerationRef.current
     setIsLoading(true)
     setError(null)
     const start = performance.now()
@@ -309,14 +368,23 @@ export function useSearch(): UseSearchResult {
         ocr_top_k: ocrCandidateKValue,
         title_query: titleQuery || null,
         title_top_k: titleCandidateKValue,
+        asr_query: asrQuery || null,
+        asr_video_top_k: asrVideoCandidateKValue,
       },
       controller.signal,
     )
       .then((response) => {
-        const hits = response.results.map((hit) => ({
-          ...hit,
-          candidate_pool_size: response.candidate_pool_size,
-        }))
+        if (requestGeneration !== kisRequestGenerationRef.current) return
+        const asrGate = response.asr_gate ?? null
+        const asrEvidenceByVideo = new Map(
+          (asrGate?.videos ?? []).map((video) => [video.video_id, video]),
+        )
+        const hits = response.results.map((hit) =>
+          withAsrEvidence(
+            { ...hit, candidate_pool_size: response.candidate_pool_size },
+            asrEvidenceByVideo,
+          ),
+        )
         const pool = {
           candidateIds: response.candidate_ids,
           candidatePoolSize: response.candidate_pool_size,
@@ -324,9 +392,11 @@ export function useSearch(): UseSearchResult {
           ocrCandidateCount: response.ocr_candidate_count,
           titleCandidateCount: response.title_candidate_count,
           rrfK: response.rrf_k,
+          asrGate,
           hits,
         }
         setCandidatePool(pool)
+        resultsOwnerRef.current = 'kis'
         setResults(hits)
         if (response.candidate_pool_size > 0 && finalTopK > response.candidate_pool_size) {
           setFinalTopK(response.candidate_pool_size)
@@ -334,13 +404,23 @@ export function useSearch(): UseSearchResult {
         setLatencyMs(performance.now() - start)
       })
       .catch((err: unknown) => {
+        if (requestGeneration !== kisRequestGenerationRef.current) return
         if (isAbortError(err)) return
         setError(messageFor(err, 'Candidate retrieval failed'))
       })
       .finally(() => {
-        if (abortRef.current === controller) setIsLoading(false)
+        if (
+          requestGeneration === kisRequestGenerationRef.current &&
+          abortRef.current === controller
+        ) {
+          setIsLoading(false)
+        }
+        if (kisAbortRef.current === controller) kisAbortRef.current = null
       })
   }, [
+    asrQueryValue,
+    asrReady,
+    asrVideoCandidateKValue,
     finalTopK,
     ocrCandidateKValue,
     ocrQueryValue,
@@ -365,10 +445,16 @@ export function useSearch(): UseSearchResult {
     abortRef.current?.abort()
     const controller = new AbortController()
     abortRef.current = controller
+    kisAbortRef.current = controller
+    kisRequestGenerationRef.current += 1
+    const requestGeneration = kisRequestGenerationRef.current
     setIsLoading(true)
     setError(null)
     const start = performance.now()
     const stage1ById = new Map(candidatePool.hits.map((hit) => [hit.keyframe_id, hit]))
+    const asrEvidenceByVideo = new Map(
+      (candidatePool.asrGate?.videos ?? []).map((video) => [video.video_id, video]),
+    )
 
     rerankKisCandidatesApi(
       {
@@ -379,26 +465,42 @@ export function useSearch(): UseSearchResult {
       controller.signal,
     )
       .then((response) => {
+        if (requestGeneration !== kisRequestGenerationRef.current) return
+        resultsOwnerRef.current = 'kis'
         setResults(
-          response.results.map((hit) => ({
-            ...hit,
-            stage1: stage1ById.get(hit.keyframe_id)?.stage1,
-            candidate_pool_size: response.candidate_pool_size,
-          })),
+          response.results.map((hit) =>
+            withAsrEvidence(
+              {
+                ...hit,
+                stage1: stage1ById.get(hit.keyframe_id)?.stage1,
+                candidate_pool_size: response.candidate_pool_size,
+              },
+              asrEvidenceByVideo,
+            ),
+          ),
         )
         setLatencyMs(performance.now() - start)
       })
       .catch((err: unknown) => {
+        if (requestGeneration !== kisRequestGenerationRef.current) return
         if (isAbortError(err)) return
         setError(messageFor(err, 'Candidate reranking failed'))
       })
       .finally(() => {
-        if (abortRef.current === controller) setIsLoading(false)
+        if (
+          requestGeneration === kisRequestGenerationRef.current &&
+          abortRef.current === controller
+        ) {
+          setIsLoading(false)
+        }
+        if (kisAbortRef.current === controller) kisAbortRef.current = null
       })
   }, [candidatePool, finalTopK, stage2Queries])
 
   const runImageSearch = useCallback((file: Blob) => {
     abortRef.current?.abort()
+    kisAbortRef.current = null
+    kisRequestGenerationRef.current += 1
     const controller = new AbortController()
     abortRef.current = controller
     setIsLoading(true)
@@ -408,6 +510,7 @@ export function useSearch(): UseSearchResult {
     searchByImageApi(file, finalTopK, controller.signal)
       .then((response) => {
         setCandidatePool(null)
+        resultsOwnerRef.current = 'image'
         setResults(response.results)
         setLatencyMs(performance.now() - start)
       })
@@ -437,6 +540,10 @@ export function useSearch(): UseSearchResult {
     setTitleQuery,
     titleCandidateK: titleCandidateKValue,
     setTitleCandidateK,
+    asrQuery: asrQueryValue,
+    setAsrQuery,
+    asrVideoCandidateK: asrVideoCandidateKValue,
+    setAsrVideoCandidateK,
     candidatePool,
     stage2Queries,
     setStage2QueryText,

@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { fetchImageBlob } from './api/client'
 import { DEFAULT_RRF_K } from './api/constants'
-import type { AppMode, SearchHit, TrakeKeyframe, TrakeVideoResultItem } from './api/types'
+import type {
+  AppMode,
+  HealthStatus,
+  SearchHit,
+  TrakeKeyframe,
+  TrakeVideoResultItem,
+} from './api/types'
 import { EventSequenceInput } from './components/EventSequenceInput'
 import { FilterPanel } from './components/FilterPanel'
 import { FrameChecker } from './components/FrameChecker'
@@ -58,7 +64,19 @@ const ES_DOWN_MESSAGE = 'Elasticsearch không khả dụng — OCR trong KIS t�
 // mode-agnostic.
 const MODE_ORDER: AppMode[] = ['kis', 'dante']
 
+function asrReadinessMessage(health: HealthStatus | null): string | null {
+  if (!health || health.asr_status === 'ready') return null
+  if (health.asr_status === 'unreachable') {
+    return 'Elasticsearch is unreachable; ASR is unavailable.'
+  }
+  if (health.asr_status === 'unavailable') {
+    return 'The ASR transcript index is unavailable.'
+  }
+  return 'The ASR transcript index is empty.'
+}
+
 function App() {
+  const health = useHealth()
   const {
     textQueries,
     setTextQuery,
@@ -76,6 +94,10 @@ function App() {
     setTitleQuery,
     titleCandidateK,
     setTitleCandidateK,
+    asrQuery,
+    setAsrQuery,
+    asrVideoCandidateK,
+    setAsrVideoCandidateK,
     candidatePool,
     stage2Queries,
     setStage2QueryText,
@@ -101,13 +123,12 @@ function App() {
     runSearch,
     rerankCandidates,
     runImageSearch,
-  } = useSearch()
+  } = useSearch({ asrReady: health?.asr_ready !== false })
   const [selectedHit, setSelectedHit] = useState<SearchHit | null>(null)
   const [detailHit, setDetailHit] = useState<SearchHit | null>(null)
   const [detailHighlightFrames, setDetailHighlightFrames] = useState<DetailFrame[]>([])
   const queryInputRef = useRef<HTMLInputElement>(null)
   const kisLeftScrollRef = useRef<HTMLDivElement>(null)
-  const health = useHealth()
   const esDown = health?.elasticsearch_ok === false
   const [viewMode, setViewMode] = useState<RetrievalViewMode>('ranked')
   const [groupSortMode, setGroupSortMode] = useState<VideoGroupSortMode>('best')
@@ -120,6 +141,7 @@ function App() {
     if (excludedVideoIds.size === 0) return filtered
     return filtered.filter((hit) => !excludedVideoIds.has(hit.video_id))
   }, [excludedVideoIds, results, videoFilter])
+  const asrMessage = asrReadinessMessage(health)
 
   // QUEST (plan §P2.5, PRD §F5). Both branches push hits into the exact
   // same grid a regular search populates -- latencyMs resets to null
@@ -341,6 +363,11 @@ function App() {
                 ocrCandidateK={ocrCandidateK}
                 titleQuery={titleQuery}
                 titleCandidateK={titleCandidateK}
+                asrQuery={asrQuery}
+                asrVideoCandidateK={asrVideoCandidateK}
+                asrGate={candidatePool?.asrGate ?? null}
+                asrDisabled={health?.asr_ready === false}
+                asrReadinessMessage={asrMessage}
                 candidatePoolSize={candidatePool?.candidatePoolSize ?? null}
                 textCandidateCount={candidatePool?.textCandidateCount ?? 0}
                 ocrCandidateCount={candidatePool?.ocrCandidateCount ?? 0}
@@ -353,6 +380,8 @@ function App() {
                 onOcrCandidateKChange={setOcrCandidateK}
                 onTitleQueryChange={setTitleQuery}
                 onTitleCandidateKChange={setTitleCandidateK}
+                onAsrQueryChange={setAsrQuery}
+                onAsrVideoCandidateKChange={setAsrVideoCandidateK}
                 onStage2QueryTextChange={setStage2QueryText}
                 onStage2QueryTypeChange={setStage2QueryType}
                 onAbePairAttributeChange={setAbePairAttribute}

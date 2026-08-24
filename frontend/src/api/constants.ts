@@ -9,6 +9,9 @@ export const DEFAULT_OCR_CANDIDATE_K = 100
 export const DEFAULT_TITLE_CANDIDATE_K = 100
 export const MAX_CANDIDATE_K = 1000
 export const DEFAULT_RRF_K = 60
+export const DEFAULT_ASR_VIDEO_CANDIDATE_K = 20
+export const MAX_ASR_VIDEO_CANDIDATE_K = 100
+export const MAX_ASR_QUERY_LENGTH = 1000
 
 // Mirrors configs/search/trake.yaml -- POST /api/trake ranks N-keyframe
 // sequences, a different unit than /api/search's per-keyframe top_k, so it

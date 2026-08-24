@@ -14,16 +14,21 @@ identical) -> re-cut batched-mode segments via word timestamps if configured
 (configs/ingest/asr_offline.yaml's resegment_min_pause_sec) -> filter +
 index through `run_asr()` -> record `asr_runs.asr_status` in MongoDB.
 
-WARNING: touches Elasticsearch + MongoDB -- per CLAUDE.md section 10,
-prepared here for you to run yourself, not run automatically.
+WARNING: touches Elasticsearch + MongoDB. This is an owner-operated command;
+it is prepared here for the project owner to run, never for automatic execution.
 
-Prerequisites:
-  docker compose up -d              # MongoDB + Elasticsearch
-  python scripts/n3_reset_asr_stores.py   # wipe old-model data FIRST (R2/F5)
+Routine import prerequisites:
+  MongoDB + Elasticsearch are already running and the artifact/model identity
+  checks below are expected to pass. A routine import does not require reset.
 
-Usage:
-  python scripts/import_asr_out.py --asr-out-dir data/asr_out --reset
+Routine import:
+  python scripts/import_asr_out.py --asr-out-dir data/asr_out
   python scripts/import_asr_out.py --asr-out-dir data/asr_out --limit-videos 1  # eyeball one first
+
+The owner-only `--reset` flag only bypasses the different-model_id guard. It
+does not delete Elasticsearch, MongoDB, or Milvus data. Before using it, the
+owner must separately review the destructive replacement procedure and verify
+explicit backup and restore inputs.
 """
 
 from __future__ import annotations
@@ -32,6 +37,7 @@ import argparse
 import asyncio
 import logging
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 import yaml
@@ -65,7 +71,7 @@ _ASR_OFFLINE_CONFIG_PATH = _REPO_ROOT / "configs" / "ingest" / "asr_offline.yaml
 _ES_ASR_INDEX_NAME = "asr_segments"
 
 
-def _parse_args() -> argparse.Namespace:
+def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -77,13 +83,15 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--reset",
         action="store_true",
-        help="allow import even when asr_runs already holds a different model_id "
-        "(otherwise the run refuses, mirroring should_transcribe's F1 guard)",
+        help=(
+            "owner-only: bypass the different-model_id guard after a separately reviewed "
+            "replacement with verified backup/restore inputs; does not delete old documents"
+        ),
     )
     parser.add_argument(
         "--limit-videos", type=int, default=0, help="0 = no limit; >0 to eyeball first"
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def _load_yaml(path: Path) -> dict:
@@ -130,8 +138,10 @@ async def _main() -> int:
         if stale:
             logger.error(
                 "asr_runs already holds model_id(s)=%s, importing model_id=%s would mix "
-                "two models (R2/F5) -- run scripts/n3_reset_asr_stores.py first, or pass "
-                "--reset if you have already done so",
+                "two models (R2/F5) -- refusing routine import. The owner must separately "
+                "review the destructive replacement, verify backup/restore inputs, clear "
+                "the old stores, and only then rerun with --reset; --reset alone deletes "
+                "nothing",
                 sorted(stale),
                 asr_config.model_id,
             )

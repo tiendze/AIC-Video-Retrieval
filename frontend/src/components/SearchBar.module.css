@@ -320,12 +320,14 @@
 }
 
 .poolBreakdown,
-.hint {
+.hint,
+.asrReadiness {
   color: #cbd5e1;
   font-size: 12px;
 }
 
-.hint {
+.hint,
+.asrReadiness {
   color: #fbbf24;
 }
 

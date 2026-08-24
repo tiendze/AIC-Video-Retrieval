@@ -10,7 +10,7 @@
 .panel {
   position: relative;
   display: grid;
-  grid-template-rows: minmax(0, 1fr) auto auto;
+  grid-template-rows: minmax(0, 1fr) auto auto auto;
   width: 100%;
   height: 100%;
   min-height: 0;
@@ -69,6 +69,22 @@
   display: flex;
   gap: 8px;
   justify-content: flex-start;
+}
+
+.asrEvidence {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.asrSegment {
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.55rem;
+  border: 1px solid #334155;
+  border-radius: 0.4rem;
+  background: #0f172a;
+  color: inherit;
+  text-align: left;
 }
 
 .playButton,

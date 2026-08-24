@@ -2,6 +2,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.config import Settings
+from app.schemas.request.search import KisCandidateRequest
 
 
 def test_settings_loads_from_env_vars(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -41,3 +42,14 @@ def test_settings_masks_secrets_in_repr(monkeypatch: pytest.MonkeyPatch) -> None
 
     assert "fake-gemini-key" not in repr(settings)
     assert "fake-openai-key" not in repr(settings)
+
+
+def test_kis_asr_video_candidate_boundaries_come_from_search_config() -> None:
+    assert KisCandidateRequest(text_query="dam").asr_video_top_k == 20
+    assert KisCandidateRequest(text_query="dam", asr_video_top_k=1).asr_video_top_k == 1
+    assert KisCandidateRequest(text_query="dam", asr_video_top_k=100).asr_video_top_k == 100
+
+    with pytest.raises(ValidationError):
+        KisCandidateRequest(text_query="dam", asr_video_top_k=0)
+    with pytest.raises(ValidationError):
+        KisCandidateRequest(text_query="dam", asr_video_top_k=101)

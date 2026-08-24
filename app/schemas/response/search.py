@@ -166,6 +166,28 @@ class KisCandidateHitResponse(SearchHitResponse):
     stage1: Stage1RetrievalResponse
 
 
+class AsrEvidenceSegmentResponse(BaseModel):
+    segment_id: str
+    text: str
+    start_time: float
+    end_time: float
+    raw_bm25: float
+
+
+class AsrVideoEvidenceResponse(BaseModel):
+    video_id: str
+    video_rank: int
+    best_bm25_score: float
+    segments: list[AsrEvidenceSegmentResponse]
+
+
+class AsrGateResponse(BaseModel):
+    query: str
+    segment_hit_count: int
+    candidate_video_count: int
+    videos: list[AsrVideoEvidenceResponse]
+
+
 class KisCandidateResponse(BaseModel):
     candidate_ids: list[str]
     candidate_pool_size: int
@@ -174,6 +196,7 @@ class KisCandidateResponse(BaseModel):
     title_candidate_count: int = 0
     rrf_k: int = 60
     results: list[KisCandidateHitResponse]
+    asr_gate: AsrGateResponse | None = None
 
 
 class KisSearchResponse(BaseModel):

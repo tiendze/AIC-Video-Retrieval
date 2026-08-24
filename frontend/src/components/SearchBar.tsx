@@ -1,6 +1,12 @@
 import { forwardRef } from 'react'
-import { MAX_CANDIDATE_K, MAX_TOP_K, MIN_TOP_K } from '../api/constants'
-import type { KisQueryRow, KisQueryType } from '../api/types'
+import {
+  MAX_ASR_QUERY_LENGTH,
+  MAX_ASR_VIDEO_CANDIDATE_K,
+  MAX_CANDIDATE_K,
+  MAX_TOP_K,
+  MIN_TOP_K,
+} from '../api/constants'
+import type { AsrGate, KisQueryRow, KisQueryType } from '../api/types'
 import { QueryInput } from './QueryInput'
 import styles from './SearchBar.module.css'
 
@@ -15,6 +21,11 @@ export interface SearchBarProps {
   ocrCandidateK: number
   titleQuery: string
   titleCandidateK: number
+  asrQuery: string
+  asrVideoCandidateK: number
+  asrGate: AsrGate | null
+  asrDisabled: boolean
+  asrReadinessMessage: string | null
   candidatePoolSize: number | null
   textCandidateCount: number
   ocrCandidateCount: number
@@ -27,6 +38,8 @@ export interface SearchBarProps {
   onOcrCandidateKChange: (value: number) => void
   onTitleQueryChange: (value: string) => void
   onTitleCandidateKChange: (value: number) => void
+  onAsrQueryChange: (value: string) => void
+  onAsrVideoCandidateKChange: (value: number) => void
   onStage2QueryTextChange: (id: string, value: string) => void
   onStage2QueryTypeChange: (id: string, type: KisQueryType) => void
   onAbePairAttributeChange: (queryId: string, pairId: string, value: string) => void
@@ -55,6 +68,11 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
     ocrCandidateK,
     titleQuery,
     titleCandidateK,
+    asrQuery,
+    asrVideoCandidateK,
+    asrGate,
+    asrDisabled,
+    asrReadinessMessage,
     candidatePoolSize,
     textCandidateCount,
     ocrCandidateCount,
@@ -67,6 +85,8 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
     onOcrCandidateKChange,
     onTitleQueryChange,
     onTitleCandidateKChange,
+    onAsrQueryChange,
+    onAsrVideoCandidateKChange,
     onStage2QueryTextChange,
     onStage2QueryTypeChange,
     onAbePairAttributeChange,
@@ -149,7 +169,7 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
                     title="Remove query"
                     onClick={() => onRemoveTextQuery(index)}
                   >
-                    ×
+                    x
                   </button>
                 </div>
               ))}
@@ -201,7 +221,31 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
             max={MAX_CANDIDATE_K}
             onChange={onTitleCandidateKChange}
           />
+          <label className={styles.fieldWide}>
+            <span>Optional ASR topic/dialogue</span>
+            <QueryInput
+              aria-label="stage 1 asr"
+              type="text"
+              maxLength={MAX_ASR_QUERY_LENGTH}
+              placeholder="cong trinh thuy loi dap ho chua"
+              value={asrQuery}
+              disabled={asrDisabled}
+              onValueChange={onAsrQueryChange}
+            />
+          </label>
+          <NumberField
+            label="ASR candidate videos"
+            ariaLabel="asr candidate videos"
+            value={asrVideoCandidateK}
+            min={1}
+            max={MAX_ASR_VIDEO_CANDIDATE_K}
+            disabled={asrDisabled}
+            onChange={onAsrVideoCandidateKChange}
+          />
         </div>
+        {asrReadinessMessage && (
+          <span className={styles.asrReadiness}>{asrReadinessMessage}</span>
+        )}
         <div className={styles.actions}>
           <button type="submit" className={styles.submit} disabled={!hasStage1Input}>
             Retrieve Candidates
@@ -210,14 +254,21 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
             type="button"
             className={styles.enhancer}
             disabled={!globalTextQuery.trim() || enhanceLoading}
-            title="Viết lại Text Q0 bằng AI (QUEST nhánh 1)"
+            title="Viet lai Text Q0 bang AI (QUEST nhanh 1)"
             onClick={() => onEnhance(globalTextQuery)}
           >
             AI enhancer{enhanceLoading ? '...' : ''}
           </button>
           {candidatePoolSize !== null && (
             <span className={styles.poolBreakdown}>
-              Text {textCandidateCount} · OCR {ocrCandidateCount} · Title OCR {titleCandidateCount}
+              {`Text ${textCandidateCount} · OCR ${ocrCandidateCount} · Title OCR ${titleCandidateCount}${
+                asrGate ? ` · ASR ${asrGate.candidate_video_count} videos` : ''
+              }`}
+            </span>
+          )}
+          {asrGate?.candidate_video_count === 0 && (
+            <span className={styles.hint}>
+              No transcript video matched - clear or revise the ASR query.
             </span>
           )}
         </div>
@@ -226,7 +277,7 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
       {candidatePoolSize !== null && (
         <section className={styles.stage}>
           <div className={styles.stageHeader}>
-            <span>Stage 2 — Constraint Reranking</span>
+            <span>Stage 2 - Constraint Reranking</span>
             <strong>Candidate Pool: {candidatePoolSize}</strong>
           </div>
           <div className={styles.queryList}>
@@ -286,7 +337,7 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
                           title="Remove pair"
                           onClick={() => onRemoveAbePair(row.id, pair.id)}
                         >
-                          ×
+                          x
                         </button>
                       </div>
                     ))}
@@ -320,7 +371,7 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
                   title="Remove query"
                   onClick={() => onRemoveStage2Query(row.id)}
                 >
-                  ×
+                  x
                 </button>
               </div>
             ))}

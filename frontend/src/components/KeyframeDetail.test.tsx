@@ -2,8 +2,13 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { getVideo, getVideoKeyframes } from '../api/client'
-import { KeyframeDetail, type DetailFrame } from './KeyframeDetail'
-import type { SearchHit } from '../api/types'
+import {
+  isInsideEvidence,
+  KeyframeDetail,
+  nearestKeyframe,
+  type DetailFrame,
+} from './KeyframeDetail'
+import type { SearchHit, VideoKeyframe } from '../api/types'
 
 // RED reproducer: user found that clicking "Find Similar Images" inside the
 // detail panel appeared to do nothing. It DID trigger a real search --
@@ -37,6 +42,33 @@ const HIT: SearchHit = {
   thumbnail_path: 't.jpg',
   thumbnail_url: '/api/keyframes/L21_V001_f10/thumbnail',
   image_url: '/api/keyframes/L21_V001_f10/image',
+}
+
+const ASR_VIDEO = {
+  video_id: 'L21_V001',
+  video_rank: 1,
+  best_bm25_score: 8.73,
+  segments: [
+    {
+      segment_id: 'L21_V001_seg10',
+      text: 'công trình thủy lợi',
+      start_time: 151.2,
+      end_time: 158.4,
+      raw_bm25: 8.73,
+    },
+  ],
+}
+
+function frame(keyframeId: string, timestamp: number): VideoKeyframe {
+  const frameIdx = Number(keyframeId.replace('f', ''))
+  return {
+    keyframe_id: keyframeId,
+    frame_idx: frameIdx,
+    timestamp,
+    global_index: frameIdx,
+    thumbnail_url: `/api/keyframes/${keyframeId}/thumbnail`,
+    image_url: `/api/keyframes/${keyframeId}/image`,
+  }
 }
 
 describe('KeyframeDetail', () => {
@@ -245,5 +277,63 @@ describe('KeyframeDetail', () => {
         'https://youtube.com/watch?v=L21_V029&t=386s',
       ),
     )
+  })
+
+  it('selects the earlier decimal timestamp when distances tie around the midpoint', () => {
+    const segment = ASR_VIDEO.segments[0]
+
+    expect(nearestKeyframe(segment, [frame('f1', 158.4), frame('f2', 151.2)])).toEqual(
+      frame('f2', 151.2),
+    )
+  })
+
+  it('treats both evidence interval boundaries as highlighted', () => {
+    const segment = ASR_VIDEO.segments[0]
+
+    expect(isInsideEvidence({ timestamp: 151.2 }, segment)).toBe(true)
+    expect(isInsideEvidence({ timestamp: 158.4 }, segment)).toBe(true)
+    expect(isInsideEvidence({ timestamp: 151.19 }, segment)).toBe(false)
+    expect(isInsideEvidence({ timestamp: 158.41 }, segment)).toBe(false)
+  })
+
+  it('selects the nearest real keyframe to the evidence midpoint and highlights the interval', async () => {
+    vi.mocked(getVideoKeyframes).mockResolvedValue({
+      keyframes: [frame('f1', 150), frame('f2', 154), frame('f3', 160)],
+    })
+    render(
+      <KeyframeDetail
+        hit={{ ...HIT, asr_evidence: ASR_VIDEO }}
+        onClose={vi.fn()}
+        onFindSimilar={vi.fn()}
+      />,
+    )
+
+    await userEvent.click(screen.getByRole('button', { name: /151\.2s–158\.4s/ }))
+
+    expect(screen.getByRole('button', { name: 'Show frame 2' })).toHaveAttribute(
+      'aria-current',
+      'true',
+    )
+    expect(screen.getByRole('button', { name: 'Show frame 2' })).toHaveAttribute(
+      'data-highlighted',
+      'true',
+    )
+    expect(screen.getByText('151.2s–158.4s')).toBeInTheDocument()
+    expect(screen.getByText('công trình thủy lợi')).toBeInTheDocument()
+  })
+
+  it('keeps the current real keyframe when the video has no loaded keyframes', async () => {
+    vi.mocked(getVideoKeyframes).mockResolvedValue({ keyframes: [] })
+    render(
+      <KeyframeDetail
+        hit={{ ...HIT, asr_evidence: ASR_VIDEO }}
+        onClose={vi.fn()}
+        onFindSimilar={vi.fn()}
+      />,
+    )
+
+    await userEvent.click(screen.getByRole('button', { name: /151\.2s–158\.4s/ }))
+
+    expect(screen.getByText(`frame ${HIT.frame_idx}`)).toBeInTheDocument()
   })
 })

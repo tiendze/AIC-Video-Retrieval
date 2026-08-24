@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 from elasticsearch import ConnectionError as EsConnectionError
+from elasticsearch import ConnectionTimeout as EsConnectionTimeout
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
@@ -40,6 +41,41 @@ class _FakeEsStore:
 
     async def close(self) -> None:
         self.closed = True
+
+
+class _FakeAsrEsStore(_FakeEsStore):
+    index_name = "asr_segments"
+
+    async def index_exists(self) -> bool:
+        return True
+
+    async def count_segments(self) -> int:
+        return 873
+
+
+class FailingAsrStore:
+    index_name = "asr_segments"
+
+    def __init__(self, error: Exception | None = None) -> None:
+        self.closed = False
+        self._error = error or EsConnectionError("simulated ASR index failure")
+
+    async def ensure_index(self) -> None:
+        raise self._error
+
+    async def index_exists(self) -> bool:
+        raise self._error
+
+    async def count_segments(self) -> int:
+        raise AssertionError("count must not run after index probe failure")
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class _FakeAsrRetrievalService:
+    def __init__(self, store) -> None:
+        self.store = store
 
 
 class _FakeMongoStore:
@@ -94,6 +130,12 @@ def _stub_real_infra(monkeypatch: pytest.MonkeyPatch) -> None:
         main_module, "_build_milvus_store", lambda settings, encoder: _FakeMilvusStore()
     )
     monkeypatch.setattr(main_module, "_build_es_store", lambda settings: _FakeEsStore())
+    monkeypatch.setattr(main_module, "_build_asr_es_store", lambda settings: _FakeAsrEsStore())
+    monkeypatch.setattr(
+        main_module,
+        "_build_asr_retrieval_service",
+        lambda asr_store: _FakeAsrRetrievalService(asr_store),
+    )
     monkeypatch.setattr(main_module, "_build_mongo_store", lambda settings: _FakeMongoStore())
     monkeypatch.setattr(main_module, "_build_query_translator", lambda: _FakeQueryTranslator())
     monkeypatch.setattr(
@@ -174,11 +216,13 @@ def test_lifespan_builds_encoder_and_all_three_stores_onto_app_state(
         assert isinstance(state.encoder, _FakeEncoder)
         assert isinstance(state.milvus_store, _FakeMilvusStore)
         assert isinstance(state.es_store, _FakeEsStore)
+        assert isinstance(state.asr_es_store, _FakeAsrEsStore)
         assert isinstance(state.mongo_store, _FakeMongoStore)
         assert isinstance(state.query_translator, _FakeQueryTranslator)
         assert isinstance(state.trake_embedding_cache, _FakeTrakeEmbeddingCache)
         assert state.mongo_store.ensure_indexes_called is True
         assert state.es_store.ensure_index_called is True
+        assert state.asr_es_store.ensure_index_called is True
         assert state.trake_embedding_cache.load_called is True
 
 
@@ -192,17 +236,8 @@ def test_lifespan_survives_es_unreachable_at_startup(
     monkeypatch.setenv("GEMINI_API_KEY", "fake-gemini-key")
     monkeypatch.setenv("OPENAI_API_KEY", "fake-openai-key")
     monkeypatch.setattr(main_module, "_build_encoder", lambda: _FakeEncoder())
-    monkeypatch.setattr(
-        main_module, "_build_milvus_store", lambda settings, encoder: _FakeMilvusStore()
-    )
+    _stub_real_infra(monkeypatch)
     monkeypatch.setattr(main_module, "_build_es_store", lambda settings: _FakeEsStoreDown())
-    monkeypatch.setattr(main_module, "_build_mongo_store", lambda settings: _FakeMongoStore())
-    monkeypatch.setattr(main_module, "_build_query_translator", lambda: _FakeQueryTranslator())
-    monkeypatch.setattr(
-        main_module,
-        "_build_trake_embedding_cache",
-        lambda milvus_store, mongo_store, encoder: _FakeTrakeEmbeddingCache(),
-    )
 
     app = create_app()
 
@@ -218,18 +253,8 @@ def test_search_endpoint_still_works_when_es_was_unreachable_at_startup(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("GEMINI_API_KEY", "fake-gemini-key")
     monkeypatch.setenv("OPENAI_API_KEY", "fake-openai-key")
-    monkeypatch.setattr(main_module, "_build_encoder", lambda: _FakeEncoder())
-    monkeypatch.setattr(
-        main_module, "_build_milvus_store", lambda settings, encoder: _FakeMilvusStore()
-    )
+    _stub_real_infra(monkeypatch)
     monkeypatch.setattr(main_module, "_build_es_store", lambda settings: _FakeEsStoreDown())
-    monkeypatch.setattr(main_module, "_build_mongo_store", lambda settings: _FakeMongoStore())
-    monkeypatch.setattr(main_module, "_build_query_translator", lambda: _FakeQueryTranslator())
-    monkeypatch.setattr(
-        main_module,
-        "_build_trake_embedding_cache",
-        lambda milvus_store, mongo_store, encoder: _FakeTrakeEmbeddingCache(),
-    )
 
     class _FakeSearchService:
         async def search(self, query, mode, top_k):
@@ -265,10 +290,68 @@ def test_lifespan_closes_es_and_mongo_stores_on_shutdown(
 
     with TestClient(app) as client:
         es_store = client.app.state.es_store
+        asr_es_store = client.app.state.asr_es_store
         mongo_store = client.app.state.mongo_store
 
     assert es_store.closed is True
+    assert asr_es_store.closed is True
     assert mongo_store.closed is True
+
+
+def test_lifespan_builds_and_closes_one_asr_store(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-gemini-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "fake-openai-key")
+    _stub_real_infra(monkeypatch)
+
+    with TestClient(create_app()) as client:
+        state = client.app.state
+        assert state.asr_es_store.index_name == "asr_segments"
+        assert state.asr_retrieval_service is state.search_service._asr_retrieval_service
+        assert state.asr_retrieval_service.store is state.asr_es_store
+        asr_store = state.asr_es_store
+
+    assert asr_store.closed is True
+
+
+def test_lifespan_survives_asr_ensure_index_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-gemini-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "fake-openai-key")
+    _stub_real_infra(monkeypatch)
+    monkeypatch.setattr(main_module, "_build_asr_es_store", lambda settings: FailingAsrStore())
+
+    with TestClient(create_app()) as client:
+        response = client.get("/health")
+        asr_store = client.app.state.asr_es_store
+
+    assert response.status_code == 200
+    assert response.json()["asr_status"] == "unavailable"
+    assert "ASR index unavailable" in caplog.text
+    assert asr_store.closed is True
+
+
+def test_lifespan_survives_asr_ensure_index_timeout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-gemini-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "fake-openai-key")
+    _stub_real_infra(monkeypatch)
+    monkeypatch.setattr(
+        main_module,
+        "_build_asr_es_store",
+        lambda settings: FailingAsrStore(EsConnectionTimeout("simulated ASR timeout")),
+    )
+
+    with TestClient(create_app()) as client:
+        assert client.app.state.trake_embedding_cache.load_called is True
+
+    assert "ASR index unavailable" in caplog.text
 
 
 def test_health_endpoint_is_reachable_end_to_end(
@@ -290,6 +373,9 @@ def test_health_endpoint_is_reachable_end_to_end(
         "milvus_ok": True,
         "elasticsearch_ok": True,
         "mongodb_ok": True,
+        "asr_status": "ready",
+        "asr_ready": True,
+        "asr_segment_count": 873,
     }
 
 

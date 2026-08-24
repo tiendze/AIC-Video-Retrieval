@@ -12,11 +12,13 @@ from app.stores.es_client import AsrEsStore, EsStore
 class _FakeIndicesClient:
     def __init__(self) -> None:
         self.exists_result = False
+        self.exists_calls: list[dict] = []
         self.create_calls: list[dict] = []
         self.delete_calls: list[dict] = []
         self.refresh_calls: list[str] = []
 
     async def exists(self, index):
+        self.exists_calls.append({"index": index})
         return self.exists_result
 
     async def create(self, index, settings, mappings):
@@ -37,6 +39,9 @@ class _FakeAsyncElasticsearch:
         self.delete_by_query_calls: list[dict] = []
         self.search_calls: list[dict] = []
         self.search_hits: list[dict] = []
+        self.search_response: dict | None = None
+        self.count_result = {"count": 0}
+        self.count_calls: list[dict] = []
         self.ping_result = True
         self.mget_docs: dict[str, dict] = {}
 
@@ -60,7 +65,18 @@ class _FakeAsyncElasticsearch:
 
     async def search(self, **kwargs):
         self.search_calls.append(kwargs)
-        return {"hits": {"hits": self.search_hits}}
+        if self.search_response is not None:
+            return self.search_response
+        return {
+            "hits": {
+                "total": {"value": len(self.search_hits), "relation": "eq"},
+                "hits": self.search_hits,
+            }
+        }
+
+    async def count(self, index):
+        self.count_calls.append({"index": index})
+        return self.count_result
 
 
 def _store(monkeypatch) -> AsrEsStore:
@@ -172,6 +188,23 @@ async def test_ocr_search_uses_fuzzy_match_for_candidate_generation(monkeypatch)
     ]
 
 
+async def test_ocr_search_filters_candidate_videos_inside_elasticsearch(monkeypatch):
+    store = _ocr_store(monkeypatch)
+
+    await store.search("SAIGON", 100, video_ids=["L21_V001", "L21_V002", "L21_V001"])
+
+    assert store._client.search_calls[0]["query"]["bool"]["filter"] == [
+        {"terms": {"video_id": ["L21_V001", "L21_V002"]}}
+    ]
+
+
+async def test_ocr_search_returns_empty_without_calling_es_for_empty_video_ids(monkeypatch):
+    store = _ocr_store(monkeypatch)
+
+    assert await store.search("SAIGON", 100, video_ids=[]) == []
+    assert store._client.search_calls == []
+
+
 async def test_score_by_ids_scores_one_ocr_query_inside_candidate_pool(monkeypatch):
     store = _ocr_store(monkeypatch)
     store._client.search_hits = [
@@ -213,3 +246,48 @@ async def test_score_by_ids_returns_empty_dict_for_empty_input(monkeypatch):
 
     assert await store.score_by_ids("VINAMILK", []) == {}
     assert store._client.search_calls == []
+
+
+async def test_asr_search_returns_exact_total_hits_and_typed_hits(monkeypatch):
+    store = _store(monkeypatch)
+    store._client.search_response = {
+        "hits": {
+            "total": {"value": 57, "relation": "eq"},
+            "hits": [
+                {
+                    "_score": 8.73,
+                    "_source": {
+                        "segment_id": "L21_V001_seg10",
+                        "video_id": "L21_V001",
+                        "text": "cong trinh thuy loi",
+                        "start_time": 151.2,
+                        "end_time": 158.4,
+                        "start_frame_idx": 3780,
+                        "end_frame_idx": 3960,
+                    },
+                }
+            ],
+        }
+    }
+
+    result = await store.search("cong trinh thuy loi", 200)
+
+    assert result.total_hits == 57
+    assert result.hits[0].score == 8.73
+    assert store._client.search_calls[0]["track_total_hits"] is True
+
+
+async def test_asr_index_exists_uses_indices_exists(monkeypatch):
+    store = _store(monkeypatch)
+    store._client.indices.exists_result = True
+
+    assert await store.index_exists() is True
+    assert store._client.indices.exists_calls == [{"index": "asr_segments"}]
+
+
+async def test_asr_count_uses_count_api_not_scroll(monkeypatch):
+    store = _store(monkeypatch)
+    store._client.count_result = {"count": 1234}
+
+    assert await store.count_segments() == 1234
+    assert store._client.count_calls == [{"index": "asr_segments"}]
