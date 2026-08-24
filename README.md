@@ -1,233 +1,664 @@
 # AIC-Video-Retrieval
 
-Hệ thống truy vấn & hỏi đáp video đa phương thức cho AI Challenge TP.HCM — vòng sơ tuyển AIC 2026, 3 task: `Textual KIS` · `QA (VQA)` · `TRAKE`.
+Hệ thống truy vấn video đa phương thức cho vòng sơ tuyển AI Challenge TP.HCM
+2026. Dự án tập trung vào 3 task còn lại của đề: `Textual KIS`, `QA/VQA` và
+`TRAKE`; `Video KIS` đã bị bỏ khỏi vòng sơ tuyển.
 
-Baseline: [arXiv:2512.13169 — *Integrated Semantic and Temporal Alignment for Interactive Video Retrieval*](https://arxiv.org/abs/2512.13169)
+Tài liệu setup chi tiết nằm ở [`README_setup.md`](./README_setup.md). README này
+giải thích hệ thống đang có gì, KIS đang chạy ra sao, TRAKE hiện tại có gì, các
+công thức tính điểm và cách xếp hạng kết quả.
 
-## Tài liệu
+## Tổng quan hệ thống
 
-| File | Nội dung |
-|---|---|
-| [`docs/PRD.md`](./docs/PRD.md) | Bối cảnh, mục tiêu, scope theo phase, features, **tiêu chuẩn đánh giá (Evaluation Metrics)**, NFR, rủi ro |
-| [`docs/architecture.md`](./docs/architecture.md) | Thiết kế hệ thống, 6 sơ đồ Mermaid luồng dữ liệu, schema 3 store, API contract, deployment |
-| [`docs/references.md`](./docs/references.md) | Thư viện, snippet API mới nhất lấy từ `llms.txt`, phương án tối ưu giai đoạn 2 |
+### Bài toán và định dạng nộp
 
-## Ngăn xếp công nghệ
+Mỗi truy vấn được nộp tối đa 100 đáp án đã xếp hạng.
 
-**Pipeline:** TransNetV2 (shot detection) → BEiT-3 (multimodal embedding) → Gemini (OCR)
-**Lưu trữ:** Milvus (vector) · Elasticsearch + `vi_analyzer` (OCR text) · MongoDB (metadata)
-**Ứng dụng:** FastAPI + Pydantic · React + Vite + TypeScript
-**Dataset:** AIC 2026 batch 1 công khai (nội dung trùng batch 1 của AIC 2025) — **873 video, 130,7 giờ**, tin tức tiếng Việt, nằm ở `data/`. Đã tải: `Videos_*/video/*.mp4` · `media-info` · `map-keyframes`. **Cố ý không tải** `Keyframes_*` / `objects` / `clip-features-32` — dự án tự trích bằng model của mình. P0 chạy pilot `L21`–`L24` (128 video), mở rộng đủ 873 ở P4. ⚠️ **Batch 2 chưa phát hành.** ⚠️ Dataset **không kèm nhãn truy vấn** — bộ eval là nhãn tự sinh, xem PRD §6.1
-
-**Đề thi:** vòng sơ tuyển AIC 2026 — 3 task (`Textual KIS` · `QA` · `TRAKE`, **không còn Video KIS**), nộp tối đa **100 đáp án xếp hạng** mỗi truy vấn, điểm = `mean(R@k)` với k ∈ {1,5,20,50,100}. Đáp án là `<video_id>, <frame_id>`. Toàn văn: `Thong tin vong So tuyen AIC2026.pdf`; tóm tắt: `docs/references.md` §1.2
-
-## Cài đặt & chạy
-
-Yêu cầu **Python 3.10** (`pyproject.toml` pin cứng `>=3.10,<3.11` — BEiT-3's `timm==0.4.12` không tương thích 3.11+).
-
-```powershell
-python -m venv .venv
-./.venv/Scripts/pip.exe install -e ".[dev]"
-
-Copy-Item .env.example .env   # rồi điền GEMINI_API_KEY / OPENAI_API_KEY thật
-
-./.venv/Scripts/python.exe -m ruff check .
-./.venv/Scripts/python.exe -m black --check .
-./.venv/Scripts/python.exe -m pytest --cov --cov-report=term-missing
-```
-
-Thiếu `GEMINI_API_KEY` hoặc `OPENAI_API_KEY` trong `.env` → app báo `ValidationError` rõ ràng ngay lúc khởi động (`Settings()` trong `app/main.py` lifespan), không phải lỗi mơ hồ giữa chừng.
-
-`[dev]` là đủ để chạy API server (với dữ liệu đã ingest sẵn), chạy test suite, và lint. Các việc nặng hơn cần thêm extras riêng (`pip install -e ".[extra]"`, có thể kết hợp `".[extra1,extra2]"`):
-
-| Extra | Cần khi nào | Kéo theo |
+| Task | Input | Output nộp |
 |---|---|---|
-| `data` | Tải dataset từ Kaggle | `kagglehub` |
-| `beit3` | Chạy encoder BEiT-3 (production, GPU khuyến nghị) | `torch`/`torchvision`/`timm`/`torchscale`/`transformers` |
-| `ingest` | Chạy pipeline ingest (`pipelines/import_embed_out.py`) | `beit3` + `opencv-python-headless`/`imagehash`/`pillow` |
-| `ocr` | Sinh OCR bằng Gemini | `ingest` + `google-genai` |
-| `eval` | Chạy `eval/build_eval_set.py` (sinh bộ nhãn) | = `ocr` |
-| `asr` | Trích transcript bằng `faster-whisper` | `ingest` + `faster-whisper`/`ctranslate2` |
-| `asr-embed` | Embed transcript ASR | `ingest` + `sentence-transformers` |
-| `baseline-clip` | Baseline CLIP bắt buộc (PRD §6.3) | xem ghi chú xung đột `timm` trong `pyproject.toml` — cần `pip install --no-deps open-clip-torch==3.3.0` sau |
-| `encoder-candidates` | Thử nghiệm encoder ứng viên (SigLIP2/PE-Core) | **venv riêng** (`.venv-candidate`) — xung đột pin `transformers`/`torch` với `beit3`, xem `.claude/plans/encoder-swap-siglip2-pecore.plan.md` |
+| `Textual KIS` | Mô tả khoảnh khắc bằng ngôn ngữ tự nhiên | `<video_id>,<frame_id>` |
+| `QA/VQA` | Mô tả khoảnh khắc + câu hỏi | `<video_id>,<frame_id>,<answer>` |
+| `TRAKE` | Chuỗi N sự kiện theo thứ tự thời gian | `<video_id>,<frame_id_1>,...,<frame_id_N>` |
 
-`.venv-candidate/` đã có sẵn trong repo cho thử nghiệm encoder — không dùng chung venv với `.venv/`.
+`frame_id` trong file nộp luôn lấy từ `frame_idx` đã lưu cùng keyframe lúc ingest.
+Hệ thống không tính lại `frame_id` bằng `timestamp * fps`, vì sai số làm tròn có
+thể làm lệch khỏi cửa sổ chấm rất hẹp của BTC.
 
-### Checkpoint model
+### Thành phần chính
 
-`pip install` chỉ cài thư viện — vài encoder còn cần tải/convert checkpoint riêng vào `models/`:
-
-| Model | Cách lấy checkpoint | Bắt buộc khi nào |
+| Tầng | Thành phần hiện có | Vai trò |
 |---|---|---|
-| **BEiT-3** (encoder production) | `./scripts/setup_beit3.sh` — tải `beit3_base_itc_patch16_224.pth` (~850MB) + `beit3.spm` từ GitHub Releases vào `models/beit3/`, tự verify SHA256 | Luôn cần — encoder mặc định của `app/main.py`, `[beit3]`/`[ingest]`/eval production |
-| **TransNetV2** (shot detection) | `./scripts/setup_transnetv2.sh` — tự convert checkpoint TensorFlow gốc sang PyTorch (tạo venv tạm rồi tự dọn), ghi ra `models/transnetv2/transnetv2-pytorch-weights.pth` | Ingest — cắt shot trước khi trích keyframe |
-| **PhoWhisper-large** (ASR, `[asr]`) | Không có script sẵn. Tải bản CTranslate2 dựng sẵn từ HF Hub (vd. `kiendt/PhoWhisper-large-ct2`) vào `models/PhoWhisper-large-ct2/`, hoặc tự convert: `ct2-transformers-converter --model vinai/PhoWhisper-large --output_dir models/PhoWhisper-large-ct2 --copy_files tokenizer_config.json --quantization float16` | Chỉ khi chạy kênh ASR (`scripts/run_asr.py`) |
-| **SigLIP2** / **CLIP baseline** / **bge-m3** | Tự tải từ HuggingFace Hub lúc chạy lần đầu (cache mặc định HF/torch hub) — không có bước thủ công | Encoder ứng viên / baseline bắt buộc P1.4 / kênh embed transcript ASR |
+| Frontend | React + Vite + TypeScript | UI tìm kiếm, chọn đáp án, xem keyframe, export CSV |
+| API | FastAPI + Pydantic | Router mỏng: validate request, gọi service, chuẩn hóa lỗi |
+| Encoder | `FG-CLIP Base ViT-B/16`, `model_id=fgclip_base`, 512 chiều | Mã hóa text/image vào cùng không gian vector, L2-normalize |
+| Vector store | Milvus collection `keyframes_fgclip_base` | ANN search cosine cho keyframe |
+| Text store | Elasticsearch | OCR text `ocr_keyframes` và transcript ASR `asr_segments` |
+| Metadata store | MongoDB | `video_id`, `frame_idx`, `timestamp`, `global_index`, `s_v/e_v`, title, path ảnh |
+| VQA/QUEST | Gemini + web image search | Trả lời QA có evidence, rewrite query, tìm ảnh mẫu web |
+| TRAKE | `TrakeEmbeddingCache` + DANTE DP | Tìm chuỗi N keyframe đúng thứ tự trong cùng video |
 
-Hai script `setup_beit3.sh`/`setup_transnetv2.sh` là bash — chạy bằng **Git Bash** (`./scripts/setup_beit3.sh`), không chạy được thẳng trong PowerShell (`set -euo pipefail` không hợp cú pháp PowerShell). Chạy trực tiếp trên host, **không cần Docker** — docker-compose ở dưới chỉ dựng 3 store (Milvus/Elasticsearch/MongoDB), không dựng encoder. `configs/model/beit3.yaml` và `configs/model/transnetv2.yaml` đã trỏ sẵn tới `models/beit3/`/`models/transnetv2/` — chạy script với `install_dir` mặc định thì không cần sửa config.
+### Dữ liệu hiện tại
 
-## Hạ tầng lưu trữ (P0.2)
+Dự án dùng AIC 2026 batch 1 công khai, tương ứng batch 1 của AIC 2025:
 
-```powershell
-docker compose up -d --build   # lần đầu build image Elasticsearch mất vài phút (compile native lib)
-docker compose ps               # cả 5 container phải "healthy"
+- 873 video tin tức tiếng Việt, khoảng 130,7 giờ.
+- Dataset công khai không có ground truth truy vấn; eval offline dùng nhãn tự sinh.
+- Corpus online hiện đi qua keyframe/vector đã import vào Milvus/MongoDB. Runtime
+  backend hiện dùng FG-CLIP, không còn dùng BEiT-3 làm encoder phục vụ chính.
+- ASR là nhánh bổ trợ: transcript được index riêng trong Elasticsearch và chỉ dùng
+  làm video gate/evidence cho KIS, không trực tiếp tạo điểm keyframe.
+
+## Luồng offline
+
+Offline ingest biến video/keyframe thành dữ liệu truy hồi được.
+
+Luồng thiết kế đầy đủ:
+
+```text
+video -> shot detection -> keyframe extraction -> image embedding -> Milvus
+                                  |-> OCR -> Elasticsearch
+                                  |-> metadata/frame_idx/global_index -> MongoDB
+video -> ASR transcript -> Elasticsearch asr_segments
 ```
 
-Verify `vi_analyzer` tách theo từ ghép (không chạy trong `pytest` mặc định vì cần Docker):
+### Công thức trích keyframe
 
-```powershell
-./.venv/Scripts/python.exe -m pytest tests/integration -m integration -v
+Với mỗi shot có khoảng frame $[a, b]$, hệ thống lấy 4 vị trí:
+
+$$
+k_i = a + \left\lfloor \frac{i(b-a)}{3} \right\rfloor,\quad i \in \{0,1,2,3\}
+$$
+
+Mỗi keyframe được gán:
+
+- `frame_idx`: frame tuyệt đối trong video, dùng để nộp bài.
+- `timestamp`: thời điểm giây để hiển thị và đánh giá offline.
+- `global_index`: chỉ số liên tục trên toàn corpus, dùng để slice video khi chạy TRAKE.
+- `s_v`, `e_v`: global index đầu/cuối của video `v`, lưu trong MongoDB.
+
+### Công thức embedding/search cơ bản
+
+Encoder trả vector đã L2-normalize:
+
+$$
+u = \operatorname{normalize}(\operatorname{encode\_text}(q))
+$$
+
+$$
+e_t = \operatorname{normalize}(\operatorname{encode\_image}(k_t))
+$$
+
+$$
+\operatorname{score}_{\text{text-image}}(t)
+= \cos(u,e_t)
+= u^\top e_t
+$$
+
+Milvus dùng HNSW với cosine. Config hiện tại:
+
+```text
+M = 16
+efConstruction = 200
+search_ef = 128
 ```
 
-## Frontend
+## KIS hiện có gì
 
-React 19 + Vite + TypeScript, `frontend/`. UI theo danh sách năng lực chức năng của paper baseline (không có mẫu thiết kế riêng — chủ dự án mở gate P1.5, xem `docs/architecture.md` §8).
+KIS hiện có hai đường:
 
-Ba chế độ tìm kiếm sống trong `ModeSelector` (phím tắt `1`/`2`/`3`):
+1. Search đơn giản qua `/api/search`:
+   - `mode=semantic`: text -> FG-CLIP text embedding -> Milvus cosine search.
+   - `mode=ocr`: text -> Elasticsearch BM25 trên OCR -> join MongoDB để lấy `frame_idx`.
+   - `/api/search/image`: ảnh upload -> FG-CLIP image embedding -> Milvus cosine search.
 
-- **Semantic** — tìm theo văn bản/ảnh qua encoder BEiT-3, có nút "✨ AI enhancer" (QUEST nhánh 1 — Gemini viết lại truy vấn mơ hồ thành mô tả trực quan, người vận hành tự chọn dùng `q₀` hay `q_r`) và "🌐 Tìm ảnh mẫu trên web" (QUEST nhánh 2 — tìm ảnh thực thể lạ trên web, người dùng tự chọn ảnh rồi image-to-image search).
-- **OCR** — tìm theo chữ xuất hiện trong khung hình (Elasticsearch + `vi_analyzer`); tự động disable nếu Elasticsearch không sống.
-- **DANTE** — nhập chuỗi N sự kiện theo thứ tự (`EventSequenceInput`), trả về video khớp cả chuỗi đúng thứ tự thời gian (`TrakeResultList`) — dùng cho task `TRAKE`.
+2. KIS hai giai đoạn qua `/api/search/kis/candidates` và
+   `/api/search/kis/rerank`:
+   - Stage 1 tạo candidate pool recall cao bằng Text, OCR, Title và optional ASR gate.
+   - Stage 2 rerank pool bằng Text/OCR/ABE subqueries rồi xuất Top-K cuối.
 
-KIS có thêm optional ASR gate: nhập `asr_query` và số video gate (`asr_video_top_k`). Backend BM25 `asr_segments`, trả `asr_gate` gồm video IDs xếp hạng và evidence có timestamp, rồi filter Text Q0 Milvus/OCR Elasticsearch trong engine. ASR không đổi Stage 1/Stage 2 score và không tạo pool nộp bài một mình; hàng nộp luôn là `frame_idx` của keyframe đã lưu. UI tự disable ASR khi `/health` báo ASR chưa sẵn sàng và cho biết lý do.
+### KIS Stage 1: tạo candidate pool
+
+Input Stage 1 có thể gồm:
+
+- `text_query` hoặc `text_queries`: mô tả hình ảnh/khoảnh khắc.
+- `ocr_query`: chữ xuất hiện trên màn hình.
+- `title_query`: từ/cụm từ trong tiêu đề video.
+- `asr_query` hoặc `asr_queries`: từ/cụm từ nghe được trong audio transcript.
+
+Các giới hạn chính nằm trong `configs/search/search.yaml`:
+
+```text
+default_text_candidate_k = 300
+default_ocr_candidate_k = 100
+default_title_candidate_k = 100
+max_candidate_k = 1000
+max_top_k = 100
+```
+
+#### Stage 1 Text
+
+Mỗi text query được dịch VI->EN nếu có translator, rồi encode bằng FG-CLIP:
+
+$$
+u_j = \operatorname{normalize}(\operatorname{encode\_text}(\operatorname{translate}(q_j)))
+$$
+
+$$
+s_j(d) = \cos(u_j,e_d)
+$$
+
+Với nhiều text query, điểm hiển thị Stage 1 hiện là tổng cosine:
+
+$$
+\operatorname{score}_{\text{text-stage1}}(d) = \sum_j s_j(d)
+$$
+
+Candidate từ nhiều query được union và dedupe theo cặp `(video_id, frame_idx)`.
+Nếu Stage 1 có Text, ranking Stage 1 ưu tiên điểm text fused này; OCR/Title vẫn
+được giữ trong metadata nguồn candidate để người vận hành biết vì sao item xuất
+hiện.
+
+#### Stage 1 OCR
+
+OCR đi qua Elasticsearch BM25, nhưng không dùng BM25 thô trực tiếp. Hệ thống lấy
+sâu hơn trước rồi rescoring:
+
+$$
+\operatorname{retrieval\_k}
+= \max(\operatorname{ocr\_top\_k} \cdot \operatorname{candidate\_multiplier},
+\operatorname{candidate\_min})
+$$
+
+Với cấu hình mặc định:
+
+$$
+\operatorname{candidate\_multiplier}=5,\quad \operatorname{candidate\_min}=100
+$$
+
+Với mỗi OCR hit:
+
+$$
+\operatorname{ref} =
+\begin{cases}
+P_{95}(\{\operatorname{BM25}(d) \mid \operatorname{BM25}(d)>0\}), & \text{nếu đủ mẫu} \\
+\max(\{\operatorname{BM25}(d) \mid \operatorname{BM25}(d)>0\}), & \text{ngược lại}
+\end{cases}
+$$
+
+$$
+\operatorname{bm25\_norm}(d)
+= \operatorname{clamp}\left(\frac{\operatorname{BM25}(d)}{\operatorname{ref}}, 0, 1\right)
+$$
+
+$$
+\operatorname{score}_{\text{ocr-query}}(d)
+= \operatorname{clamp}(\operatorname{bm25\_norm}(d)\cdot \operatorname{coverage}(d),0,1)
+$$
+
+Trong đó $\operatorname{coverage}(d)$ là tỷ lệ token query khớp OCR text, có
+fuzzy match cho tiếng Việt.
+
+OCR Stage 1 sort theo:
+
+```text
+score_ocr_query giảm dần
+raw_bm25 giảm dần
+initial_rank tăng dần
+```
+
+#### Stage 1 Title
+
+Title search chạy lexical trong MongoDB, không tạo index riêng:
+
+$$
+\operatorname{title\_score}(d)=
+\begin{cases}
+1.0, & \text{nếu khớp một token} \\
+2.0 + N, & \text{nếu khớp cụm } N \text{ token} \\
+0, & \text{nếu không khớp}
+\end{cases}
+$$
+
+Video title được sort theo `title_score` giảm dần, rồi `video_id` tăng dần. Sau
+đó hệ thống lấy keyframe trong các video đó theo kiểu round-robin để pool không
+bị một video dài chiếm hết.
+
+#### Stage 1 ASR gate
+
+ASR không phải kênh score. Nó là detector/filter deterministic trên transcript:
+
+```text
+query -> normalize text -> scan asr_segments -> matched video_ids + timestamp evidence
+```
+
+Luật detect chính:
+
+- 1 token: token phải xuất hiện trong transcript.
+- Cụm nhiều token: ưu tiên contiguous phrase.
+- Query dài hơn: số token khớp / số token query phải >= `asr_token_coverage_threshold`
+  (`0.8` mặc định).
+
+$$
+\operatorname{coverage}_{\text{asr}}(q, x)
+= \frac{|\operatorname{tokens}(q)\cap \operatorname{tokens}(x)|}
+       {|\operatorname{tokens}(q)|}
+$$
+
+$$
+\operatorname{detected}(q,x)
+= \mathbb{I}\left[\operatorname{coverage}_{\text{asr}}(q,x) \ge 0.8\right]
+$$
+
+`asr_match_mode`:
+
+```text
+any -> video đạt nếu khớp ít nhất một ASR query
+all -> video đạt nếu khớp mọi ASR query
+```
+
+ASR gate trả evidence theo `start_time/end_time`, nhưng đáp án nộp vẫn lấy
+keyframe stored gần midpoint của evidence nhất. ASR không đóng góp vào
+`final_score` của Stage 2 và không có ASR-only submission pool.
+
+### Rank percentile dùng trong KIS
+
+Stage 2 không cộng trực tiếp cosine, BM25 và ABE raw score vì các thang đo khác
+nhau. Mỗi query/modality trước hết được xếp hạng trong cùng candidate pool, rồi
+đổi rank thành percentile:
+
+$$
+\operatorname{rank\_percentile}(d)
+= 1 - \frac{\operatorname{rank}(d)-1}{M-1}
+$$
+
+Trong đó `M` là kích thước candidate pool hợp lệ. Top rank có percentile `1.0`,
+worst rank có percentile `0.0`. Các item đồng điểm nhận cùng rank tương đương;
+nếu tất cả đều không có điểm dương thì percentile về `0.0`.
+
+### KIS Stage 2: rerank candidate pool
+
+Stage 2 nhận `candidate_ids` từ Stage 1 và danh sách `subqueries`, gồm 3 loại:
+
+- `text`: rerank bằng cosine text-image.
+- `ocr`: rerank bằng BM25 normalized * coverage.
+- `abe`: rerank attribute-object binding bằng patch alignment.
+
+#### Text modality
+
+Với từng text subquery:
+
+$$
+s_j(d) = \cos(u_j,e_d)
+$$
+
+$$
+p_j(d) = \operatorname{rank\_percentile}(s_j(d))
+$$
+
+Điểm Text modality là geometric mean của các percentile:
+
+$$
+\operatorname{score}_{\text{text}}(d)
+= \operatorname{GM}(p_1(d),\ldots,p_n(d))
+$$
+
+#### OCR modality
+
+Với từng OCR subquery:
+
+$$
+\operatorname{score}_{\text{ocr-query},j}(d)
+= \operatorname{clamp}(
+  \operatorname{normalize\_bm25}(\operatorname{BM25}_j(d))\cdot
+  \operatorname{coverage}_j(d),
+  0,1
+)
+$$
+
+$$
+p_j(d)=\operatorname{rank\_percentile}(\operatorname{score}_{\text{ocr-query},j}(d))
+$$
+
+$$
+\operatorname{score}_{\text{ocr}}(d)=\operatorname{GM}(p_1(d),\ldots,p_n(d))
+$$
+
+#### ABE modality
+
+ABE dùng patch embedding của ảnh và token embedding của text để xử lý truy vấn
+kiểu thuộc tính-vật thể, ví dụ "áo đỏ", "xe trắng".
+
+Với một ABE query:
+
+$$
+\operatorname{base\_local}(d)
+= \frac{1}{|T|}
+  \sum_{\tau \in T}
+  \frac{1}{K}
+  \sum_{p \in \operatorname{TopK}(\tau,d)}
+  \cos(\mathbf{z}_\tau,\mathbf{p})
+$$
+
+$$
+\operatorname{refined\_local}(d)
+= \frac{1}{|R|}
+  \sum_{\rho \in R}
+  \frac{1}{K}
+  \sum_{p \in \operatorname{TopK}(\rho,d)}
+  \cos(\mathbf{z}_\rho,\mathbf{p})
+$$
+
+$$
+\operatorname{binding\_delta}(d)
+= |\operatorname{refined\_local}(d)-\operatorname{base\_local}(d)|
+$$
+
+$$
+\operatorname{local\_score}(d)
+= \operatorname{refined\_local}(d)+\operatorname{binding\_delta}(d)
+$$
+
+$$
+\operatorname{global\_abe}(d)
+= \cos(\mathbf{g}_{\text{text}},\mathbf{g}_{\text{image},d})
+$$
+
+$$
+\operatorname{raw\_abe}(d)
+= (1-w)\operatorname{local\_score}(d)
+  + w\operatorname{global\_abe}(d)
+$$
+
+`w = abe_global_weight = 0.3`, `patch_top_k = 5`, `concept_top_p = 5` theo
+`configs/search/search.yaml`.
+
+Sau đó:
+
+$$
+p_j(d)=\operatorname{rank\_percentile}(\operatorname{raw\_abe}_j(d))
+$$
+
+$$
+\operatorname{score}_{\text{abe}}(d)=\operatorname{GM}(p_1(d),\ldots,p_n(d))
+$$
+
+#### Final KIS score
+
+Mỗi modality đang bật trả một score trong `[0, 1]`. Điểm cuối:
+
+$$
+\operatorname{final\_score}(d)
+= \operatorname{GM}(
+  \operatorname{score}_{\text{text}}(d),
+  \operatorname{score}_{\text{ocr}}(d),
+  \operatorname{score}_{\text{abe}}(d)
+)
+$$
+
+Geometric mean dùng epsilon `1e-8` để tránh `log(0)`:
+
+$$
+\operatorname{GM}(x_1,\ldots,x_n)
+= \exp\left(
+  \frac{1}{n}\sum_{i=1}^{n}\log(\max(x_i,\varepsilon))
+\right),
+\quad \varepsilon=10^{-8}
+$$
+
+Ranking cuối của Stage 2:
+
+```text
+sort candidate by final_score giảm dần
+return Top final_top_k, với final_top_k <= 100
+```
+
+Frontend vẫn cho người vận hành chọn thủ công. Khi export KIS, các lựa chọn thủ
+công đứng trước, có thể sweep thêm frame quanh keyframe đã chọn, rồi mới dùng
+ranking tự động làm fallback cho đủ tối đa 100 dòng.
+
+## TRAKE hiện có gì
+
+TRAKE hiện đã có endpoint `/api/trake`, service online và cache embedding:
+
+- API nhận `events[]` theo thứ tự thời gian, `top_k`, `threshold`,
+  `lambda_penalty`.
+- Khi FastAPI startup, `TrakeEmbeddingCache` load embedding toàn bộ video có
+  `ingest_status=complete` từ Milvus vào RAM.
+- Mỗi request chỉ encode các event text, nhân ma trận với cache, rồi chạy DANTE
+  trên slice `[s_v, e_v]` của từng video.
+- Một video có thể đóng góp nhiều sequence candidate nếu nhiều chuỗi vượt
+  threshold.
+- Kết quả trả về gồm `video_id`, `score`, đúng N keyframe theo thứ tự, mỗi
+  keyframe có `keyframe_id`, `frame_idx`, `timestamp` và debug score/penalty.
+
+Config hiện tại:
+
+```text
+default_top_k = 10
+max_top_k = 100
+default_score_threshold = 0.0
+default lambda_penalty nếu client không gửi = 0.01
+```
+
+### TRAKE/DANTE formula
+
+Gọi:
+
+- `N`: số event trong query.
+- `T_v`: số keyframe của video `v`.
+- `u_i`: embedding của event thứ `i`.
+- `E_t`: embedding keyframe thứ `t` trong video.
+- `time[t]`: timestamp giây của keyframe `t`.
+- `lambda`: hệ số phạt khoảng cách thời gian.
+
+Ma trận tương đồng:
+
+$$
+S[i,t] = \cos(u_i,E_t)=u_i^\top E_t
+$$
+
+DP theo timestamp giây:
+
+$$
+DP[0,t]=S[0,t]
+$$
+
+$$
+DP[i,t]
+= S[i,t] +
+\max_{\substack{\tau < t \\ \operatorname{time}[\tau] < \operatorname{time}[t]}}
+\left(
+  DP[i-1,\tau]
+  - \lambda(\operatorname{time}[t]-\operatorname{time}[\tau])
+\right)
+$$
+
+Công thức trên được triển khai bằng running max để giữ độ phức tạp `O(N*T_v)`:
+
+$$
+\operatorname{running\_max}_i(t)
+= \max_{\substack{\tau < t \\ \operatorname{time}[\tau] < \operatorname{time}[t]}}
+\left(DP[i-1,\tau]+\lambda\operatorname{time}[\tau]\right)
+$$
+
+$$
+DP[i,t]
+= S[i,t] + \operatorname{running\_max}_i(t) - \lambda\operatorname{time}[t]
+$$
+
+Ràng buộc `time[tau] < time[t]` đảm bảo event sau phải nằm sau event trước theo
+thời gian thật, không chỉ theo global index.
+
+Điểm của một sequence:
+
+$$
+\operatorname{score}(\operatorname{sequence}) = DP[N-1,t_{\text{end}}]
+$$
+
+Hệ thống backtrack từ `t_end` để lấy đúng N global indices, rồi map về keyframe
+metadata trong cache.
+
+### TRAKE ranking
+
+Với mỗi video:
+
+```text
+chạy DANTE trên slice video v
+giữ các sequence có score >= threshold
+```
+
+Sau đó gộp toàn bộ sequence candidates của mọi video:
+
+```text
+sort all sequences by score giảm dần
+return Top-K
+```
+
+Vì ranking là trên sequence, không phải trên video duy nhất, cùng một `video_id`
+có thể xuất hiện nhiều lần nếu nó có nhiều chuỗi khớp tốt.
+
+## Công thức chấm/eval
+
+### KIS official-style score
+
+BTC cho tối đa 100 đáp án đã xếp hạng. Bộ eval nội bộ mô phỏng công thức bằng
+các mốc:
+
+$$
+\mathcal{K}=\{1,5,20,50,100\}
+$$
+
+$$
+\operatorname{AICFinalScore}
+= \frac{1}{|\mathcal{K}|}\sum_{k\in\mathcal{K}}\operatorname{Recall}@k
+$$
+
+Với Textual KIS, một hit đúng khi đúng video và frame/timestamp nằm trong đoạn
+ground truth:
+
+$$
+\operatorname{hit}(d,g)
+= \mathbb{I}\left[
+  \operatorname{video\_id}_d=\operatorname{video\_id}_g
+  \land
+  s_g \le \operatorname{timestamp}_d \le e_g
+\right]
+$$
+
+Vì mỗi query eval hiện có một đáp án đúng, `Recall@k` là:
+
+$$
+\operatorname{Recall}@k
+= \frac{|\{q \mid \operatorname{first\_hit\_rank}(q)\le k\}|}{|\mathcal{Q}|}
+$$
+
+Các metric bổ trợ:
+
+$$
+\operatorname{MRR}
+= \frac{1}{|\mathcal{Q}|}
+  \sum_{q\in\mathcal{Q}}
+  \begin{cases}
+    \frac{1}{r_q}, & r_q \text{ tồn tại} \\
+    0, & \text{không tìm thấy}
+  \end{cases}
+$$
+
+Vì mỗi query chỉ có một relevant item:
+
+$$
+\operatorname{mAP}=\operatorname{MRR}
+$$
+
+$$
+\operatorname{nDCG@}k
+= \frac{1}{|\mathcal{Q}|}
+  \sum_{q\in\mathcal{Q}}
+  \begin{cases}
+    \frac{1}{\log_2(r_q+1)}, & r_q \le k \\
+    0, & r_q > k \text{ hoặc không tìm thấy}
+  \end{cases}
+$$
+
+### TRAKE official-style score
+
+Theo đề, sai `video_id` thì sequence nhận 0. Nếu đúng video, điểm trên một đáp án
+TRAKE là tỷ lệ event frame rơi vào đúng cửa sổ:
+
+$$
+R
+= \frac{1}{N}\sum_{j=1}^{N}
+\mathbb{I}\left[\operatorname{frame}_j \in [s_j,e_j]\right]
+$$
+
+Eval nội bộ có thêm:
+
+- `Sequence Exact-Match`: tỷ lệ query mà đúng video và cả N event đều hit.
+- `Video Recall@k`: ground-truth video có nằm trong Top-K không.
+- `Per-event Recall@k`: event thứ `j` hit trong Top-K hay không.
+- `Kendall tau`: đo thứ tự bằng cách gán mỗi retrieved keyframe tới ground-truth
+  segment center gần nhất, rồi tính tau-b.
+- `Mean temporal offset`: trung bình khoảng cách tuyệt đối tới tâm segment đúng.
+
+## Ranking đang được dùng ở đâu
+
+| Đường | Đơn vị ranking | Score dùng để sort |
+|---|---|---|
+| `/api/search`, `semantic` | keyframe | cosine từ Milvus |
+| `/api/search`, `ocr` | keyframe | BM25 Elasticsearch, sau đó join metadata |
+| `/api/search/image` | keyframe | cosine image-image từ Milvus |
+| `/api/search/kis/candidates` | keyframe candidate | Text fused cosine nếu có Text; nếu không thì geomean rank percentile OCR/Title; ASR là gate/evidence |
+| `/api/search/kis/rerank` | keyframe | `final_score = GM(active modality scores)` |
+| `/api/trake` | sequence N keyframe | DANTE DP score |
+| Frontend KIS export | dòng CSV | manual selections trước, frame sweep quanh lựa chọn, ranking fallback sau |
+| Frontend TRAKE export | dòng CSV | selected sequences trước, ranking fallback sau |
+
+Hybrid RRF giữa Semantic và OCR từng được thử nhưng hiện không wire vào ranking
+online vì đo thực nghiệm làm kéo kênh mạnh xuống. Hàm RRF vẫn còn trong code để
+dành cho trường hợp sau này fuse hai semantic encoder cùng loại:
+
+$$
+\operatorname{RRF}(d)
+= \sum_c \frac{w_c}{k+\operatorname{rank}_c(d)}
+$$
+
+## API chính
+
+| Method | Endpoint | Mục đích |
+|---|---|---|
+| `POST` | `/api/search` | Search đơn giản `semantic` hoặc `ocr` |
+| `POST` | `/api/search/image` | Image-to-image search |
+| `POST` | `/api/search/kis/candidates` | Stage 1 KIS candidate pool |
+| `POST` | `/api/search/kis/rerank` | Stage 2 KIS reranking |
+| `POST` | `/api/trake` | TRAKE/DANTE sequence search |
+| `POST` | `/api/quest/rewrite-query` | Rewrite truy vấn OOK |
+| `POST` | `/api/quest/image-candidates` | Tìm ảnh mẫu web |
+| `POST` | `/api/qa` | VQA answer có evidence |
+| `GET` | `/api/keyframes/{id}/thumbnail` | Thumbnail cached |
+| `GET` | `/api/keyframes/{id}/image` | Ảnh keyframe gốc |
+| `GET` | `/api/videos/{id}` | Metadata video |
+| `GET` | `/api/videos/{id}/keyframes` | Keyframe quanh video |
+| `GET` | `/health` | Store health + ASR readiness |
+
+## Chạy nhanh
+
+```powershell
+docker compose up -d --build
+./.venv/Scripts/python.exe -m uvicorn app.main:app --port 8000
+```
+
+Frontend:
 
 ```powershell
 cd frontend
 npm install
-npm run dev      # http://localhost:5173 -- proxy /api -> http://localhost:8000
-npm run test     # Vitest + React Testing Library
-npm run build    # tsc -b && vite build
+npm run dev
 ```
 
-Cần backend sống ở `:8000` để dùng thật (`./.venv/Scripts/python.exe -m uvicorn app.main:app --port 8000`) + docker-compose stack (Milvus/Elasticsearch/MongoDB). Ảnh keyframe được resize + cache theo yêu cầu qua `GET /api/keyframes/{id}/thumbnail` -- lần xem đầu mỗi ảnh chậm hơn (đang sinh cache), lần sau tức thì. Warm cache trước cho toàn corpus (tốn thời gian, không tự chạy):
-
-### ASR readiness (read-only)
-
-Không chạy model, ingest, hay reindex để kiểm tra readiness. Với Elasticsearch và backend đang sống, chạy hai lệnh read-only sau:
+Test/lint:
 
 ```powershell
-Invoke-RestMethod http://localhost:9200/asr_segments/_count
-Invoke-RestMethod http://localhost:8000/health
+./.venv/Scripts/python.exe -m ruff check .
+./.venv/Scripts/python.exe -m black --check .
+./.venv/Scripts/python.exe -m pytest
 ```
-
-Nếu `count > 0` và health trả `asr_status: ready`, ASR đã sẵn sàng và **không cần reindex**. `asr_segment_count` bằng `0` nghĩa index empty; `null` chỉ index missing/probe unavailable hoặc Elasticsearch unreachable (xem `asr_status`: `empty`, `unavailable`, hay `unreachable`). Với index missing/empty, chủ dự án tự chạy import sau — không thêm `--reset` cho một lần nạp thường:
-
-```powershell
-./.venv/Scripts/python.exe scripts/import_asr_out.py --asr-out-dir data/asr_out
-```
-
-`--reset` chỉ dành cho một replacement ASR model-identity đã được xác minh rõ ràng; nó không phải cờ refresh định kỳ. Cờ này **chỉ bypass guard khác `model_id`, không tự xoá document cũ**. Trước khi dùng nó, chủ dự án phải chủ động replace/clear ASR index/store cũ theo một destructive procedure được review riêng; không có lệnh destructive nào được suy ra từ hướng dẫn này. Chất lượng ASR-assisted retrieval: **not measured**; evaluation plan tách riêng ở [`docs/superpowers/plans/2026-08-23-asr-assisted-kis-evaluation.md`](docs/superpowers/plans/2026-08-23-asr-assisted-kis-evaluation.md).
-
-```powershell
-python scripts/build_thumbnails.py --limit-videos 5   # đo thử trước
-python scripts/build_thumbnails.py                    # full corpus
-```
-
-## Chẩn đoán không gian embedding (điều tra `semantic` < `random`)
-
-Báo cáo `reports/20260810T161049Z_a40aac8` cho thấy kênh `semantic` (AIC 0.0451)
-thấp hơn baseline `random` (0.0809). Hai công cụ dưới đây tách "text tower không
-đọc được tiếng Việt" khỏi "phía ảnh/index hỏng" — **không re-embed gì cả** và
-**không sửa bộ nhãn** (`aic_eval_v1.json` + `.sha256` giữ nguyên).
-
-Bước 0 — đo mode collapse **không cần bản dịch nào**, không tốn quota:
-
-```powershell
-docker compose up -d
-./.venv/Scripts/python.exe -m scripts.diagnose_embedding_space
-```
-
-`collapsed: true` kèm `query_cosine_mean` cao và `union_ratio` thấp là đã đủ kết
-luận không gian vector suy biến. Bước 1–2 chỉ cần khi muốn tách tiếp "text tower
-hỏng" khỏi "phía ảnh hỏng".
-
-Bước 1 — sinh sidecar truy vấn tiếng Anh. Mặc định dùng **dịch offline miễn phí**
-(`VietAI/envit5-translation`, tải ~1GB lần đầu rồi chạy không cần mạng, không cần
-API key):
-
-```powershell
-./.venv/Scripts/python.exe -m scripts.translate_eval_queries --limit 5   # thử
-./.venv/Scripts/python.exe -m scripts.translate_eval_queries             # 173 câu
-```
-
-Đổi model dịch: sửa `local_model_id` trong `configs/eval/query_translation.yaml`
-(ví dụ `vinai/vinai-translate-vi2en-v2` — model này không cần tag ngôn ngữ nên
-đặt `local_source_prefix`/`local_target_prefix` thành `""`). Dùng Gemini thay thế:
-`--translator gemini`. Script resume được và ghi `translator_model` cho **từng
-dòng**, nên sidecar sinh dở bằng Gemini rồi dịch nốt bằng model offline vẫn truy
-được nguồn gốc.
-
-Bước 2 — đo lại kèm truy vấn tiếng Anh (cần Milvus + GPU):
-
-```powershell
-docker compose up -d
-./.venv/Scripts/python.exe -m scripts.diagnose_embedding_space `
-    --translations configs/eval/aic_eval_v1.queries_en.json
-```
-
-Kết quả: `reports/diagnostics/<timestamp>_<git_sha>/embedding_space_{vi,en}.{json,md}`.
-
-Bước 3 — chấm kênh `semantic@en` cạnh `semantic` trong cùng một báo cáo: đặt
-`query_translation_path: configs/eval/aic_eval_v1.queries_en.json` trong
-`configs/eval/aic_pilot.yaml` rồi chạy lại `python -m eval.run`. Để trống khoá
-này là tắt hẳn tính năng, hành vi không đổi.
-
-## Trạng thái
-
-- ✅ **P0 — Nền móng** xong (2026-08-11).
-- ✅ **P1 — Tìm kiếm cơ bản** đóng 2026-08-13 (semantic + image-to-image + OCR + fusion, UI dùng được thật).
-- 🟡 **P2 — QUEST & DANTE** gần xong (2026-08-15/16): DANTE (`dante_service.py`), `POST /api/trake` + bảng ablation `λ` (đã chọn `λ=0.001`), QUEST 2 nhánh (Gemini rewrite + web image search) đều chạy end-to-end kèm UI. Còn thiếu cột `N=7` trong bảng ablation (cần sinh lại bộ eval, đã hoãn có chủ đích).
-- ⬜ **P3 — VQA & nộp bài**, **P4 — Mở rộng toàn kho & tối ưu** chưa bắt đầu.
-
-Chi tiết từng phase + số đo thật: [`.claude/plans/roadmap.plan.md`](./.claude/plans/roadmap.plan.md).
-
-## Directory `app/` — đường online query
-
-`app/` là đường **online (serving)** — FastAPI nhận request, gọi service, trả kết quả. Đối lập với `pipelines/`/`scripts/` (đường **offline ingest**, xem `.claude/docs/pipeline-and-retrieval.md`). Router mỏng, không chứa business logic; service không phụ thuộc FastAPI, test được độc lập; store là client mỏng bọc SDK, filter luôn chạy trong engine (không lọc sau khi lấy kết quả về, CLAUDE.md — Invariants).
-
-```
-app/
-├── main.py                  # app factory + lifespan: dựng Settings, encoder, 3 store + ASR ES store, services; đăng ký router; CORS
-├── config.py                 # Settings / CorsSettings (pydantic-settings, đọc .env)
-├── dependencies.py            # Depends() provider — đọc instance từ request.app.state, router không tự new client
-│
-├── api/                       # router tầng HTTP — validate input, gọi service, response_model
-│   ├── search.py                #   POST /api/search · /api/search/kis/{candidates,rerank} · /api/search/image
-│   ├── trake.py                  #   POST /api/trake (DANTE)
-│   ├── quest.py                    #   POST /api/quest/rewrite-query · /image-candidates · /image-search
-│   ├── videos.py                    #   GET /api/videos/{id} · /api/videos/{id}/keyframes
-│   ├── keyframes.py                  #   GET /api/keyframes/{id}/thumbnail · /image
-│   ├── health.py                      #   GET /health
-│   └── errors.py                       #   chuẩn hoá response lỗi
-│
-├── services/                   # business logic thuần Python, test không cần FastAPI
-│   ├── search_service.py          #   semantic + KIS Stage 1/2; optional ASR video gate/evidence, never ASR score
-│   ├── asr_retrieval_service.py   #   BM25 asr_segments -> ranked video IDs + timestamp evidence
-│   ├── dante_service.py             #   DP O(NT) tìm chuỗi N sự kiện đúng thứ tự — công thức Eq (1)–(5) của paper
-│   ├── trake_service.py               #   cầu nối POST /api/trake → dante_service, duyệt mọi video `complete`
-│   ├── quest_service.py                 #   QUEST 2 nhánh: GeminiQueryRewriter (viết lại truy vấn) + tìm ảnh mẫu web (DDGS + httpx)
-│   ├── query_translator.py                #   VI→EN cho kênh semantic — BEiT-3 text tower chỉ học cặp tiếng Anh
-│   ├── thumbnail_service.py                 #   resize + cache ảnh keyframe theo yêu cầu
-│   └── health_service.py                     #   kiểm tra 3 store và ASR readiness
-│
-├── stores/                     # client mỏng bọc SDK từng store
-│   ├── milvus_client.py           #   vector search
-│   ├── es_client.py                 #   OCR text search + ASR transcript `asr_segments`
-│   └── mongo_client.py                #   metadata (frame_idx, global_index, s_v/e_v...)
-│
-├── encoders/                   # MultimodalEncoder Protocol + implementation; L2-normalize ngay tại encoder
-│   ├── base.py                    #   Protocol chung (encode_text/encode_image)
-│   ├── beit3.py                     #   encoder production hiện hành
-│   ├── siglip2.py                     #   ứng viên thay thế — đang đánh giá, CHƯA phải production
-│   ├── clip_baseline.py                 #   baseline CLIP bắt buộc (PRD §6.3)
-│   ├── bge_m3.py                          #   text-to-text riêng cho kênh ASR transcript (không dùng chung BEiT-3)
-│   ├── factory.py                           #   dispatch theo `kind` trong `configs/model/*.yaml` — hiện chỉ `scripts/import_embed_out.py` gọi qua đây, `app/main.py` vẫn dựng `BEiT3Encoder` trực tiếp
-│   └── vendor/beit3_upstream/                 #   code BEiT-3 gốc vendor vào nguyên trạng, không sửa
-│
-└── schemas/                   # Pydantic — response_model bắt buộc trên mọi route (CLAUDE.md, FastAPI DI rule)
-    ├── request/                  #   SearchRequest, TrakeRequest, QuestRequest...
-    └── response/                  #   SearchResponse, TrakeResponse, HealthResponse...
-```
-
-Muốn chạy được đường này cần: docker-compose stack sống (§ trên) + `.env` đủ key + dữ liệu đã ingest vào Milvus/Elasticsearch/MongoDB (đường offline, `pipelines/import_embed_out.py` — xem `.claude/docs/pipeline-and-retrieval.md`, không tự chạy từ README này).
