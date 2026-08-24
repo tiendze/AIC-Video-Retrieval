@@ -116,6 +116,7 @@
 
 .neighbor,
 .neighborActive {
+  position: relative;
   width: 64px;
   height: 64px;
   flex: 0 0 64px;
@@ -166,4 +167,136 @@
   color: #555;
   cursor: default;
   opacity: 0.55;
+}
+
+.playerBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.76);
+  box-sizing: border-box;
+}
+
+.playerPanel {
+  width: min(960px, 100%);
+  max-height: 100%;
+  display: grid;
+  grid-template-rows: auto minmax(240px, 1fr) auto auto auto;
+  gap: 12px;
+  padding: 14px;
+  box-sizing: border-box;
+  background: #171717;
+  border: 1px solid #3b3b3b;
+  overflow: auto;
+}
+
+.playerHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  color: #e5e7eb;
+}
+
+.playerHeader div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  text-align: left;
+}
+
+.playerHeader span {
+  color: #9ca3af;
+  font-size: 12px;
+}
+
+.playerClose {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  background: #202020;
+  border: 1px solid #3a3a3a;
+  color: #fff;
+  cursor: pointer;
+}
+
+.playerFrame {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  min-height: 240px;
+  background: #050505;
+}
+
+.playerFrame iframe {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.playerStatus {
+  color: #d1d5db;
+  font-size: 13px;
+  text-align: left;
+}
+
+.frameIndexResult {
+  display: grid;
+  grid-template-columns: repeat(3, max-content) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px;
+  background: #0f172a;
+  border: 1px solid #334155;
+  color: #d1d5db;
+  font-size: 13px;
+}
+
+.frameIndexResult strong {
+  color: #fbbf24;
+  font-size: 15px;
+}
+
+.captureActions {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.captureButton {
+  padding: 7px 12px;
+  background: #16a34a;
+  border: none;
+  color: #fff;
+  cursor: pointer;
+}
+
+.captureButton:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.copyButton {
+  justify-self: start;
+  padding: 5px 9px;
+  background: #202020;
+  border: 1px solid #3a3a3a;
+  color: #fff;
+  cursor: pointer;
+}
+
+@media (max-width: 760px) {
+  .playerBackdrop {
+    padding: 12px;
+  }
+
+  .playerFrame {
+    min-height: 180px;
+  }
+
+  .frameIndexResult {
+    grid-template-columns: 1fr;
+  }
 }

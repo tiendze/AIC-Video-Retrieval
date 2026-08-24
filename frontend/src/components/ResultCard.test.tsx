@@ -20,15 +20,27 @@ const HIT: SearchHit = {
 
 const ASR_VIDEO = {
   video_id: 'L21_V001',
-  video_rank: 1,
-  best_bm25_score: 8.73,
+  detected: true,
+  asr_matches: [
+    {
+      query: 'công trình thủy lợi',
+      detected: true,
+      matches: [
+        {
+          segment_id: 'L21_V001_seg10',
+          text: 'công trình thủy lợi',
+          start_time: 151.2,
+          end_time: 158.4,
+        },
+      ],
+    },
+  ],
   segments: [
     {
       segment_id: 'L21_V001_seg10',
       text: 'công trình thủy lợi',
       start_time: 151.2,
       end_time: 158.4,
-      raw_bm25: 8.73,
     },
   ],
 }
@@ -44,7 +56,7 @@ describe('ResultCard', () => {
     expect(screen.getByText('frame 10')).toBeVisible()
   })
 
-  it('keeps the ASR video rank visible when the detail control is present', async () => {
+  it('keeps the ASR detected badge visible when the detail control is present', async () => {
     const onOpenDetail = vi.fn()
     const hit = { ...HIT, asr_evidence: ASR_VIDEO }
     render(
@@ -56,7 +68,7 @@ describe('ResultCard', () => {
       />,
     )
 
-    const badge = screen.getByText('ASR #1')
+    const badge = screen.getByText('ASR detected')
     expect(badge).toBeVisible()
     expect(badge).toHaveClass(styles.asrBadgeBelowDetail)
     expect(screen.queryByText('công trình thủy lợi')).not.toBeInTheDocument()

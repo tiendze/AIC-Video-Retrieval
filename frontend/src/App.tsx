@@ -39,9 +39,10 @@ import {
   type VideoGroupSortMode,
 } from './utils/retrievalView'
 import {
-  buildKisFinalRanking,
+  buildKisSubmissionRows,
   buildTrakeFinalRanking,
   buildVqaFinalRows,
+  createVisualKisSelection,
   downloadCsv,
   searchHitKey,
   serializeKisCsv,
@@ -50,7 +51,7 @@ import {
   trakeSequenceKey,
   validateCsvFilename,
   validateTrakeEventCount,
-  type SelectedSearchItem,
+  type SelectedKisItem,
   type SelectedTrakeSequence,
   type SelectedVqaItem,
 } from './utils/submissionExport'
@@ -163,7 +164,7 @@ function App() {
   const [kisExportName, setKisExportName] = useState('query-1-kis')
   const [vqaExportName, setVqaExportName] = useState('query-3-qa')
   const [trakeExportName, setTrakeExportName] = useState('query-4-trake')
-  const [kisSelection, setKisSelection] = useState<SelectedSearchItem[]>([])
+  const [kisSelection, setKisSelection] = useState<SelectedKisItem[]>([])
   const [vqaSelection, setVqaSelection] = useState<SelectedVqaItem[]>([])
   const [trakeSelection, setTrakeSelection] = useState<SelectedTrakeSequence[]>([])
   function handleModeChange(next: AppMode): void {
@@ -186,7 +187,7 @@ function App() {
 
   const manualSearchSelectionKeys = useMemo(() => {
     const source = kisSelectionMode === 'kis' ? kisSelection : vqaSelection
-    return new Set(source.map((item) => item.key))
+    return new Set(source.map((item) => searchHitKey(item.hit)))
   }, [kisSelection, kisSelectionMode, vqaSelection])
 
   const selectedTrakeSequenceKeys = useMemo(
@@ -199,9 +200,12 @@ function App() {
     const originalRank = Math.max(0, results.findIndex((result) => searchHitKey(result) === key))
     if (kisSelectionMode === 'kis') {
       setKisSelection((prev) =>
-        prev.some((item) => item.key === key)
-          ? prev.filter((item) => item.key !== key)
-          : [...prev, { key, hit, originalRank }],
+        prev.some((item) => searchHitKey(item.hit) === key)
+          ? prev.filter((item) => searchHitKey(item.hit) !== key)
+          : [
+              ...prev,
+              createVisualKisSelection(hit, originalRank, kisFrameSweepStep, kisFrameSweepMargin),
+            ],
       )
       return
     }
@@ -224,15 +228,9 @@ function App() {
   function exportKisCsv(): void {
     const validation = validateCsvFilename(kisExportName, 'kis')
     if (!validation.isValid || kisSelection.length === 0) return
-    const rows = buildKisFinalRanking(visibleResults, kisSelection)
+    const rows = buildKisSubmissionRows(kisSelection, visibleResults)
     if (rows.length === 0) return
-    downloadCsv(
-      validation.filename,
-      serializeKisCsv(rows, {
-        step: kisFrameSweepStep,
-        margin: kisFrameSweepMargin,
-      }),
-    )
+    downloadCsv(validation.filename, serializeKisCsv(rows))
   }
 
   function excludeVideo(videoId: string): void {
@@ -518,6 +516,13 @@ function App() {
           onRemoveKisSelection={(key) =>
             setKisSelection((prev) => prev.filter((item) => item.key !== key))
           }
+          onAddManualKisSelection={(item) =>
+            setKisSelection((prev) =>
+              prev.some((existing) => searchHitKey(existing.hit) === searchHitKey(item.hit))
+                ? prev
+                : [...prev, item],
+            )
+          }
           onRemoveVqaSelection={(key) =>
             setVqaSelection((prev) => prev.filter((item) => item.key !== key))
           }
@@ -588,14 +593,15 @@ function moveSelection<T>(items: T[], index: number, direction: -1 | 1): T[] {
 }
 
 function syncSearchSelectionWithResults(
-  selection: SelectedSearchItem[],
+  selection: SelectedKisItem[],
   results: SearchHit[],
-): SelectedSearchItem[] {
+): SelectedKisItem[] {
   const resultByKey = new Map(results.map((hit, index) => [searchHitKey(hit), { hit, index }]))
-  return selection.flatMap((item) => {
+  return selection.map((item) => {
+    if (item.source === 'manual') return item
     const current = resultByKey.get(item.key)
-    if (!current) return []
-    return [{ ...item, hit: current.hit, originalRank: current.index }]
+    if (!current) return item
+    return { ...item, hit: current.hit, originalRank: current.index }
   })
 }
 

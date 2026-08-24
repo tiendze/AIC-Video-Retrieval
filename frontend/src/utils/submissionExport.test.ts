@@ -6,6 +6,8 @@ import {
   buildRawFrameSweep,
   buildTrakeFinalRanking,
   buildVqaFinalRows,
+  createManualKisSelection,
+  createVisualKisSelection,
   normalizeCsvFilename,
   searchHitKey,
   serializeKisCsv,
@@ -14,7 +16,7 @@ import {
   trakeSequenceKey,
   validateCsvFilename,
   validateTrakeEventCount,
-  type SelectedSearchItem,
+  type SelectedKisItem,
   type SelectedTrakeSequence,
   type SelectedVqaItem,
 } from './submissionExport'
@@ -49,11 +51,9 @@ function sequence(videoId: string, frames: number[]): TrakeVideoResultItem {
 describe('submissionExport', () => {
   it('builds KIS final ranking as manual order followed by remaining retrieval order', () => {
     const results = [1, 2, 3, 4, 5].map((frame) => hit(frame))
-    const selected: SelectedSearchItem[] = [results[1], results[3]].map((item, index) => ({
-      key: searchHitKey(item),
-      hit: item,
-      originalRank: index,
-    }))
+    const selected: SelectedKisItem[] = [results[1], results[3]].map((item, index) =>
+      createVisualKisSelection(item, index, 10, 0),
+    )
 
     const finalRanking = buildKisFinalRanking(results, selected)
 
@@ -89,12 +89,27 @@ describe('submissionExport', () => {
     expect(buildRawFrameSweep(15, { step: 10, margin: 30 })).toEqual([15, 5, 25, 35, 45])
   })
 
-  it('exports primary margin frames first, then fills from fused image ranking', () => {
-    const rows = buildKisSubmissionRows([hit(90), hit(100), hit(200, 'L30_V007')], {
-      step: 10,
-      margin: 20,
-      maxRows: 5,
-    })
+  it('builds manual-only KIS submission as primary first, then ranking fallback', () => {
+    const rows = buildKisSubmissionRows(
+      [createManualKisSelection('L30_V046', 3255, 10, 0)],
+      [hit(10), hit(20), hit(30)],
+      4,
+    )
+
+    expect(rows.map((row) => `${row.video_id}:${row.frame_idx}`)).toEqual([
+      'L30_V046:3255',
+      'L30_V006:10',
+      'L30_V006:20',
+      'L30_V006:30',
+    ])
+  })
+
+  it('exports each selected primary before that selection margin and ranking fallback', () => {
+    const rows = buildKisSubmissionRows(
+      [createManualKisSelection('L30_V006', 90, 10, 20)],
+      [hit(100), hit(200, 'L30_V007')],
+      6,
+    )
 
     expect(rows.map((row) => `${row.video_id}:${row.frame_idx}`)).toEqual([
       'L30_V006:90',
@@ -102,22 +117,85 @@ describe('submissionExport', () => {
       'L30_V006:100',
       'L30_V006:70',
       'L30_V006:110',
+      'L30_V007:200',
+    ])
+  })
+
+  it('preserves multiple manual and visual selection groups before fallback', () => {
+    const visual = hit(30025, 'L25_V041')
+    const rows = buildKisSubmissionRows(
+      [
+        createManualKisSelection('L30_V046', 3255, 10, 20),
+        createVisualKisSelection(visual, 0, 10, 0),
+        createManualKisSelection('L28_V003', 9210, 10, 20),
+      ],
+      [visual, hit(777, 'L31_V001')],
+      8,
+    )
+
+    expect(rows.map((row) => `${row.video_id}:${row.frame_idx}`)).toEqual([
+      'L30_V046:3255',
+      'L30_V046:3245',
+      'L30_V046:3265',
+      'L30_V046:3235',
+      'L30_V046:3275',
+      'L25_V041:30025',
+      'L28_V003:9210',
+      'L28_V003:9200',
     ])
   })
 
   it('deduplicates selected and margin frames before image-ranking fallback', () => {
-    expect(
-      serializeKisCsv([hit(90), hit(80), hit(100), hit(200, 'L30_V007')], {
-        step: 10,
-        margin: 10,
-        maxRows: 4,
-      }),
-    ).toBe(
-      'L30_V006,90\n' +
-        'L30_V006,80\n' +
-        'L30_V006,100\n' +
-        'L30_V007,200',
+    const rows = buildKisSubmissionRows(
+      [createManualKisSelection('L30_V006', 90, 10, 10)],
+      [hit(90), hit(80), hit(100), hit(200, 'L30_V007')],
+      4,
     )
+
+    expect(serializeKisCsv(rows)).toBe(
+      'L30_V006,90\n' + 'L30_V006,80\n' + 'L30_V006,100\n' + 'L30_V007,200',
+    )
+  })
+
+  it('keeps a later primary group visible while deduplicating an overlapping margin row', () => {
+    const rows = buildKisSubmissionRows(
+      [
+        createManualKisSelection('L30_V006', 90, 10, 10),
+        createManualKisSelection('L30_V006', 80, 10, 0),
+      ],
+      [hit(200, 'L30_V007')],
+      4,
+    )
+
+    expect(rows.map((row) => `${row.video_id}:${row.frame_idx}`)).toEqual([
+      'L30_V006:90',
+      'L30_V006:80',
+      'L30_V006:100',
+      'L30_V007:200',
+    ])
+  })
+
+  it('fills directly from ranking when no manual input was added', () => {
+    const rows = buildKisSubmissionRows([], [hit(1), hit(2), hit(3)], 2)
+
+    expect(rows.map((row) => row.frame_idx)).toEqual([1, 2])
+  })
+
+  it('honors the submission limit with earlier selection groups taking priority', () => {
+    const rows = buildKisSubmissionRows(
+      [
+        createManualKisSelection('L30_V006', 90, 10, 20),
+        createManualKisSelection('L30_V007', 200, 10, 20),
+      ],
+      [hit(300)],
+      3,
+    )
+
+    expect(rows.map((row) => `${row.video_id}:${row.frame_idx}`)).toEqual([
+      'L30_V006:90',
+      'L30_V006:80',
+      'L30_V006:100',
+    ])
   })
 
   it('exports only selected and answered VQA rows', () => {

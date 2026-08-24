@@ -105,8 +105,9 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
   ref,
 ) {
   const hasTextInput = textQueries.some((query) => query.trim().length > 0)
+  const hasAsrInput = !asrDisabled && asrQuery.trim().length > 0
   const hasStage1Input =
-    hasTextInput || ocrQuery.trim().length > 0 || titleQuery.trim().length > 0
+    hasTextInput || ocrQuery.trim().length > 0 || titleQuery.trim().length > 0 || hasAsrInput
   const activeStage2Queries = stage2Queries.filter((row) =>
     row.type === 'abe'
       ? row.pairs.some((pair) => pair.attribute.trim() && pair.object.trim())
@@ -222,19 +223,19 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
             onChange={onTitleCandidateKChange}
           />
           <label className={styles.fieldWide}>
-            <span>Optional ASR topic/dialogue</span>
+            <span>Optional ASR keyword/phrase</span>
             <QueryInput
               aria-label="stage 1 asr"
               type="text"
               maxLength={MAX_ASR_QUERY_LENGTH}
-              placeholder="cong trinh thuy loi dap ho chua"
+              placeholder="con cá, cân, bao nhiêu ký"
               value={asrQuery}
               disabled={asrDisabled}
               onValueChange={onAsrQueryChange}
             />
           </label>
           <NumberField
-            label="ASR candidate videos"
+            label="ASR max videos"
             ariaLabel="asr candidate videos"
             value={asrVideoCandidateK}
             min={1}
@@ -262,7 +263,7 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
           {candidatePoolSize !== null && (
             <span className={styles.poolBreakdown}>
               {`Text ${textCandidateCount} · OCR ${ocrCandidateCount} · Title OCR ${titleCandidateCount}${
-                asrGate ? ` · ASR ${asrGate.candidate_video_count} videos` : ''
+                asrGate ? ` · ASR ${asrGate.candidate_video_count} detected` : ''
               }`}
             </span>
           )}

@@ -1,11 +1,13 @@
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import type { SearchHit } from '../api/types'
 import {
-  buildKisFinalRanking,
-  buildKisSubmissionRows,
+  buildKisSubmissionPlan,
   buildVqaFinalRows,
+  createManualKisSelection,
   suggestedFilename,
   validateCsvFilename,
+  type KisSubmissionPlan,
+  type SelectedKisItem,
   type SelectedSearchItem,
   type SelectedVqaItem,
 } from '../utils/submissionExport'
@@ -17,7 +19,7 @@ export interface KisSelectionPanelProps {
   mode: KisSelectionMode
   onModeChange: (mode: KisSelectionMode) => void
   results: SearchHit[]
-  kisSelection: SelectedSearchItem[]
+  kisSelection: SelectedKisItem[]
   vqaSelection: SelectedVqaItem[]
   kisExportName: string
   vqaExportName: string
@@ -26,6 +28,7 @@ export interface KisSelectionPanelProps {
   onMoveKisSelection: (index: number, direction: -1 | 1) => void
   onMoveVqaSelection: (index: number, direction: -1 | 1) => void
   onRemoveKisSelection: (key: string) => void
+  onAddManualKisSelection: (item: SelectedKisItem) => void
   onRemoveVqaSelection: (key: string) => void
   onClearKisSelection: () => void
   onClearVqaSelection: () => void
@@ -52,6 +55,7 @@ export function KisSelectionPanel({
   onMoveKisSelection,
   onMoveVqaSelection,
   onRemoveKisSelection,
+  onAddManualKisSelection,
   onRemoveVqaSelection,
   onClearKisSelection,
   onClearVqaSelection,
@@ -66,17 +70,13 @@ export function KisSelectionPanel({
 }: KisSelectionPanelProps) {
   const activeName = mode === 'kis' ? kisExportName : vqaExportName
   const validation = validateCsvFilename(activeName, mode)
-  const finalKisRows = buildKisFinalRanking(results, kisSelection)
-  const finalKisSubmissionRows = buildKisSubmissionRows(finalKisRows, {
-    step: kisFrameSweepStep,
-    margin: kisFrameSweepMargin,
-  })
+  const finalKisPlan = buildKisSubmissionPlan(kisSelection, results)
   const finalVqaRows = buildVqaFinalRows(vqaSelection)
   const missingAnswers = vqaSelection.filter((item) => item.answer.length === 0)
   const overLimitAnswers = vqaSelection.filter((item) => item.answer.length > 100)
   const disableReason =
     mode === 'kis'
-      ? kisDisableReason(validation.isValid, kisSelection.length, finalKisSubmissionRows.length)
+      ? kisDisableReason(validation.isValid, kisSelection.length, finalKisPlan.rows.length)
       : vqaDisableReason(
           validation.isValid,
           vqaSelection.length,
@@ -147,12 +147,13 @@ export function KisSelectionPanel({
       {mode === 'kis' ? (
         <KisSelectedList
           selection={kisSelection}
-          finalCount={finalKisRows.length}
-          submissionRows={finalKisSubmissionRows}
+          finalCount={results.length}
+          submissionPlan={finalKisPlan}
           frameSweepStep={kisFrameSweepStep}
           frameSweepMargin={kisFrameSweepMargin}
           onFrameSweepStepChange={onKisFrameSweepStepChange}
           onFrameSweepMarginChange={onKisFrameSweepMarginChange}
+          onAddManualSelection={onAddManualKisSelection}
           onMove={onMoveKisSelection}
           onRemove={onRemoveKisSelection}
           onClear={onClearKisSelection}
@@ -186,26 +187,62 @@ export function KisSelectionPanel({
 function KisSelectedList({
   selection,
   finalCount,
-  submissionRows,
+  submissionPlan,
   frameSweepStep,
   frameSweepMargin,
   onFrameSweepStepChange,
   onFrameSweepMarginChange,
+  onAddManualSelection,
   onMove,
   onRemove,
   onClear,
 }: {
-  selection: SelectedSearchItem[]
+  selection: SelectedKisItem[]
   finalCount: number
-  submissionRows: SearchHit[]
+  submissionPlan: KisSubmissionPlan
   frameSweepStep: number
   frameSweepMargin: number
   onFrameSweepStepChange: (value: number) => void
   onFrameSweepMarginChange: (value: number) => void
+  onAddManualSelection: (item: SelectedKisItem) => void
   onMove: (index: number, direction: -1 | 1) => void
   onRemove: (key: string) => void
   onClear: () => void
 }) {
+  const [manualVideoId, setManualVideoId] = useState('')
+  const [manualFrameIdx, setManualFrameIdx] = useState('')
+  const [manualError, setManualError] = useState<string | null>(null)
+
+  function addManualFrame(): void {
+    const validation = validateManualFrameInput(
+      manualVideoId,
+      manualFrameIdx,
+      frameSweepStep,
+      frameSweepMargin,
+    )
+    if (validation) {
+      setManualError(validation)
+      return
+    }
+    onAddManualSelection(
+      createManualKisSelection(
+        manualVideoId,
+        Number(manualFrameIdx),
+        frameSweepStep,
+        frameSweepMargin,
+      ),
+    )
+    setManualVideoId('')
+    setManualFrameIdx('')
+    setManualError(null)
+  }
+
+  function skipManualFrame(): void {
+    setManualVideoId('')
+    setManualFrameIdx('')
+    setManualError(null)
+  }
+
   return (
     <section className={styles.section}>
       <div className={styles.sectionHeader}>
@@ -213,7 +250,29 @@ function KisSelectedList({
         <span>{selection.length}</span>
       </div>
       <div className={styles.hint}>
-        Final image ranking has {finalCount} frame(s); CSV writes {submissionRows.length} row(s).
+        Final image ranking has {finalCount} frame(s); CSV writes {submissionPlan.rows.length} row(s).
+      </div>
+      <div className={styles.manualGrid}>
+        <label className={styles.label}>
+          Video ID
+          <input
+            className={styles.input}
+            value={manualVideoId}
+            placeholder="L30_V046"
+            onChange={(event) => setManualVideoId(event.target.value)}
+          />
+        </label>
+        <label className={styles.label}>
+          Frame Index
+          <input
+            className={styles.input}
+            type="number"
+            min={0}
+            value={manualFrameIdx}
+            placeholder="3255"
+            onChange={(event) => setManualFrameIdx(event.target.value)}
+          />
+        </label>
       </div>
       <div className={styles.sweepGrid}>
         <label className={styles.label}>
@@ -237,6 +296,15 @@ function KisSelectedList({
           />
         </label>
       </div>
+      {manualError && <div className={styles.warning}>{manualError}</div>}
+      <div className={styles.actions}>
+        <button type="button" className={styles.compactButton} onClick={addManualFrame}>
+          Add Frame
+        </button>
+        <button type="button" className={styles.compactButton} onClick={skipManualFrame}>
+          Skip
+        </button>
+      </div>
       {selection.length === 0 ? (
         <div className={styles.empty}>Selected frames appear here.</div>
       ) : (
@@ -258,7 +326,7 @@ function KisSelectedList({
               />
             ))}
           </div>
-          <SubmissionPreview rows={submissionRows} primaryKey={selection[0]?.key ?? null} />
+          <SubmissionPreview plan={submissionPlan} />
         </>
       )}
     </section>
@@ -361,11 +429,24 @@ function FrameItem({
       <div className={styles.ordinal}>{index + 1}</div>
       <div className={styles.itemBody}>
         <div className={styles.frameRow}>
-          <img className={styles.thumb} src={item.hit.thumbnail_url} alt="" loading="lazy" />
+          {item.hit.thumbnail_url ? (
+            <img className={styles.thumb} src={item.hit.thumbnail_url} alt="" loading="lazy" />
+          ) : (
+            <div className={styles.thumbPlaceholder} aria-hidden="true">
+              Manual
+            </div>
+          )}
           <div className={styles.meta}>
             <strong>{item.hit.video_id}</strong>
             <div className={styles.secondary}>frame {item.hit.frame_idx}</div>
-            <div className={styles.secondary}>Original #{item.originalRank + 1}</div>
+            {isKisItem(item) && (
+              <div className={styles.secondary}>
+                {formatSource(item.source)} · {formatSelectionMargin(item)}
+              </div>
+            )}
+            {item.originalRank >= 0 && (
+              <div className={styles.secondary}>Original #{item.originalRank + 1}</div>
+            )}
           </div>
         </div>
         {children}
@@ -405,34 +486,61 @@ function isVqaItem(item: SelectedSearchItem): item is SelectedVqaItem {
   return 'answer' in item && typeof item.answer === 'string'
 }
 
-function SubmissionPreview({
-  rows,
-  primaryKey,
-}: {
-  rows: SearchHit[]
-  primaryKey: string | null
-}) {
-  if (rows.length === 0) return null
+function isKisItem(item: SelectedSearchItem): item is SelectedKisItem {
+  return 'source' in item && 'step' in item && 'margin' in item
+}
+
+function SubmissionPreview({ plan }: { plan: KisSubmissionPlan }) {
+  if (plan.rows.length === 0) return null
   return (
     <div className={styles.preview}>
       <div className={styles.sectionHeader}>
         <span>Submission order</span>
-        <span>{rows.length}</span>
+        <span>{plan.rows.length}</span>
       </div>
-      {rows.slice(0, 12).map((hit, index) => {
-        const key = `${hit.video_id}:${hit.frame_idx}`
-        const isPrimary = primaryKey === key
+      {plan.groups.map((group, index) => {
+        const { item } = group
         return (
-          <div className={styles.previewRow} key={`${key}:${index}`}>
+          <div className={styles.previewRow} key={item.key}>
             <span>{index + 1}</span>
-            <strong>{hit.video_id}</strong>
-            <span>frame {hit.frame_idx}</span>
-            {isPrimary && <em>selected</em>}
+            <strong>{item.source.toUpperCase()}</strong>
+            <span>
+              {item.hit.video_id} · frame {item.hit.frame_idx}
+              {group.marginStart !== null &&
+                group.marginEnd !== null &&
+                ` · margin ${group.marginStart}-${group.marginEnd} · step ${item.step}`}
+            </span>
+            <em>{group.emittedCount}</em>
           </div>
         )
       })}
+      <div className={styles.previewFooter}>Ranking fallback: {plan.rankingFallbackCount} frames</div>
     </div>
   )
+}
+
+function validateManualFrameInput(
+  videoId: string,
+  frameIdx: string,
+  step: number,
+  margin: number,
+): string | null {
+  if (videoId.trim().length === 0) return 'Enter a video ID.'
+  if (!/^\d+$/.test(frameIdx.trim())) return 'Frame Index must be a non-negative integer.'
+  if (!Number.isFinite(margin) || margin < 0) return 'Margin must be zero or greater.'
+  if (margin > 0 && (!Number.isFinite(step) || step <= 0)) return 'Raw step must be greater than zero.'
+  return null
+}
+
+function formatSource(source: SelectedKisItem['source']): string {
+  return source === 'manual' ? 'Manual' : 'Visual'
+}
+
+function formatSelectionMargin(item: SelectedKisItem): string {
+  if (item.margin <= 0) return `margin 0 · step ${item.step}`
+  const start = Math.max(0, Math.trunc(item.hit.frame_idx) - item.margin)
+  const end = Math.trunc(item.hit.frame_idx) + item.margin
+  return `margin ${start}-${end} · step ${item.step}`
 }
 
 function kisDisableReason(

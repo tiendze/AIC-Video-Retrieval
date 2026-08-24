@@ -98,6 +98,8 @@ class KisCandidateRequest(BaseModel):
     title_query: str | None = None
     title_top_k: int = Field(default=DEFAULT_TITLE_CANDIDATE_K, ge=1, le=MAX_CANDIDATE_K)
     asr_query: str | None = Field(default=None, max_length=MAX_ASR_QUERY_LENGTH)
+    asr_queries: list[str] = Field(default_factory=list)
+    asr_match_mode: Literal["any", "all"] = "any"
     asr_video_top_k: int = Field(
         default=DEFAULT_ASR_VIDEO_CANDIDATE_K,
         ge=1,
@@ -118,6 +120,15 @@ class KisCandidateRequest(BaseModel):
             return [value]
         return value  # type: ignore[return-value]
 
+    @field_validator("asr_queries", mode="before")
+    @classmethod
+    def asr_queries_accepts_single_string(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [value]
+        return value  # type: ignore[return-value]
+
     @model_validator(mode="after")
     def at_least_one_stage1_query(self) -> KisCandidateRequest:
         normalized_text_queries: list[str] = []
@@ -129,8 +140,24 @@ class KisCandidateRequest(BaseModel):
                 normalized_text_queries.append(stripped)
         self.text_queries = list(dict.fromkeys(normalized_text_queries))
         self.text_query = self.text_queries[0] if self.text_queries else None
-        if self.text_query is None and self.ocr_query is None and self.title_query is None:
-            raise ValueError("Stage 1 requires Text, OCR, or Title query")
+        normalized_asr_queries: list[str] = []
+        if self.asr_query is not None:
+            normalized_asr_queries.append(self.asr_query)
+        for query in self.asr_queries:
+            stripped = query.strip()
+            if stripped:
+                if len(stripped) > MAX_ASR_QUERY_LENGTH:
+                    raise ValueError("ASR query must be at most max_asr_query_length")
+                normalized_asr_queries.append(stripped)
+        self.asr_queries = list(dict.fromkeys(normalized_asr_queries))
+        self.asr_query = self.asr_queries[0] if self.asr_queries else None
+        if (
+            self.text_query is None
+            and self.ocr_query is None
+            and self.title_query is None
+            and not self.asr_queries
+        ):
+            raise ValueError("Stage 1 requires Text, OCR, Title, or ASR query")
         return self
 
 

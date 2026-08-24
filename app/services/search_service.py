@@ -59,7 +59,9 @@ from PIL import Image
 from app.encoders.base import MultimodalEncoder
 from app.services.abe import AbeConceptBank, AbeError, AbePatchCache, AbeRankedQuery, AbeScorer
 from app.services.asr_retrieval_service import (
+    AsrEvidenceSegment,
     AsrGateResult,
+    AsrMatchMode,
     AsrRetrievalService,
     AsrRetrievalUnavailable,
 )
@@ -119,6 +121,11 @@ class _OcrQueryComponents:
 class _Stage1OcrCandidate:
     hit: dict
     score: Stage1OcrScore
+
+
+@dataclass(frozen=True)
+class _Stage1AsrCandidate:
+    keyframe_id: str
 
 
 class SearchServiceError(Exception):
@@ -232,15 +239,17 @@ class SearchService:
         title_query: str | None = None,
         title_top_k: int = 0,
         asr_query: str | None = None,
+        asr_queries: Sequence[str] | None = None,
+        asr_match_mode: AsrMatchMode = "any",
         asr_video_top_k: int = 20,
     ) -> KisCandidatePool:
         text_queries = _normalize_stage1_text_queries(text_query, text_queries)
         ocr_query = ocr_query.strip() if ocr_query is not None else None
         title_query = title_query.strip() if title_query is not None else None
-        asr_query = asr_query.strip() if asr_query is not None else None
-        if not text_queries and not ocr_query and not title_query:
+        asr_queries = _normalize_stage1_asr_queries(asr_query, asr_queries)
+        if not text_queries and not ocr_query and not title_query and not asr_queries:
             raise SearchServiceError(
-                "Stage 1 requires Text, OCR, or Title query",
+                "Stage 1 requires Text, OCR, Title, or ASR query",
                 error_code="invalid_kis_request",
                 status_code=400,
             )
@@ -248,11 +257,15 @@ class SearchService:
         text_query_scores_by_id: dict[str, tuple[Stage1TextQueryScore, ...]] = {}
         asr_gate: AsrGateResult | None = None
         video_ids: list[str] | None = None
-        if asr_query:
+        if asr_queries:
             if self._asr_retrieval_service is None:
                 raise self._asr_unavailable_error()
             try:
-                asr_gate = await self._asr_retrieval_service.retrieve(asr_query, asr_video_top_k)
+                asr_gate = await self._asr_retrieval_service.retrieve(
+                    asr_queries,
+                    asr_video_top_k,
+                    match_mode=asr_match_mode,
+                )
             except AsrRetrievalUnavailable as exc:
                 raise self._asr_unavailable_error() from exc
             video_ids = asr_gate.video_ids
@@ -314,8 +327,15 @@ class SearchService:
                 title_query, title_top_k
             )
 
+        asr_candidate_ids: list[str] = []
+        if asr_gate is not None:
+            asr_candidates = await self._retrieve_stage1_asr_candidates(asr_gate)
+            for candidate in asr_candidates:
+                if candidate.keyframe_id not in asr_candidate_ids:
+                    asr_candidate_ids.append(candidate.keyframe_id)
+
         candidate_ids = _union_stage1_candidate_ids(
-            text_candidate_ids, ocr_candidate_ids, title_candidate_ids
+            text_candidate_ids, ocr_candidate_ids, title_candidate_ids, asr_candidate_ids
         )
         if not candidate_ids:
             if asr_gate is not None:
@@ -341,6 +361,7 @@ class SearchService:
 
         ocr_source_ids = set(ocr_candidate_ids)
         title_source_ids = set(title_candidate_ids)
+        asr_source_ids = set(asr_candidate_ids)
 
         vector_rows_by_id: dict[str, dict] = {}
         text_stage1_by_id: dict[str, Stage1TextScore] = {}
@@ -477,6 +498,8 @@ class SearchService:
             if keyframe_id in title_source_ids:
                 source_modalities.append("title")
                 valid_title_ids.add(keyframe_id)
+            if keyframe_id in asr_source_ids:
+                source_modalities.append("asr")
             if not source_modalities:
                 continue
             frame_key = (metadata["video_id"], int(metadata["frame_idx"]))
@@ -635,6 +658,23 @@ class SearchService:
                 if len(candidate_ids) >= top_k:
                     return candidate_ids, title_stage1_by_id
         return candidate_ids, title_stage1_by_id
+
+    async def _retrieve_stage1_asr_candidates(
+        self, gate: AsrGateResult
+    ) -> list[_Stage1AsrCandidate]:
+        candidates: list[_Stage1AsrCandidate] = []
+        seen_ids: set[str] = set()
+        for video in gate.videos:
+            keyframes = await self._mongo_store.get_keyframes_for_video(video.video_id)
+            keyframe = _asr_representative_keyframe(video.segments, keyframes)
+            if keyframe is None:
+                continue
+            keyframe_id = keyframe.get("keyframe_id")
+            if not keyframe_id or keyframe_id in seen_ids:
+                continue
+            seen_ids.add(keyframe_id)
+            candidates.append(_Stage1AsrCandidate(keyframe_id=keyframe_id))
+        return candidates
 
     async def rerank_kis_candidates(
         self,
@@ -978,7 +1018,7 @@ class SearchService:
     @staticmethod
     def _asr_unavailable_error() -> SearchServiceError:
         return SearchServiceError(
-            "ASR search is unavailable: transcript retrieval is unreachable",
+            "ASR detection is unavailable: transcript retrieval is unreachable",
             error_code="asr_unavailable",
             status_code=503,
         )
@@ -1026,6 +1066,19 @@ def _normalize_stage1_text_queries(
     if text_query is not None and text_query.strip():
         queries.append(text_query.strip())
     for query in text_queries or ():
+        stripped = query.strip()
+        if stripped:
+            queries.append(stripped)
+    return list(dict.fromkeys(queries))
+
+
+def _normalize_stage1_asr_queries(
+    asr_query: str | None, asr_queries: Sequence[str] | None
+) -> list[str]:
+    queries: list[str] = []
+    if asr_query is not None and asr_query.strip():
+        queries.append(asr_query.strip())
+    for query in asr_queries or ():
         stripped = query.strip()
         if stripped:
             queries.append(stripped)
@@ -1227,6 +1280,35 @@ def _stage1_candidate_metadata(
         "timestamp": float(mongo_doc["timestamp"]),
         "thumbnail_path": mongo_doc["thumbnail_path"],
     }
+
+
+def _asr_representative_keyframe(
+    segments: Sequence[AsrEvidenceSegment],
+    keyframes: Sequence[dict],
+) -> dict | None:
+    valid_keyframes = [
+        keyframe
+        for keyframe in keyframes
+        if keyframe.get("keyframe_id") and keyframe.get("frame_idx") is not None
+    ]
+    if not valid_keyframes:
+        return None
+    if not segments:
+        return valid_keyframes[0]
+
+    best_segment = segments[0]
+    midpoint = (float(best_segment.start_time) + float(best_segment.end_time)) / 2.0
+    return min(
+        valid_keyframes,
+        key=lambda keyframe: (
+            abs(_keyframe_timestamp(keyframe) - midpoint),
+            int(keyframe.get("global_index", keyframe.get("frame_idx", 0))),
+        ),
+    )
+
+
+def _keyframe_timestamp(keyframe: dict) -> float:
+    return float(keyframe.get("timestamp", 0.0) or 0.0)
 
 
 def _stage1_display_score(

@@ -171,20 +171,31 @@ class AsrEvidenceSegmentResponse(BaseModel):
     text: str
     start_time: float
     end_time: float
-    raw_bm25: float
+
+
+class AsrQueryMatchResponse(BaseModel):
+    query: str
+    detected: bool
+    matches: list[AsrEvidenceSegmentResponse] = Field(default_factory=list)
 
 
 class AsrVideoEvidenceResponse(BaseModel):
     video_id: str
-    video_rank: int
-    best_bm25_score: float
+    detected: bool
+    asr_matches: list[AsrQueryMatchResponse] = Field(default_factory=list)
     segments: list[AsrEvidenceSegmentResponse]
 
 
 class AsrGateResponse(BaseModel):
     query: str
-    segment_hit_count: int
+    queries: list[str]
+    match_mode: str
+    detected: bool
+    asr_detected_any: bool
+    matched_segment_count: int
+    scanned_segment_count: int
     candidate_video_count: int
+    asr_matches: list[AsrQueryMatchResponse] = Field(default_factory=list)
     videos: list[AsrVideoEvidenceResponse]
 
 

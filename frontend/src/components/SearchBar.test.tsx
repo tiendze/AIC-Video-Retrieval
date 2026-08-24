@@ -7,20 +7,51 @@ import { SearchBar } from './SearchBar'
 
 const ASR_GATE: AsrGate = {
   query: 'thủy lợi',
-  segment_hit_count: 57,
+  queries: ['thủy lợi'],
+  match_mode: 'any',
+  detected: true,
+  asr_detected_any: true,
+  matched_segment_count: 1,
+  scanned_segment_count: 57,
   candidate_video_count: 1,
+  asr_matches: [
+    {
+      query: 'thủy lợi',
+      detected: true,
+      matches: [
+        {
+          segment_id: 'V1_seg1',
+          text: 'công trình thủy lợi',
+          start_time: 151.2,
+          end_time: 158.4,
+        },
+      ],
+    },
+  ],
   videos: [
     {
       video_id: 'V1',
-      video_rank: 1,
-      best_bm25_score: 8.73,
+      detected: true,
+      asr_matches: [
+        {
+          query: 'thủy lợi',
+          detected: true,
+          matches: [
+            {
+              segment_id: 'V1_seg1',
+              text: 'công trình thủy lợi',
+              start_time: 151.2,
+              end_time: 158.4,
+            },
+          ],
+        },
+      ],
       segments: [
         {
           segment_id: 'V1_seg1',
           text: 'công trình thủy lợi',
           start_time: 151.2,
           end_time: 158.4,
-          raw_bm25: 8.73,
         },
       ],
     },
@@ -98,6 +129,17 @@ describe('SearchBar', () => {
     expect(props.onRetrieveCandidates).toHaveBeenCalledTimes(1)
   })
 
+  it('allows Stage 1 retrieval with only ASR input when transcripts are ready', async () => {
+    const user = userEvent.setup()
+    const props = renderSearchBar({ asrQuery: 'thủy lợi' })
+    const retrieveButton = screen.getByRole('button', { name: 'Retrieve Candidates' })
+
+    expect(retrieveButton).toBeEnabled()
+    await user.click(retrieveButton)
+
+    expect(props.onRetrieveCandidates).toHaveBeenCalledTimes(1)
+  })
+
   it('keeps Text, OCR, and Title candidate counts independent', () => {
     const props = renderSearchBar()
 
@@ -138,7 +180,7 @@ describe('SearchBar', () => {
     expect(screen.getByLabelText('stage 1 asr')).toHaveAttribute('maxlength', '1000')
     expect(screen.getByLabelText('asr candidate videos')).toHaveValue(20)
     expect(screen.getByLabelText('asr candidate videos')).toHaveAttribute('max', '100')
-    expect(screen.getByText('Text 300 · OCR 0 · Title OCR 0 · ASR 12 videos')).toBeInTheDocument()
+    expect(screen.getByText('Text 300 · OCR 0 · Title OCR 0 · ASR 12 detected')).toBeInTheDocument()
 
     fireEvent.change(screen.getByLabelText('stage 1 asr'), {
       target: { value: 'new topic' },
@@ -157,7 +199,7 @@ describe('SearchBar', () => {
       candidatePoolSize: 0,
     })
 
-    expect(screen.getByText('Text 0 · OCR 0 · Title OCR 0 · ASR 0 videos')).toBeInTheDocument()
+    expect(screen.getByText('Text 0 · OCR 0 · Title OCR 0 · ASR 0 detected')).toBeInTheDocument()
     expect(
       screen.getByText('No transcript video matched - clear or revise the ASR query.'),
     ).toBeInTheDocument()

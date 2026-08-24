@@ -2,6 +2,8 @@ import { act, renderHook, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { rerankKisCandidates, retrieveKisCandidates, searchByImage } from '../api/client'
 import type {
+  AsrGate,
+  AsrVideoEvidence,
   KisCandidateResponse,
   KisRerankResponse,
   SearchHit,
@@ -28,25 +30,36 @@ vi.mock('../api/client', () => ({
   searchByImage: vi.fn().mockResolvedValue({ results: [] }),
 }))
 
-const ASR_VIDEO = {
-  video_id: 'V1',
-  video_rank: 1,
-  best_bm25_score: 8.73,
-  segments: [
-    {
-      segment_id: 'V1_seg1',
-      text: 'công trình thủy lợi',
-      start_time: 151.2,
-      end_time: 158.4,
-      raw_bm25: 8.73,
-    },
-  ],
+const ASR_SEGMENT = {
+  segment_id: 'V1_seg1',
+  text: 'công trình thủy lợi',
+  start_time: 151.2,
+  end_time: 158.4,
 }
 
-const ASR_GATE = {
+const ASR_MATCH = {
   query: 'thủy lợi',
-  segment_hit_count: 57,
+  detected: true,
+  matches: [ASR_SEGMENT],
+}
+
+const ASR_VIDEO: AsrVideoEvidence = {
+  video_id: 'V1',
+  detected: true,
+  asr_matches: [ASR_MATCH],
+  segments: [ASR_SEGMENT],
+}
+
+const ASR_GATE: AsrGate = {
+  query: 'thủy lợi',
+  queries: ['thủy lợi'],
+  match_mode: 'any',
+  detected: true,
+  asr_detected_any: true,
+  matched_segment_count: 1,
+  scanned_segment_count: 57,
   candidate_video_count: 1,
+  asr_matches: [ASR_MATCH],
   videos: [ASR_VIDEO],
 }
 
@@ -146,6 +159,33 @@ describe('useSearch staged KIS flow', () => {
         title_query: null,
         title_top_k: 100,
         asr_query: null,
+        asr_queries: [],
+        asr_match_mode: 'any',
+        asr_video_top_k: 20,
+      },
+      expect.any(AbortSignal),
+    )
+    await waitFor(() => expect(result.current.isLoading).toBe(false))
+  })
+
+  it('sends ASR-only Stage 1 retrieval when transcripts are ready', async () => {
+    const { result } = renderHook(() => useSearch())
+
+    act(() => result.current.setAsrQuery('  thủy lợi  '))
+    act(() => result.current.retrieveCandidates())
+
+    expect(retrieveKisCandidates).toHaveBeenCalledWith(
+      {
+        text_query: null,
+        text_queries: [],
+        text_top_k: 300,
+        ocr_query: null,
+        ocr_top_k: 100,
+        title_query: null,
+        title_top_k: 100,
+        asr_query: 'thủy lợi',
+        asr_queries: ['thủy lợi'],
+        asr_match_mode: 'any',
         asr_video_top_k: 20,
       },
       expect.any(AbortSignal),
@@ -180,7 +220,12 @@ describe('useSearch staged KIS flow', () => {
 
     await waitFor(() => expect(result.current.candidatePool?.asrGate).toEqual(ASR_GATE))
     expect(retrieveKisCandidates).toHaveBeenCalledWith(
-      expect.objectContaining({ asr_query: 'thủy lợi', asr_video_top_k: 20 }),
+      expect.objectContaining({
+        asr_query: 'thủy lợi',
+        asr_queries: ['thủy lợi'],
+        asr_match_mode: 'any',
+        asr_video_top_k: 20,
+      }),
       expect.any(AbortSignal),
     )
     expect(result.current.results[0]?.asr_evidence).toEqual(ASR_VIDEO)
@@ -455,8 +500,14 @@ describe('useSearch staged KIS flow', () => {
   it('keeps an active zero-hit ASR gate distinct from an inactive gate', async () => {
     const zeroHitGate = {
       query: 'không có kết quả',
-      segment_hit_count: 0,
+      queries: ['không có kết quả'],
+      match_mode: 'any' as const,
+      detected: false,
+      asr_detected_any: false,
+      matched_segment_count: 0,
+      scanned_segment_count: 0,
       candidate_video_count: 0,
+      asr_matches: [{ query: 'không có kết quả', detected: false, matches: [] }],
       videos: [],
     }
     vi.mocked(retrieveKisCandidates).mockResolvedValueOnce({

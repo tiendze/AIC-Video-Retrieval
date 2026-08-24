@@ -5,12 +5,13 @@
 default_top_k: 20
 max_top_k: 100
 
-# Optional ASR-assisted KIS video gate. BM25 retrieves transcript segments;
-# ASR constrains videos and supplies evidence but never enters keyframe scores.
+# Optional ASR-assisted KIS video filter. ASR is lexical boolean detection
+# over transcript segments; it never contributes a numeric ranking score.
 default_asr_video_candidate_k: 20
 max_asr_video_candidate_k: 100
-asr_segment_retrieval_k: 200
 asr_evidence_per_video: 3
+asr_token_coverage_threshold: 0.8
+asr_match_mode: any
 max_asr_query_length: 1000
 
 # KIS Stage 1 candidate-pool controls. These are intentionally separate from

@@ -1,5 +1,5 @@
 import type { SearchHit } from '../api/types'
-import type { SelectedSearchItem, SelectedVqaItem } from '../utils/submissionExport'
+import type { SelectedKisItem, SelectedVqaItem } from '../utils/submissionExport'
 import { KisScoreInspector } from './KisScoreInspector'
 import scoreStyles from './KisScoreInspector.module.css'
 import { KisSelectionPanel, type KisSelectionMode } from './KisSelectionPanel'
@@ -13,7 +13,7 @@ export interface KisSidebarProps {
   selectionMode: KisSelectionMode
   onSelectionModeChange: (mode: KisSelectionMode) => void
   results: SearchHit[]
-  kisSelection: SelectedSearchItem[]
+  kisSelection: SelectedKisItem[]
   vqaSelection: SelectedVqaItem[]
   kisExportName: string
   vqaExportName: string
@@ -22,6 +22,7 @@ export interface KisSidebarProps {
   onMoveKisSelection: (index: number, direction: -1 | 1) => void
   onMoveVqaSelection: (index: number, direction: -1 | 1) => void
   onRemoveKisSelection: (key: string) => void
+  onAddManualKisSelection: (item: SelectedKisItem) => void
   onRemoveVqaSelection: (key: string) => void
   onClearKisSelection: () => void
   onClearVqaSelection: () => void
@@ -51,6 +52,7 @@ export function KisSidebar({
   onMoveKisSelection,
   onMoveVqaSelection,
   onRemoveKisSelection,
+  onAddManualKisSelection,
   onRemoveVqaSelection,
   onClearKisSelection,
   onClearVqaSelection,
@@ -106,6 +108,7 @@ export function KisSidebar({
           onMoveKisSelection={onMoveKisSelection}
           onMoveVqaSelection={onMoveVqaSelection}
           onRemoveKisSelection={onRemoveKisSelection}
+          onAddManualKisSelection={onAddManualKisSelection}
           onRemoveVqaSelection={onRemoveVqaSelection}
           onClearKisSelection={onClearKisSelection}
           onClearVqaSelection={onClearVqaSelection}

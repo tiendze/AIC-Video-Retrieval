@@ -8,6 +8,12 @@ export interface SelectedSearchItem {
   originalRank: number
 }
 
+export interface SelectedKisItem extends SelectedSearchItem {
+  source: 'manual' | 'visual'
+  step: number
+  margin: number
+}
+
 export interface SelectedVqaItem extends SelectedSearchItem {
   answer: string
 }
@@ -30,6 +36,19 @@ export interface RawFrameSweepOptions {
   marginCount?: number
   maxFrameIdx?: number
   maxRows?: number
+}
+
+export interface KisSubmissionPreviewGroup {
+  item: SelectedKisItem
+  marginStart: number | null
+  marginEnd: number | null
+  emittedCount: number
+}
+
+export interface KisSubmissionPlan {
+  rows: SearchHit[]
+  groups: KisSubmissionPreviewGroup[]
+  rankingFallbackCount: number
 }
 
 const TASK_SUFFIX: Record<ExportTask, string> = {
@@ -96,6 +115,108 @@ export function buildKisFinalRanking(
   return [...selected, ...remaining].slice(0, MAX_SUBMISSION_ROWS)
 }
 
+export function createManualKisSelection(
+  videoId: string,
+  frameIdx: number,
+  step: number,
+  margin: number,
+): SelectedKisItem {
+  const normalizedVideoId = videoId.trim()
+  const normalizedFrameIdx = Math.trunc(frameIdx)
+  const key = `manual:${normalizedVideoId}:${normalizedFrameIdx}`
+  return {
+    key,
+    source: 'manual',
+    step: normalizeSweepStep(step),
+    margin: normalizeSweepMargin(margin),
+    originalRank: -1,
+    hit: {
+      keyframe_id: key,
+      video_id: normalizedVideoId,
+      score: 0,
+      frame_idx: normalizedFrameIdx,
+      timestamp: 0,
+      thumbnail_path: '',
+      thumbnail_url: '',
+      image_url: '',
+    },
+  }
+}
+
+export function createVisualKisSelection(
+  hit: SearchHit,
+  originalRank: number,
+  step: number,
+  margin: number,
+): SelectedKisItem {
+  return {
+    key: searchHitKey(hit),
+    source: 'visual',
+    hit,
+    originalRank,
+    step: normalizeSweepStep(step),
+    margin: normalizeSweepMargin(margin),
+  }
+}
+
+export function buildKisSubmissionPlan(
+  selectionGroups: SelectedKisItem[],
+  ranking: SearchHit[],
+  maxRows = MAX_SUBMISSION_ROWS,
+): KisSubmissionPlan {
+  const rowLimit = Math.max(1, Math.trunc(maxRows))
+  const seen = new Set<string>()
+  const rows: SearchHit[] = []
+  const groups: KisSubmissionPreviewGroup[] = []
+
+  for (const item of selectionGroups) {
+    if (rows.length >= rowLimit) {
+      groups.push({ item, marginStart: null, marginEnd: null, emittedCount: 0 })
+      continue
+    }
+    const before = rows.length
+    addSubmissionRow(rows, seen, item.hit)
+    if (rows.length >= rowLimit) {
+      groups.push({
+        item,
+        ...marginBoundsForSelection(item),
+        emittedCount: rows.length - before,
+      })
+      continue
+    }
+
+    const marginFrames = buildRawFrameSweep(item.hit.frame_idx, {
+      step: item.step,
+      margin: item.margin,
+      maxRows: rowLimit,
+    }).filter((frame) => frame !== Math.trunc(item.hit.frame_idx))
+
+    for (const frame of marginFrames) {
+      addSubmissionRow(rows, seen, rawFrameForSelection(item, frame))
+      if (rows.length >= rowLimit) break
+    }
+    groups.push({
+      item,
+      ...marginBoundsForSelection(item),
+      emittedCount: rows.length - before,
+    })
+  }
+
+  const beforeFallback = rows.length
+  if (rows.length < rowLimit) {
+    for (const candidate of ranking) {
+      addSubmissionRow(rows, seen, candidate)
+      if (rows.length >= rowLimit) break
+    }
+  }
+
+  return {
+    rows,
+    groups,
+    rankingFallbackCount: rows.length - beforeFallback,
+  }
+}
+
 export function buildVqaFinalRows(selectedItems: SelectedVqaItem[]): SelectedVqaItem[] {
   return selectedItems
     .filter((item) => item.answer.length > 0 && item.answer.length <= 100)
@@ -139,40 +260,15 @@ export function buildRawFrameSweep(
 }
 
 export function buildKisSubmissionRows(
-  finalImageRanking: SearchHit[],
-  sweepOptions: RawFrameSweepOptions = { step: 1, margin: 0 },
+  selectionGroups: SelectedKisItem[],
+  ranking: SearchHit[],
+  maxRows = MAX_SUBMISSION_ROWS,
 ): SearchHit[] {
-  const primary = finalImageRanking[0]
-  if (!primary) return []
-  const maxRows = Math.max(1, Math.trunc(sweepOptions.maxRows ?? MAX_SUBMISSION_ROWS))
-  const seen = new Set<string>()
-  const rows: SearchHit[] = []
-
-  for (const frame of buildRawFrameSweep(primary.frame_idx, {
-    ...sweepOptions,
-    maxRows,
-  })) {
-    addSubmissionRow(rows, seen, {
-      ...primary,
-      frame_idx: frame,
-      keyframe_id:
-        frame === primary.frame_idx ? primary.keyframe_id : `${primary.keyframe_id}:raw:${frame}`,
-    })
-    if (rows.length >= maxRows) return rows
-  }
-
-  for (const candidate of finalImageRanking) {
-    addSubmissionRow(rows, seen, candidate)
-    if (rows.length >= maxRows) break
-  }
-  return rows
+  return buildKisSubmissionPlan(selectionGroups, ranking, maxRows).rows
 }
 
-export function serializeKisCsv(
-  results: SearchHit[],
-  sweepOptions: RawFrameSweepOptions = { step: 1, margin: 0 },
-): string {
-  return buildKisSubmissionRows(results, sweepOptions)
+export function serializeKisCsv(results: SearchHit[]): string {
+  return results
     .map((hit) => `${hit.video_id},${Math.trunc(hit.frame_idx)}`)
     .join('\n')
 }
@@ -228,4 +324,37 @@ function addSubmissionRow(rows: SearchHit[], seen: Set<string>, hit: SearchHit):
   if (seen.has(key)) return
   seen.add(key)
   rows.push(hit)
+}
+
+function rawFrameForSelection(item: SelectedKisItem, frame: number): SearchHit {
+  return {
+    ...item.hit,
+    frame_idx: frame,
+    keyframe_id:
+      frame === item.hit.frame_idx ? item.hit.keyframe_id : `${item.hit.keyframe_id}:raw:${frame}`,
+  }
+}
+
+function marginBoundsForSelection(
+  item: SelectedKisItem,
+): Pick<KisSubmissionPreviewGroup, 'marginStart' | 'marginEnd'> {
+  if (item.margin <= 0) return { marginStart: null, marginEnd: null }
+  const frames = buildRawFrameSweep(item.hit.frame_idx, {
+    step: item.step,
+    margin: item.margin,
+  })
+  const marginFrames = frames.filter((frame) => frame !== Math.trunc(item.hit.frame_idx))
+  if (marginFrames.length === 0) return { marginStart: null, marginEnd: null }
+  return {
+    marginStart: Math.min(...marginFrames),
+    marginEnd: Math.max(...marginFrames),
+  }
+}
+
+function normalizeSweepStep(step: number): number {
+  return Math.max(1, Math.trunc(step))
+}
+
+function normalizeSweepMargin(margin: number): number {
+  return Math.max(0, Math.trunc(margin))
 }

@@ -50,6 +50,7 @@ from app.schemas.response.search import (
     AbeQueryScoreResponse,
     AsrEvidenceSegmentResponse,
     AsrGateResponse,
+    AsrQueryMatchResponse,
     AsrVideoEvidenceResponse,
     KisCandidateHitResponse,
     KisCandidateResponse,
@@ -188,20 +189,38 @@ def _to_asr_gate_response(gate: AsrGateResult | None) -> AsrGateResponse | None:
         return None
     return AsrGateResponse(
         query=gate.query,
-        segment_hit_count=gate.segment_hit_count,
+        queries=gate.queries,
+        match_mode=gate.match_mode,
+        detected=gate.detected,
+        asr_detected_any=gate.asr_detected_any,
+        matched_segment_count=gate.matched_segment_count,
+        scanned_segment_count=gate.scanned_segment_count,
         candidate_video_count=gate.candidate_video_count,
+        asr_matches=[_to_asr_query_match_response(match) for match in gate.asr_matches],
         videos=[
             AsrVideoEvidenceResponse(
                 video_id=video.video_id,
-                video_rank=video.video_rank,
-                best_bm25_score=video.best_bm25_score,
-                segments=[
-                    AsrEvidenceSegmentResponse(**asdict(segment)) for segment in video.segments
+                detected=video.detected,
+                asr_matches=[
+                    _to_asr_query_match_response(match) for match in video.asr_matches
                 ],
+                segments=[_to_asr_segment_response(segment) for segment in video.segments],
             )
             for video in gate.videos
         ],
     )
+
+
+def _to_asr_query_match_response(match) -> AsrQueryMatchResponse:
+    return AsrQueryMatchResponse(
+        query=match.query,
+        detected=match.detected,
+        matches=[_to_asr_segment_response(segment) for segment in match.matches],
+    )
+
+
+def _to_asr_segment_response(segment) -> AsrEvidenceSegmentResponse:
+    return AsrEvidenceSegmentResponse(**asdict(segment))
 
 
 def _to_rerank_response(
@@ -431,6 +450,8 @@ async def retrieve_kis_candidates(
             title_query=body.title_query,
             title_top_k=body.title_top_k,
             asr_query=body.asr_query,
+            asr_queries=body.asr_queries,
+            asr_match_mode=body.asr_match_mode,
             asr_video_top_k=body.asr_video_top_k,
         )
     except SearchServiceError as exc:

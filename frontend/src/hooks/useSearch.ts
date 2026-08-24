@@ -134,6 +134,13 @@ function activePayload(rows: KisQueryRow[]): KisQueryPayload[] {
     .filter((row): row is KisQueryPayload => row !== null)
 }
 
+function parseAsrQueries(value: string): string[] {
+  return value
+    .split(',')
+    .map((query) => query.trim())
+    .filter(Boolean)
+}
+
 function withAsrEvidence(
   hit: SearchHit,
   evidenceByVideo: Map<string, AsrVideoEvidence>,
@@ -347,8 +354,8 @@ export function useSearch({ asrReady = true }: UseSearchOptions = {}): UseSearch
       : textQueriesValue.map((query) => query.trim()).filter(Boolean)
     const ocrQuery = ocrQueryValue.trim()
     const titleQuery = titleQueryValue.trim()
-    const asrQuery = asrReady ? asrQueryValue.trim() : ''
-    if (textQueries.length === 0 && !ocrQuery && !titleQuery) return
+    const asrQueries = asrReady ? parseAsrQueries(asrQueryValue) : []
+    if (textQueries.length === 0 && !ocrQuery && !titleQuery && asrQueries.length === 0) return
     abortRef.current?.abort()
     const controller = new AbortController()
     abortRef.current = controller
@@ -368,7 +375,9 @@ export function useSearch({ asrReady = true }: UseSearchOptions = {}): UseSearch
         ocr_top_k: ocrCandidateKValue,
         title_query: titleQuery || null,
         title_top_k: titleCandidateKValue,
-        asr_query: asrQuery || null,
+        asr_query: asrQueries[0] ?? null,
+        asr_queries: asrQueries,
+        asr_match_mode: 'any',
         asr_video_top_k: asrVideoCandidateKValue,
       },
       controller.signal,

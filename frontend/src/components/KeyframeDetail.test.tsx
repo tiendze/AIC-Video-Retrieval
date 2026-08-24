@@ -1,12 +1,14 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { getVideo, getVideoKeyframes } from '../api/client'
 import {
+  frameIndexFromTimestamp,
   isInsideEvidence,
   KeyframeDetail,
   nearestKeyframe,
   type DetailFrame,
+  youtubeVideoIdFromUrl,
 } from './KeyframeDetail'
 import type { SearchHit, VideoKeyframe } from '../api/types'
 
@@ -46,15 +48,27 @@ const HIT: SearchHit = {
 
 const ASR_VIDEO = {
   video_id: 'L21_V001',
-  video_rank: 1,
-  best_bm25_score: 8.73,
+  detected: true,
+  asr_matches: [
+    {
+      query: 'công trình thủy lợi',
+      detected: true,
+      matches: [
+        {
+          segment_id: 'L21_V001_seg10',
+          text: 'công trình thủy lợi',
+          start_time: 151.2,
+          end_time: 158.4,
+        },
+      ],
+    },
+  ],
   segments: [
     {
       segment_id: 'L21_V001_seg10',
       text: 'công trình thủy lợi',
       start_time: 151.2,
       end_time: 158.4,
-      raw_bm25: 8.73,
     },
   ],
 }
@@ -69,6 +83,54 @@ function frame(keyframeId: string, timestamp: number): VideoKeyframe {
     thumbnail_url: `/api/keyframes/${keyframeId}/thumbnail`,
     image_url: `/api/keyframes/${keyframeId}/image`,
   }
+}
+
+interface FakeYouTubePlayer {
+  getCurrentTime: ReturnType<typeof vi.fn>
+  seekTo: ReturnType<typeof vi.fn>
+  destroy: ReturnType<typeof vi.fn>
+}
+
+interface FakeYouTubeOptions {
+  events?: {
+    onReady?: (event: { target: FakeYouTubePlayer }) => void
+    onStateChange?: (event: { target: FakeYouTubePlayer; data?: number }) => void
+  }
+}
+
+let fakeYouTubeTime = 0
+let lastYouTubePlayer: FakeYouTubePlayer | null = null
+let lastYouTubeOptions: FakeYouTubeOptions | null = null
+
+function installYouTubeMock(): void {
+  fakeYouTubeTime = 0
+  lastYouTubePlayer = null
+  lastYouTubeOptions = null
+  const Player = vi.fn(function PlayerMock(
+    _element: HTMLElement | string,
+    options: FakeYouTubeOptions,
+  ) {
+    lastYouTubeOptions = options
+    const player: FakeYouTubePlayer = {
+      getCurrentTime: vi.fn(() => fakeYouTubeTime),
+      seekTo: vi.fn((seconds: number) => {
+        fakeYouTubeTime = seconds
+      }),
+      destroy: vi.fn(),
+    }
+    lastYouTubePlayer = player
+    setTimeout(() => options.events?.onReady?.({ target: player }), 0)
+    return player
+  })
+  Object.defineProperty(window, 'YT', {
+    configurable: true,
+    value: {
+      Player,
+      PlayerState: {
+        PAUSED: 2,
+      },
+    },
+  })
 }
 
 describe('KeyframeDetail', () => {
@@ -88,6 +150,8 @@ describe('KeyframeDetail', () => {
       }),
     )
     vi.mocked(getVideoKeyframes).mockResolvedValue({ keyframes: [] })
+    delete window.YT
+    delete window.onYouTubeIframeAPIReady
   })
 
   it('closes itself when "Find Similar Images" is clicked, so the caller-owned grid becomes visible', async () => {
@@ -242,7 +306,7 @@ describe('KeyframeDetail', () => {
     )
   })
 
-  it('uses the currently displayed frame video for the YouTube link', async () => {
+  it('uses the currently displayed frame video for the external YouTube link', async () => {
     const user = userEvent.setup()
     const otherFrame: DetailFrame = {
       keyframe_id: 'L21_V029_f11591',
@@ -263,7 +327,7 @@ describe('KeyframeDetail', () => {
     )
 
     await waitFor(() =>
-      expect(screen.getByRole('link', { name: /play youtube/i })).toHaveAttribute(
+      expect(screen.getByRole('link', { name: /open youtube/i })).toHaveAttribute(
         'href',
         'https://youtube.com/watch?v=L21_V001&t=42s',
       ),
@@ -272,7 +336,7 @@ describe('KeyframeDetail', () => {
     await user.click(screen.getByRole('button', { name: /show frame 11591/i }))
 
     await waitFor(() =>
-      expect(screen.getByRole('link', { name: /play youtube/i })).toHaveAttribute(
+      expect(screen.getByRole('link', { name: /open youtube/i })).toHaveAttribute(
         'href',
         'https://youtube.com/watch?v=L21_V029&t=386s',
       ),
@@ -335,5 +399,89 @@ describe('KeyframeDetail', () => {
     await userEvent.click(screen.getByRole('button', { name: /151\.2s–158\.4s/ }))
 
     expect(screen.getByText(`frame ${HIT.frame_idx}`)).toBeInTheDocument()
+  })
+
+  it('extracts YouTube video ids from common watch urls', () => {
+    expect(youtubeVideoIdFromUrl('https://youtube.com/watch?v=abc123')).toBe('abc123')
+    expect(youtubeVideoIdFromUrl('https://youtu.be/abc123?t=5')).toBe('abc123')
+    expect(youtubeVideoIdFromUrl('https://www.youtube.com/embed/abc123')).toBe('abc123')
+    expect(youtubeVideoIdFromUrl('https://example.test/watch?v=abc123')).toBeNull()
+  })
+
+  it('calculates zero-based frame indices from timestamp and fps', () => {
+    expect(frameIndexFromTimestamp(130.215, 25)).toBe(3255)
+    expect(frameIndexFromTimestamp(0, 25)).toBe(0)
+    expect(frameIndexFromTimestamp(10, 0)).toBeNull()
+    expect(frameIndexFromTimestamp(-1, 25)).toBeNull()
+  })
+
+  it('updates the displayed timestamp when the embedded YouTube player pauses', async () => {
+    const user = userEvent.setup()
+    installYouTubeMock()
+    render(<KeyframeDetail hit={HIT} onClose={vi.fn()} onFindSimilar={vi.fn()} />)
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /play video/i })).toBeEnabled())
+    await user.click(screen.getByRole('button', { name: /play video/i }))
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /get frame index/i })).toBeEnabled(),
+    )
+
+    fakeYouTubeTime = 1203.483
+    act(() => {
+      lastYouTubeOptions?.events?.onStateChange?.({
+        target: lastYouTubePlayer as FakeYouTubePlayer,
+        data: 2,
+      })
+    })
+
+    expect(screen.getByText('Current: 1203.483 s')).toBeInTheDocument()
+  })
+
+  it('calculates and displays the current frame index from YouTube timestamp and video FPS', async () => {
+    const user = userEvent.setup()
+    installYouTubeMock()
+    render(<KeyframeDetail hit={HIT} onClose={vi.fn()} onFindSimilar={vi.fn()} />)
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /play video/i })).toBeEnabled())
+    await user.click(screen.getByRole('button', { name: /play video/i }))
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /get frame index/i })).toBeEnabled(),
+    )
+
+    fakeYouTubeTime = 130.215
+    await user.click(screen.getByRole('button', { name: /get frame index/i }))
+
+    expect(screen.getByRole('dialog', { name: /video player/i })).toBeInTheDocument()
+    expect(screen.getAllByText('Current: 130.215 s')).toHaveLength(2)
+    expect(screen.getByText('FPS: 25')).toBeInTheDocument()
+    expect(screen.getByText('Frame Index: 3255')).toBeInTheDocument()
+  })
+
+  it('shows a useful error when FPS metadata is missing', async () => {
+    const user = userEvent.setup()
+    installYouTubeMock()
+    vi.mocked(getVideo).mockResolvedValueOnce({
+      video_id: 'L21_V001',
+      watch_url: 'https://youtube.com/watch?v=L21_V001',
+      title: 'Title L21_V001',
+      author: 'VTV',
+      publish_date: '01/01/2026',
+      duration: 600,
+      fps: 0,
+      num_keyframes: 1,
+      s_v: 0,
+      e_v: 0,
+    })
+    render(<KeyframeDetail hit={HIT} onClose={vi.fn()} onFindSimilar={vi.fn()} />)
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /play video/i })).toBeEnabled())
+    await user.click(screen.getByRole('button', { name: /play video/i }))
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /get frame index/i })).toBeEnabled(),
+    )
+
+    await user.click(screen.getByRole('button', { name: /get frame index/i }))
+
+    expect(await screen.findByText('FPS metadata not found for L21_V001')).toBeInTheDocument()
   })
 })

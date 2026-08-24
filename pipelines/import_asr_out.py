@@ -39,7 +39,13 @@ class AsrArtifactError(Exception):
     """A manifest/contract/cross-check failed -- import must not proceed."""
 
 
-def verify_manifest(manifest: dict, local_config: AsrConfig, checkpoint_dir: Path) -> None:
+def verify_manifest(
+    manifest: dict,
+    local_config: AsrConfig,
+    checkpoint_dir: Path,
+    *,
+    skip_checkpoint_parity: bool = False,
+) -> None:
     """Raises AsrArtifactError if the artifact was produced by a different
     model_id or checkpoint than the one this machine's asr.yaml points at.
 
@@ -54,6 +60,8 @@ def verify_manifest(manifest: dict, local_config: AsrConfig, checkpoint_dir: Pat
             f"model_id mismatch: manifest={manifest['model_id']!r} "
             f"local asr.yaml={local_config.model_id!r}"
         )
+    if skip_checkpoint_parity:
+        return
 
     actual_checkpoint = sha256_file(checkpoint_dir / "model.bin")
     if actual_checkpoint != manifest["checkpoint_sha256"]:

@@ -53,7 +53,7 @@ export function ResultCard({
         <span
           className={`${styles.asrBadge} ${onOpenDetail ? styles.asrBadgeBelowDetail : ''}`}
         >
-          ASR #{hit.asr_evidence.video_rank}
+          ASR detected
         </span>
       )}
       {hit.final_score !== undefined && (

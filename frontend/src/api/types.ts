@@ -7,7 +7,7 @@ export type SearchMode = 'semantic' | 'ocr'
 
 // app/schemas/request/search.py: KisSearchRequest
 export type KisQueryType = 'text' | 'ocr' | 'abe'
-export type Stage1SourceModality = 'text' | 'ocr' | 'title'
+export type Stage1SourceModality = 'text' | 'ocr' | 'title' | 'asr'
 
 export interface AbePairPayload {
   attribute: string
@@ -44,6 +44,8 @@ export interface KisCandidatePayload {
   title_query?: string | null
   title_top_k: number
   asr_query?: string | null
+  asr_queries?: string[]
+  asr_match_mode?: 'any' | 'all'
   asr_video_top_k: number
 }
 
@@ -185,20 +187,31 @@ export interface AsrEvidenceSegment {
   text: string
   start_time: number
   end_time: number
-  raw_bm25: number
+}
+
+export interface AsrQueryMatch {
+  query: string
+  detected: boolean
+  matches: AsrEvidenceSegment[]
 }
 
 export interface AsrVideoEvidence {
   video_id: string
-  video_rank: number
-  best_bm25_score: number
+  detected: boolean
+  asr_matches: AsrQueryMatch[]
   segments: AsrEvidenceSegment[]
 }
 
 export interface AsrGate {
   query: string
-  segment_hit_count: number
+  queries: string[]
+  match_mode: 'any' | 'all'
+  detected: boolean
+  asr_detected_any: boolean
+  matched_segment_count: number
+  scanned_segment_count: number
   candidate_video_count: number
+  asr_matches: AsrQueryMatch[]
   videos: AsrVideoEvidence[]
 }
 
