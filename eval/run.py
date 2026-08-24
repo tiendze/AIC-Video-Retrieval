@@ -52,7 +52,7 @@ import yaml
 
 from app.config import Settings
 from app.encoders.beit3 import BEiT3Encoder
-from app.services.query_translator import LocalNmtTranslator
+from app.services.query_translator import QueryTranslator, build_query_translator
 from app.services.search_service import SearchService
 from app.services.thumbnail_service import ThumbnailService
 from app.services.trake_service import TrakeService
@@ -715,22 +715,34 @@ def _build_stores(
     return mongo, milvus, es, search_service
 
 
-def _build_query_translator() -> LocalNmtTranslator:
+def _build_query_translator(settings: Settings) -> QueryTranslator:
     """Reads the SAME model config app/main.py uses for the production
-    SearchService, so this diagnostic channel and a live query are
-    translated identically."""
+    SearchService, through the SAME factory, so this diagnostic channel and a
+    live query are translated identically -- including which `kind` of
+    translator is active.
+
+    Keeps the fallback wrapper on purpose: the diagnostic is meant to reproduce
+    the production code path, and in production a Gemini timeout degrades to
+    EnViT5 rather than failing the search.
+
+    Takes `settings` from the caller instead of building its own -- `_main()`
+    already builds one `Settings()` for the whole run; a second independent
+    read here would just be redundant, not any safer. The API key is only
+    fetched when `kind: llm`, same gate as
+    `scripts/translate_eval_queries.py:build_translator()`, so flipping the
+    yaml back to `kind: local_nmt` really does run this diagnostic offline
+    with no key required."""
     config = _load_yaml(_QUERY_TRANSLATOR_CONFIG_PATH)
-    return LocalNmtTranslator(
-        model_id=config["model_id"],
-        device=config["device"],
-        source_prefix=config["source_prefix"],
-        target_prefix=config["target_prefix"],
-        max_new_tokens=config["max_new_tokens"],
+    api_key = (
+        settings.gemini_api_key.get_secret_value()
+        if str(config.get("kind", "local_nmt")).strip().lower() == "llm"
+        else None
     )
+    return build_query_translator(config, api_key=api_key)
 
 
 def _build_live_translated_search_service(
-    encoder: BEiT3Encoder, milvus: MilvusStore, es: EsStore, mongo: MongoStore
+    encoder: BEiT3Encoder, milvus: MilvusStore, es: EsStore, mongo: MongoStore, settings: Settings
 ) -> SearchService:
     """A SECOND SearchService sharing the same stores/encoder as the main one,
     but wired with the real production QueryTranslator -- exercises the exact
@@ -742,7 +754,7 @@ def _build_live_translated_search_service(
         milvus_store=milvus,
         es_store=es,
         mongo_store=mongo,
-        query_translator=_build_query_translator(),
+        query_translator=_build_query_translator(settings),
     )
 
 
@@ -985,7 +997,7 @@ def _build_qa_service(
 
 
 def _build_trake_service(
-    encoder: BEiT3Encoder, milvus: MilvusStore, mongo: MongoStore
+    encoder: BEiT3Encoder, milvus: MilvusStore, mongo: MongoStore, settings: Settings
 ) -> TrakeService:
     """P2.3 (PRD §6.4): reuses the SAME encoder/Milvus/Mongo instances the
     KIS/OCR channels above already built -- TRAKE's per-video DP needs the
@@ -1000,7 +1012,7 @@ def _build_trake_service(
         encoder=encoder,
         milvus_store=milvus,
         mongo_store=mongo,
-        query_translator=_build_query_translator(),
+        query_translator=_build_query_translator(settings),
     )
 
 
@@ -1054,7 +1066,7 @@ async def _main() -> int:
     mongo, milvus, es, search_service = _build_stores(settings, encoder)
     try:
         live_translated_search_service = (
-            _build_live_translated_search_service(encoder, milvus, es, mongo)
+            _build_live_translated_search_service(encoder, milvus, es, mongo, settings)
             if config.translate_semantic_live
             else None
         )
@@ -1095,7 +1107,7 @@ async def _main() -> int:
             # mongo/es (regression 2026-08-14 -- a real run left both
             # connections open after an uncaught ValueError propagated
             # straight out of _main()).
-            trake_service = _build_trake_service(encoder, milvus, mongo)
+            trake_service = _build_trake_service(encoder, milvus, mongo, settings)
             if config.score_trake:
                 trake_groups = await run_trake_eval(
                     trake_service,

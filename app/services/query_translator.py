@@ -12,12 +12,35 @@ live production query are translated identically: `app.services.search_service`
 so translating an OCR query would measure translation loss instead of the
 retrieval channel) and `scripts/translate_eval_queries.py` (offline sidecar
 generation for the `semantic@en` eval channel).
+
+Two implementations satisfy the Protocol, selected by `kind` in
+`configs/model/query_translator.yaml` through `build_query_translator()`:
+
+- `LocalNmtTranslator` -- EnViT5, offline, no quota, no network.
+- `GeminiTranslator` -- an LLM asked to translate *for retrieval*.
+
+The LLM branch exists because EnViT5's failures are silent and land exactly on
+the words that carry the retrieval signal. Measured on the 25 SOTUYEN1 contest
+queries at git 5191098: `con lân` -> "phosphor", `cầm dù` -> "carrying
+parachutes", `lia cam` -> "a single orange peel", `xanh ngọc` -> "yellow", and
+one query lost a whole clause (65 Vietnamese words in, 36 English tokens out).
+Each returns a fluent English sentence that no keyframe matches, and none of
+them raise.
+
+`build_query_translator()` is the single construction site for all three entry
+points, so production and both eval paths cannot drift onto different models --
+the property this module exists to protect.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Protocol
+import time
+from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Protocol
+
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
@@ -107,3 +130,235 @@ class LocalNmtTranslator:
             # silently score 0 -- fail the search instead (CLAUDE.md §7).
             raise ValueError(f"empty translation for {vietnamese!r} (decoded={decoded!r})")
         return english
+
+
+class Translation(BaseModel):
+    """Structured-output schema for the LLM branch. Free-text parsing is banned
+    (CLAUDE.md §5), so the model is pinned to this schema and the result is read
+    from a validated field rather than scraped out of prose."""
+
+    english: str = Field(
+        description=(
+            "The complete English translation of the Vietnamese query, preserving "
+            "every scene, object, colour and count from the original."
+        )
+    )
+
+
+# The rules below are not stylistic preferences -- each one names a class of
+# failure measured on the SOTUYEN1 contest queries (see module docstring).
+_TRANSLATION_PROMPT_TEMPLATE = (
+    "Dịch truy vấn tìm kiếm video tiếng Việt sau sang tiếng Anh, để dùng cho "
+    "tìm kiếm keyframe bằng mô hình vision-language.\n\n"
+    "Quy tắc:\n"
+    "1. Dịch ĐẦY ĐỦ. Không bỏ bớt, không tóm tắt, không gộp mệnh đề. Mỗi cảnh, "
+    "mỗi vật thể, mỗi màu sắc và mỗi con số trong bản gốc phải xuất hiện trong "
+    "bản dịch.\n"
+    "2. Giữ nguyên số đếm và từ chỉ số lượng: 'hơn 5 người' là 'more than five "
+    "people', không phải 'five people'.\n"
+    "3. Khái niệm văn hoá Việt Nam phải dịch thành thứ NHÌN THẤY ĐƯỢC, kèm tên "
+    "riêng nếu có. Ví dụ: 'con lân' là 'a lion dance costume', 'áo dài' là "
+    "'ao dai, a long Vietnamese tunic dress', 'khăn quàng đỏ' là 'a red neck "
+    "scarf'. Tuyệt đối không dịch theo nghĩa đen của từng chữ.\n"
+    "4. Thuật ngữ quay phim giữ đúng nghĩa điện ảnh: 'lia cam' là 'camera pan', "
+    "'quay chậm' là 'slow motion', 'cảnh cận' là 'close-up', 'zoom xa dần' là "
+    "'zooming out'.\n"
+    "5. Không thêm chi tiết không có trong bản gốc.\n\n"
+    'Truy vấn: "{query}"'
+)
+
+
+class GeminiTranslator:
+    """Wraps `client.interactions.create(...)` -- the current Gemini
+    Interactions API (references.md §5.1), never `generate_content`. Mirrors
+    `app.services.quest_service.GeminiQueryRewriter` exactly (retry policy, lazy
+    import, structured-output schema pattern).
+
+    `gemini-3.6-flash` is mandatory, not a default: `gemini-2.5-flash` ignores
+    `response_format` outright and returns prose instead of schema-valid JSON
+    (CLAUDE.md §5, references.md §5.1).
+
+    Raises on failure rather than degrading, so an offline sidecar run fails
+    loudly and can be resumed. Production wraps this in `FallbackTranslator`.
+    """
+
+    def __init__(
+        self, api_key: str, model: str, max_retries: int, retry_base_delay_seconds: float
+    ) -> None:
+        from google import genai  # lazy: only needed when this class is used
+
+        self._client = genai.Client(api_key=api_key)
+        self._model = model
+        self._max_retries = max_retries
+        self._retry_base_delay_seconds = retry_base_delay_seconds
+
+    @property
+    def model_id(self) -> str:
+        return self._model
+
+    def translate(self, vietnamese: str) -> str:
+        last_exc: Exception | None = None
+        for attempt in range(self._max_retries):
+            try:
+                return self._call_once(vietnamese)
+            except (TimeoutError, ConnectionError, OSError) as exc:
+                # Only transient transport errors are retried. A schema
+                # violation would fail identically on every attempt, so it
+                # propagates immediately instead of burning quota.
+                last_exc = exc
+                time.sleep(self._retry_base_delay_seconds * (2**attempt))
+        raise RuntimeError(
+            f"Gemini translation failed after {self._max_retries} attempts"
+        ) from last_exc
+
+    def _call_once(self, vietnamese: str) -> str:
+        interaction = self._client.interactions.create(
+            model=self._model,
+            input=_TRANSLATION_PROMPT_TEMPLATE.format(query=vietnamese),
+            response_format={
+                "type": "text",
+                "mime_type": "application/json",
+                "schema": Translation.model_json_schema(),
+            },
+        )
+        english = Translation.model_validate_json(interaction.output_text).english.strip()
+        if not english:
+            # Same guard as LocalNmtTranslator: an empty query embeds to a
+            # meaningless vector and scores ~0 against everything (CLAUDE.md §7).
+            raise ValueError(f"empty translation for {vietnamese!r}")
+        return english
+
+
+class FallbackTranslator:
+    """Runs `primary`, falling back to `fallback` on timeout or failure.
+
+    This is what keeps degraded mode real (CLAUDE.md §4): losing the network or
+    the Gemini quota mid-contest must leave semantic search working, not hang an
+    operator who is being timed. Both sides failing raises -- returning "" would
+    embed an empty vector and report a confident, meaningless ranking.
+
+    The catch around the primary call is intentionally `Exception`, not a
+    specific list. `pipelines/ocr.py:GeminiOcrClient` and this module's own
+    `GeminiTranslator` retry loop both narrow their catch to
+    (TimeoutError, ConnectionError, OSError) with the documented caveat that
+    google-genai's real exception hierarchy has not been verified against a
+    live key -- so an unlisted exception type would skip the retry AND escape
+    a narrow fallback catch here, crashing the search request instead of
+    degrading to EnViT5. That failure mode is exactly what this class exists
+    to prevent, so the fallback boundary must catch broadly: any primary
+    failure, known type or not, degrades to `fallback` rather than propagating.
+    `BaseException` (KeyboardInterrupt, SystemExit) is deliberately NOT caught.
+
+    `model_id` deliberately names BOTH models. A sidecar built through this
+    class records the *set* of possible translators, not the one that wrote each
+    row, so `scripts/translate_eval_queries.py` builds its translator with
+    `with_fallback=False` to keep per-row provenance exact.
+    """
+
+    def __init__(
+        self, primary: QueryTranslator, fallback: QueryTranslator, timeout_sec: float
+    ) -> None:
+        self._primary = primary
+        self._fallback = fallback
+        self._timeout_sec = timeout_sec
+        # Shared and bounded on purpose: a per-call executor would spin up an
+        # unbounded new thread pool on every timeout, so a sustained Gemini
+        # hang leaks one permanently-blocked thread per query for the life of
+        # the process. Reusing a small fixed pool caps that leak instead of
+        # letting it grow without limit; a stuck call still costs one worker
+        # slot until the underlying HTTP call itself times out or the process
+        # exits, but at most 4 slots are ever at risk, matching the bounded
+        # (not per-call) shape of asyncio's own default executor that
+        # `QueryRewriteService.rewrite_query` relies on
+        # (app/services/quest_service.py:350-358).
+        self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="query-translate")
+
+    @property
+    def model_id(self) -> str:
+        return f"{self._primary.model_id}|{self._fallback.model_id}"
+
+    def translate(self, vietnamese: str) -> str:
+        try:
+            return self._call_primary(vietnamese)
+        except Exception as exc:  # noqa: BLE001 -- intentional, see class docstring
+            logger.warning(
+                "query translation fell back from %s to %s: query=%r reason=%r",
+                self._primary.model_id,
+                self._fallback.model_id,
+                vietnamese,
+                exc,
+            )
+            primary_error = exc
+
+        try:
+            return self._fallback.translate(vietnamese)
+        except Exception as exc:  # noqa: BLE001 -- same rationale: must not crash the request
+            raise RuntimeError(
+                f"both translators failed for {vietnamese!r}: "
+                f"{self._primary.model_id} -> {primary_error!r}, "
+                f"{self._fallback.model_id} -> {exc!r}"
+            ) from exc
+
+    def _call_primary(self, vietnamese: str) -> str:
+        # `translate` is synchronous by contract (the Protocol) and callers
+        # already run it inside `asyncio.to_thread`, so the timeout has to
+        # live here rather than as `asyncio.wait_for`.
+        future = self._executor.submit(self._primary.translate, vietnamese)
+        return future.result(timeout=self._timeout_sec)
+
+
+def _build_local_nmt(config: Mapping[str, Any]) -> QueryTranslator:
+    return LocalNmtTranslator(
+        model_id=config["model_id"],
+        device=config["device"],
+        source_prefix=config["source_prefix"],
+        target_prefix=config["target_prefix"],
+        max_new_tokens=config["max_new_tokens"],
+    )
+
+
+def build_query_translator(
+    config: Mapping[str, Any],
+    api_key: str | None = None,
+    *,
+    with_fallback: bool = True,
+) -> QueryTranslator:
+    """Single construction site for every entry point that needs a translator.
+
+    `app/main.py`, `eval/run.py` and `scripts/translate_eval_queries.py` all
+    call this with the same `configs/model/query_translator.yaml`, so a query
+    translated in production and the same query translated for a diagnostic can
+    never come from different models.
+
+    `with_fallback=False` returns the primary alone, for callers that stamp a
+    per-row `translator_model` and need it to name exactly one model.
+    """
+    kind = str(config.get("kind", "local_nmt")).strip().lower()
+
+    if kind == "local_nmt":
+        return _build_local_nmt(config)
+
+    if kind == "llm":
+        if not api_key:
+            raise ValueError(
+                "query translator kind 'llm' requires an api_key -- refusing to "
+                "start rather than silently falling back to the local model"
+            )
+        llm_config = config.get("llm") or {}
+        primary = GeminiTranslator(
+            api_key=api_key,
+            model=llm_config["model"],
+            max_retries=int(llm_config.get("max_retries", 3)),
+            retry_base_delay_seconds=float(llm_config.get("retry_base_delay_seconds", 1.0)),
+        )
+        if not with_fallback:
+            return primary
+        return FallbackTranslator(
+            primary,
+            _build_local_nmt(config),
+            timeout_sec=float(llm_config.get("timeout_seconds", 8.0)),
+        )
+
+    raise ValueError(
+        f"unknown query translator kind: {kind!r} (expected 'local_nmt' or 'llm')"
+    )

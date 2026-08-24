@@ -44,7 +44,8 @@ from typing import Any
 
 import yaml
 
-from app.services.query_translator import LocalNmtTranslator, QueryTranslator
+from app.config import Settings
+from app.services.query_translator import QueryTranslator, build_query_translator
 from datasets.aic2026 import AIC2026Adapter
 from datasets.base import GroundTruthSegment
 from eval.query_translation import (
@@ -82,17 +83,19 @@ class TranslationConfig:
 
 def build_translator() -> QueryTranslator:
     """Reads the SAME model config app/main.py uses for the production
-    SearchService, so this sidecar and a live query are translated
-    identically."""
+    SearchService, through the SAME factory, so this sidecar and a live query
+    are translated identically.
+
+    `with_fallback=False`: see the module docstring -- per-row provenance must
+    name exactly one model."""
     with _QUERY_TRANSLATOR_CONFIG_PATH.open(encoding="utf-8") as f:
         config = yaml.safe_load(f)
-    return LocalNmtTranslator(
-        model_id=config["model_id"],
-        device=config["device"],
-        source_prefix=config["source_prefix"],
-        target_prefix=config["target_prefix"],
-        max_new_tokens=config["max_new_tokens"],
+    api_key = (
+        Settings().gemini_api_key.get_secret_value()
+        if str(config.get("kind", "local_nmt")).strip().lower() == "llm"
+        else None
     )
+    return build_query_translator(config, api_key=api_key, with_fallback=False)
 
 
 def _load_config(path: Path) -> TranslationConfig:

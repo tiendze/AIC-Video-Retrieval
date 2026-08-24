@@ -7,6 +7,36 @@
 # Swapping to a different local NMT model (e.g. a more Vietnamese-specialized
 # one) is a config-only change: every caller talks to the QueryTranslator
 # Protocol, never to this class directly (CLAUDE.md §6).
+
+# Which implementation build_query_translator() constructs.
+#   local_nmt -- EnViT5 only. No network, no quota.
+#   llm       -- GeminiTranslator, with the EnViT5 block below as fallback.
+#
+# Set to `llm` 2026-08-24. Reason, measured on the 25 SOTUYEN1 contest queries
+# at git 5191098: EnViT5 mistranslates the exact nouns that carry the retrieval
+# signal -- `con lân` -> "phosphor", `cầm dù` -> "carrying parachutes",
+# `lia cam` -> "a single orange peel", `xanh ngọc` -> "yellow" -- and dropped a
+# whole clause on one query. Each returns fluent English that no keyframe
+# matches, and none of them raise.
+#
+# Flip back to `local_nmt` to run fully offline or to re-measure the baseline;
+# nothing else needs to change.
+kind: llm
+
+llm:
+  # NOT a default -- gemini-2.5-flash ignores `response_format` and returns
+  # prose instead of schema-valid JSON (CLAUDE.md §5, references.md §5.1).
+  model: gemini-3.6-flash
+  # Mirrors pipelines/ocr.py and quest.yaml: retry only transient transport
+  # errors, exponential backoff from this base delay.
+  max_retries: 3
+  retry_base_delay_seconds: 1.0
+  # Hard ceiling before falling back to EnViT5. An operator being timed must
+  # never watch a hung search (CLAUDE.md §4). Matches quest.yaml's 8s rewrite
+  # timeout -- same API, same latency profile.
+  timeout_seconds: 8.0
+
+# --- EnViT5 block: the translator when kind=local_nmt, the fallback when kind=llm ---
 model_id: VietAI/envit5-translation
 
 # CPU on purpose: keeps the 8GB of VRAM free for BEiT-3 (CLAUDE.md §1.4).
