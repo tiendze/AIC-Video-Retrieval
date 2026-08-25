@@ -45,7 +45,9 @@ class _FakeTranslator:
 
 class TestGlossaryRuleApplication:
     def test_replaces_the_wrong_phrase_when_the_vietnamese_trigger_is_present(self) -> None:
-        rule = GlossaryRule(vi_trigger="con lân", en_search="phosphor", en_replacement="lion dance costume")
+        rule = GlossaryRule(
+            vi_trigger="con lân", en_search="phosphor", en_replacement="lion dance costume"
+        )
         translator = GlossaryCorrectedTranslator(
             _FakeTranslator("a close-up of a white phosphor with a red nose"), rules=(rule,)
         )
@@ -57,7 +59,9 @@ class TestGlossaryRuleApplication:
     def test_leaves_the_translation_alone_when_the_vietnamese_trigger_is_absent(self) -> None:
         # The English word could coincidentally appear for an unrelated reason
         # -- only correct it when we know WHY it's wrong.
-        rule = GlossaryRule(vi_trigger="con lân", en_search="phosphor", en_replacement="lion dance costume")
+        rule = GlossaryRule(
+            vi_trigger="con lân", en_search="phosphor", en_replacement="lion dance costume"
+        )
         translator = GlossaryCorrectedTranslator(
             _FakeTranslator("a lab technician measuring phosphor levels"), rules=(rule,)
         )
@@ -67,7 +71,9 @@ class TestGlossaryRuleApplication:
         assert result == "a lab technician measuring phosphor levels"
 
     def test_leaves_the_translation_alone_when_the_english_search_term_is_absent(self) -> None:
-        rule = GlossaryRule(vi_trigger="con lân", en_search="phosphor", en_replacement="lion dance costume")
+        rule = GlossaryRule(
+            vi_trigger="con lân", en_search="phosphor", en_replacement="lion dance costume"
+        )
         translator = GlossaryCorrectedTranslator(
             _FakeTranslator("a close-up of a white lion with a red nose"), rules=(rule,)
         )
@@ -77,7 +83,9 @@ class TestGlossaryRuleApplication:
         assert result == "a close-up of a white lion with a red nose"
 
     def test_match_is_case_insensitive_on_both_sides(self) -> None:
-        rule = GlossaryRule(vi_trigger="con lân", en_search="phosphor", en_replacement="lion dance costume")
+        rule = GlossaryRule(
+            vi_trigger="con lân", en_search="phosphor", en_replacement="lion dance costume"
+        )
         translator = GlossaryCorrectedTranslator(
             _FakeTranslator("Phosphor dancers entered the stage"), rules=(rule,)
         )
@@ -106,7 +114,9 @@ class TestGlossaryRuleApplication:
         # and "phosphor" is a substring of "phosphorescent" -- a CORRECT
         # EnViT5 output. Word-boundary matching on the English side must
         # refuse to touch it.
-        rule = GlossaryRule(vi_trigger="con lân", en_search="phosphor", en_replacement="lion dance costume")
+        rule = GlossaryRule(
+            vi_trigger="con lân", en_search="phosphor", en_replacement="lion dance costume"
+        )
         translator = GlossaryCorrectedTranslator(
             _FakeTranslator("a phosphorescent toy glowing in the dark"), rules=(rule,)
         )
