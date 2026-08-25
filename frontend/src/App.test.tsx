@@ -177,7 +177,7 @@ describe('App', () => {
 
     await user.click(screen.getByRole('radio', { name: /TRAKE/i }))
 
-    expect(screen.getByLabelText('event 1')).toBeInTheDocument()
+    expect(screen.getByLabelText('event 1 text')).toBeInTheDocument()
     expect(screen.getByLabelText('TRAKE selection export')).toBeInTheDocument()
     expect(screen.queryByLabelText('text q0')).not.toBeInTheDocument()
   })
@@ -258,8 +258,8 @@ describe('App', () => {
     })
     render(<App />)
     await user.click(screen.getByRole('radio', { name: /TRAKE/i }))
-    await user.type(screen.getByLabelText('event 1'), 'người đàn ông mở cửa')
-    await user.type(screen.getByLabelText('event 2'), 'xe máy chạy qua')
+    await user.type(screen.getByLabelText('event 1 text'), 'người đàn ông mở cửa')
+    await user.type(screen.getByLabelText('event 2 text'), 'xe máy chạy qua')
 
     await user.click(screen.getByRole('button', { name: /Search TRAKE/i }))
 

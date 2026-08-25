@@ -1,8 +1,165 @@
+.eventList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* One block per event, fixed position: the order IS the array index, so the
+   layout must not suggest the rows are rearrangeable. Compact -- an operator
+   filling in 5+ events should not need to scroll past the form to see the
+   result they're about to search for (CLAUDE.md §9's virtualized-grid spirit
+   applies to vertical form space too). */
+.eventBlock {
+  /* Single source of truth for the label column width, shared by the Text
+     row and every secondary-channel row below it -- without this the two
+     rows drift out of sync (40px vs 34px) and "Text"/"OCR" stop lining up. */
+  --label-col: 36px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 0;
+  padding: 6px 8px 7px;
+  border: 1px solid #3f3f46;
+  border-radius: 6px;
+  background: rgba(24, 24, 27, 0.4);
+}
+
+.eventLegend {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 2px;
+}
+
+/* Small badge, not a full-size select/input control -- the legend is a
+   header, not a form field, so it should read as a compact tag. */
 .eventLabel {
   display: inline-flex;
   align-items: center;
+  padding: 1px 7px;
   color: #d4d4d8;
-  font-size: 12px;
+  background: rgba(63, 63, 70, 0.35);
+  border: 1px solid #3f3f46;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.6;
+  user-select: none;
+}
+
+/* Matches .eventLabel's compact footprint instead of the full-size shared
+   .remove/.removeQuery button (38x40px, sized for the KIS search bar). */
+.eventRemoveButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  background: transparent;
+  color: #a1a1aa;
+  border: 1px solid #3f3f46;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.eventRemoveButton:hover,
+.eventRemoveButton:focus-visible {
+  color: #eee;
+  background: #24252c;
+  border-color: #5b5d68;
+}
+
+/* Diagnostics footer: moved out of the legend (where it competed with the
+   event title/remove button for space) to a quiet line under the query
+   fields -- the operator reads it after filling the form, not while naming
+   the event. */
+.eventStats {
+  color: #a1a1aa;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  padding: 0 2px;
+}
+
+/* Text: full-width row, label on the left, compact per-event Top K box on the
+   right -- this is the control for "how many keyframes to pull for this
+   event's Text channel" (configs/search/trake.yaml event_text_top_k),
+   previously fixed at 1000 for every event. */
+.textRow {
+  display: grid;
+  grid-template-columns: var(--label-col) 1fr auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.channelLabel {
+  color: #a1a1aa;
+  font-size: 11px;
+  font-weight: 600;
+  text-align: right;
+  user-select: none;
+}
+
+.topKField {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.topKLabel {
+  color: #71717a;
+  font-size: 10px;
   font-weight: 700;
   user-select: none;
+}
+
+.topKInput {
+  width: 56px;
+  padding: 3px 5px;
+  background: #18181b;
+  color: #e4e4e7;
+  border: 1px solid #3f3f46;
+  border-radius: 5px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.topKInput:focus-visible {
+  outline: 2px solid rgba(96, 165, 250, 0.9);
+  outline-offset: 1px;
+}
+
+/* OCR / Title / ASR share one row, three equal columns; each is label-left +
+   input (same pattern as the Text row) rather than a label stacked above the
+   input -- that stacked layout doubled every field's height for no benefit. */
+.secondaryRow {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.secondaryField {
+  display: grid;
+  grid-template-columns: var(--label-col) 1fr;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.secondaryLabel {
+  color: #a1a1aa;
+  font-size: 11px;
+  font-weight: 600;
+  text-align: right;
+  user-select: none;
+}
+
+/* Narrow panels: stack the three secondary channels instead of squeezing. */
+@media (max-width: 640px) {
+  .secondaryRow {
+    grid-template-columns: 1fr;
+  }
 }
