@@ -142,45 +142,4 @@ describe('TrakeResultList', () => {
     expect(screen.getByRole('separator')).toBeInTheDocument()
     expect(screen.getByText('L21_V001, 70, 90')).toBeInTheDocument()
   })
-
-  it('has no Details button when a video has no extra sequences', () => {
-    render(<TrakeResultList results={RESULTS} />)
-
-    expect(screen.queryByRole('button', { name: /details/i })).not.toBeInTheDocument()
-  })
-
-  it('reveals a video top-k sequences via the Details button', async () => {
-    const user = userEvent.setup()
-    const extra: TrakeVideoResultItem = {
-      video_id: 'L21_V001',
-      score: 0.5,
-      keyframes: [
-        {
-          keyframe_id: 'L21_V001_f12',
-          frame_idx: 12,
-          timestamp: 1.2,
-          thumbnail_url: '/api/keyframes/L21_V001_f12/thumbnail',
-          image_url: '/api/keyframes/L21_V001_f12/image',
-        },
-        {
-          keyframe_id: 'L21_V001_f55',
-          frame_idx: 55,
-          timestamp: 5.5,
-          thumbnail_url: '/api/keyframes/L21_V001_f55/thumbnail',
-          image_url: '/api/keyframes/L21_V001_f55/image',
-        },
-      ],
-    }
-    const sequencesByVideo = { L21_V001: [RESULTS[0] as TrakeVideoResultItem, extra] }
-    render(<TrakeResultList results={RESULTS} sequencesByVideo={sequencesByVideo} />)
-
-    // Collapsed: the extra sequence is not shown yet.
-    expect(screen.queryByText('L21_V001, 12, 55')).not.toBeInTheDocument()
-
-    await user.click(screen.getByRole('button', { name: /details \(2\)/i }))
-
-    // Expanded: the video's full top-k is rendered.
-    expect(screen.getByText('L21_V001, 12, 55')).toBeInTheDocument()
-    expect(screen.getByText('2 sequences')).toBeInTheDocument()
-  })
 })

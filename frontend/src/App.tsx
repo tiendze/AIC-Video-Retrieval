@@ -32,7 +32,7 @@ import { useImageCandidates } from './hooks/useImageCandidates'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { useQueryRewrite } from './hooks/useQueryRewrite'
 import { useSearch } from './hooks/useSearch'
-import { countFilledTrakeEvents, useTrake, type TrakeEventDraft } from './hooks/useTrake'
+import { useTrake } from './hooks/useTrake'
 import {
   filterHitsByVideoIds,
   type RetrievalViewMode,
@@ -40,7 +40,7 @@ import {
 } from './utils/retrievalView'
 import {
   buildKisSubmissionRows,
-  buildTrakeSubmissionPlan,
+  buildTrakeFinalRanking,
   buildVqaFinalRows,
   createVisualKisSelection,
   downloadCsv,
@@ -137,8 +137,6 @@ function App() {
   const [excludedVideoIds, setExcludedVideoIds] = useState<Set<string>>(() => new Set())
   const [kisFrameSweepStep, setKisFrameSweepStep] = useState(10)
   const [kisFrameSweepMargin, setKisFrameSweepMargin] = useState(0)
-  const [trakeFrameSweepStep, setTrakeFrameSweepStep] = useState(2)
-  const [trakeFrameSweepMargin, setTrakeFrameSweepMargin] = useState(0)
   const visibleResults = useMemo(() => {
     const filtered = filterHitsByVideoIds(results, videoFilter)
     if (excludedVideoIds.size === 0) return filtered
@@ -257,10 +255,7 @@ function App() {
   function exportTrakeCsv(): void {
     const validation = validateCsvFilename(trakeExportName, 'trake')
     if (!validation.isValid) return
-    const rows = buildTrakeSubmissionPlan(trakeSelection, trake.results, {
-      step: trakeFrameSweepStep,
-      margin: trakeFrameSweepMargin,
-    }).rows
+    const rows = buildTrakeFinalRanking(trake.results, trakeSelection)
     const eventCount = currentTrakeEventCount(trake.events, trake.results)
     if (rows.length === 0 || validateTrakeEventCount(rows, eventCount)) return
     downloadCsv(validation.filename, serializeTrakeCsv(rows))
@@ -344,18 +339,13 @@ function App() {
           {activeMode === 'dante' ? (
             <EventSequenceInput
               events={trake.events}
-              onEventFieldChange={trake.setEventField}
+              onEventChange={trake.setEvent}
               onAddEvent={trake.addEvent}
               onRemoveEvent={trake.removeEvent}
               threshold={trake.threshold}
               onThresholdChange={trake.setThreshold}
               onSubmit={trake.search}
               isLoading={trake.isLoading}
-              asrDisabled={health?.asr_ready === false}
-              asrReadinessMessage={asrMessage}
-              eventDiagnostics={trake.eventDiagnostics}
-              candidateVideoCount={trake.candidateVideoCount}
-              droppedVideoCount={trake.droppedVideoCount}
             />
           ) : (
             <>
@@ -450,7 +440,6 @@ function App() {
           {activeMode === 'dante' ? (
             <TrakeResultList
               results={trake.results}
-              sequencesByVideo={trake.sequencesByVideo}
               selectedSequenceKeys={selectedTrakeSequenceKeys}
               onToggleSequence={toggleTrakeSequence}
               onOpenDetail={openTrakeDetail}
@@ -561,10 +550,6 @@ function App() {
           selection={trakeSelection}
           exportName={trakeExportName}
           eventCount={currentTrakeEventCount(trake.events, trake.results)}
-          frameSweepStep={trakeFrameSweepStep}
-          frameSweepMargin={trakeFrameSweepMargin}
-          onFrameSweepStepChange={setTrakeFrameSweepStep}
-          onFrameSweepMarginChange={setTrakeFrameSweepMargin}
           onExportNameChange={setTrakeExportName}
           onMoveSelection={(index, direction) =>
             setTrakeSelection((prev) => moveSelection(prev, index, direction))
@@ -646,14 +631,9 @@ function syncTrakeSelectionWithResults(
   })
 }
 
-function currentTrakeEventCount(
-  events: TrakeEventDraft[],
-  results: TrakeVideoResultItem[],
-): number {
-  // An event row counts when ANY of its four boxes is filled -- an OCR-only or
-  // ASR-only row is a legitimate event, and the submitted sequence will have
-  // one frame for it like any other.
-  return countFilledTrakeEvents(events) || results[0]?.keyframes.length || 0
+function currentTrakeEventCount(events: string[], results: TrakeVideoResultItem[]): number {
+  const activeEventCount = events.filter((event) => event.trim().length > 0).length
+  return activeEventCount || results[0]?.keyframes.length || 0
 }
 
 export default App

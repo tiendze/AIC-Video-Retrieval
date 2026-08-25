@@ -34,26 +34,6 @@
   font-weight: bold;
 }
 
-.headerActions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.detailsButton {
-  padding: 2px 8px;
-  background: #1b1b21;
-  color: #d1d5db;
-  border: 1px solid #444;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 11px;
-}
-
-.detailsButton:hover {
-  border-color: #666;
-}
-
 .sequenceCount {
   color: #999;
   font-size: 12px;

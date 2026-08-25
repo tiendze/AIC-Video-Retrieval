@@ -1,114 +1,13 @@
-# TRAKE candidate-chaining pipeline (app/services/trake_service.py +
-# app/services/trake_chain.py). Replaces the corpus-wide DANTE DP path:
-# KIS retrieves per-event candidates, candidate videos are chained on a small
-# layered DAG, then sequences and videos are reranked separately.
-#
-# A separate file from search.yaml -- POST /api/trake ranks SEQUENCES (each
-# holding N keyframes from one video), a different unit than POST /api/search's
-# per-keyframe top_k, so the two bounds are not the same knob even though they
-# share the same submission-cap ceiling (references.md §1.2).
-default_top_k: 100
+# TrakeService/API top_k bounds (app/schemas/request/trake.py, app/api/trake.py).
+# A separate file from search.yaml -- POST /api/trake ranks VIDEOS (each
+# holding an N-keyframe sequence), a different unit than POST /api/search's
+# per-keyframe top_k, so the two bounds are not the same knob even though
+# they currently share the same submission-cap ceiling (references.md §1.2).
+default_top_k: 10
 max_top_k: 100
 
-# Kept so an operator can still cut weak sequences from the API. Applied to the
-# FINAL sequence score (weak-link + coverage), which is on a z-score scale after
-# `score_normalization: zscore` -- 0.0 means "the average frame in the corpus".
-default_score_threshold: -100.0
-
-# --- B1: per-event KIS candidate retrieval -------------------------------
-# Each event runs its own SearchService.retrieve_kis_candidates() call, so each
-# event carries its own Text / OCR / Title / ASR boxes. These are per-event
-# defaults; the request may override them.
-event_text_top_k: 1000
-event_ocr_top_k: 500
-event_title_top_k: 500
-event_asr_video_top_k: 50
-
-# A video becomes a candidate when it shows up in at least this many event
-# pools. 1 = union (recall-first). Raising this multiplies per-event recall
-# together and is the fastest way to silently lose correct videos -- raise it
-# only with an eval number in hand.
-min_event_coverage: 1
-max_candidate_videos: 500
-
-# --- B2/B3: bucket construction ------------------------------------------
-# Per candidate video, per event: KIS hits for that video PLUS a local top-k
-# backfill scored against the whole video, so an event too weak to clear the
-# global top-K still gets candidates inside the right video.
-bucket_top_k: 30
-
-# Cosine scores are NOT comparable across different event texts (different
-# query wordings have different score distributions), so every event row is
-# z-scored over the corpus before any cross-event comparison. `none` disables
-# it and is only there to measure the difference.
-score_normalization: zscore
-
-# Frames that KIS actually returned get a rank-based bonus on top of their
-# semantic z-score. This is how OCR / Title / ASR evidence reaches the chain
-# scorer without mixing two incompatible score scales.
-kis_evidence_weight: 0.5
-kis_evidence_rrf_k: 60
-
-# --- B4: temporal NMS inside one bucket ----------------------------------
-# Measured on data/keyframe/L21/L21_V001 (670 keyframes over 21 min, 30fps):
-# keyframe gaps are min 1 / p10 8 / p50 40 / p90 119 frames, i.e. p50 = 1.33s.
-# 12.9% of consecutive keyframes are within 10 frames of each other -- those
-# are the shot-boundary near-duplicates this suppresses. Set to 0.5s so it
-# removes that tight cluster WITHOUT eating genuinely distinct shots (a value
-# above the 1.33s median would suppress half the corpus).
-bucket_nms_seconds: 0.5
-
-# --- B5: chaining on the layered DAG -------------------------------------
-# min_gap_seconds > 0 is what stops two different events from being answered by
-# two near-identical frames of the same shot. Strict ordering (gap > 0) is
-# always enforced on top of this.
-# 0.5s, matching bucket_nms_seconds: with a 1.33s median keyframe gap, a
-# larger min_gap would reject two consecutive keyframes -- a legitimate answer
-# for two consecutive events in a fast process.
-min_gap_seconds: 0.5
-max_gap_seconds: 120.0
-# One relax step when no ordered path exists under max_gap_seconds. A video
-# with no path even after relaxing is dropped WITH a log line, never silently.
-max_gap_relax_factor: 4.0
-# Partial paths kept per node. Exact enumeration is O(N * k'^2 * beam log beam);
-# with the defaults here that is ~45k operations per video.
-beam_width: 10
-
-# --- B7: sequence scoring and NMS ----------------------------------------
-# TRAKE is graded per event, so a sequence is only as good as its worst event:
-# score = min + weak_link_beta * mean + coverage_weight * coverage_fraction.
-# Ranking on the sum alone (what the DP has to optimize) prefers a sequence with
-# four strong events and one hopeless one.
-weak_link_beta: 0.3
-coverage_threshold: 0.0
-coverage_weight: 0.2
-# Two sequences count as the same answer when every event is within this many
-# absolute frames of the other's. 10 = the graded window (CLAUDE.md §1.2).
-# Against the measured spacing this is deliberately near-exact-duplicate-only:
-# 87% of consecutive keyframes are more than 10 frames apart, so two sequences
-# differing by one keyframe survive as SEPARATE submissions. That is correct
-# here -- they are different answers, and with 100 slots the second one is
-# cheap insurance. It only collapses the 12.9% of pairs that really would be
-# graded identically.
-sequence_nms_frames: 10
-
-# --- B8: video-level rerank ----------------------------------------------
-# max/sum over frames grows with the number of keyframes, so a 40-minute video
-# outranks a 4-minute one for free. video_length_penalty subtracts
-# w * log(num_keyframes) to undo that.
-video_top_chains: 3
-video_logsumexp_weight: 1.0
-video_coverage_weight: 1.0
-video_rank_evidence_weight: 0.5
-video_length_penalty: 0.15
-
-# --- B9: submission slot allocation --------------------------------------
-# Score = mean of R@k over k in {1,5,20,50,100}. A wrong video makes every one
-# of its frame variants wrong too, so the early slots go to distinct videos
-# (round 1 = best sequence of each video) and later rounds add frame variants.
-max_sequences_per_video: 5
-
-# Per-video "Details" expander in the UI: how many of a video's own top
-# sequences to return alongside the submission list. These do NOT consume
-# submission slots -- they are an inspection view only.
-details_top_k: 10
+# Minimum DANTE sequence score accepted by POST /api/trake when the client
+# does not provide an explicit threshold. Operators can lower this below 0
+# to inspect weak/long-distance candidates, or raise it to keep only strong
+# sequence matches.
+default_score_threshold: 0.0
