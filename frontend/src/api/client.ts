@@ -11,7 +11,6 @@ import type {
   SearchMode,
   SearchResponse,
   TrakeResult,
-  TrakeSearchPayload,
   VideoInfo,
   VideoKeyframesResponse,
 } from './types'
@@ -151,20 +150,27 @@ export function searchByCandidate(
   })
 }
 
-// POST /api/trake (app/api/trake.py) -- candidate-chaining TRAKE search.
-// `payload.events` must already be in time order; the response's keyframes
-// come back in that same order, never re-sorted (CLAUDE.md §4). Each event
-// carries its own Text / OCR / Title / ASR boxes, so this takes the whole
-// payload rather than a list of strings. `threshold` cuts weak sequences on
-// the final weak-link score, which is on a z-score scale.
+// POST /api/trake (app/api/trake.py) -- DANTE-backed TRAKE search.
+// `events` must already be in time order; the response's keyframes come
+// back in that same order, never re-sorted (CLAUDE.md §3). `lambdaPenalty`
+// null means "use app/services/dante_service.py:LAMBDA_TIME";
+// `threshold` filters candidate sequences before the final top-k ranking.
 export function trakeSearch(
-  payload: TrakeSearchPayload,
+  events: string[],
+  topK: number,
+  lambdaPenalty: number | null,
+  threshold: number,
   signal?: AbortSignal,
 ): Promise<TrakeResult> {
   return request<TrakeResult>('/api/trake', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
+    body: JSON.stringify({
+      events,
+      top_k: topK,
+      lambda_penalty: lambdaPenalty,
+      threshold,
+    }),
     signal,
   })
 }

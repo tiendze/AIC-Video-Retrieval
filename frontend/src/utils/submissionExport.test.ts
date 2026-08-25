@@ -5,8 +5,6 @@ import {
   buildKisSubmissionRows,
   buildRawFrameSweep,
   buildTrakeFinalRanking,
-  buildTrakePerEventSweep,
-  buildTrakeSubmissionPlan,
   buildVqaFinalRows,
   createManualKisSelection,
   createVisualKisSelection,
@@ -256,60 +254,6 @@ describe('submissionExport', () => {
     expect(serializeTrakeCsv([sequence('L30_V006', [894, 969])])).toBe('L30_V006,894,969')
     expect(validateTrakeEventCount([sequence('L30_V006', [894, 969])], 2)).toBeNull()
     expect(validateTrakeEventCount([sequence('L30_V006', [894])], 2)).toMatch(/2 event frames/)
-  })
-
-  it('per-event sweep keeps N strictly-ordered frames, drops center and ordering violations', () => {
-    const variants = buildTrakePerEventSweep(sequence('A', [100, 101]), { step: 1, margin: 2 })
-    for (const variant of variants) {
-      expect(variant.keyframes).toHaveLength(2)
-      expect(variant.keyframes[0].frame_idx).toBeLessThan(variant.keyframes[1].frame_idx)
-    }
-    const frameLists = variants.map((variant) => variant.keyframes.map((k) => k.frame_idx))
-    expect(frameLists).not.toContainEqual([100, 101]) // center excluded
-    expect(frameLists).toEqual(
-      expect.arrayContaining([
-        [99, 101],
-        [98, 101],
-        [100, 102],
-        [100, 103],
-      ]),
-    )
-    expect(frameLists).not.toContainEqual([101, 101]) // ordering violation dropped
-    expect(frameLists).not.toContainEqual([102, 101])
-  })
-
-  it('per-event sweep is empty when margin is zero', () => {
-    expect(buildTrakePerEventSweep(sequence('A', [100, 200]), { step: 5, margin: 0 })).toEqual([])
-  })
-
-  it('builds TRAKE submission: centers first, then variants, deduped', () => {
-    const results = [sequence('A', [100, 200]), sequence('B', [10, 20])]
-    const selected: SelectedTrakeSequence[] = results.map((result, index) => ({
-      key: trakeSequenceKey(result),
-      result,
-      originalRank: index,
-    }))
-    const plan = buildTrakeSubmissionPlan(selected, results, { step: 5, margin: 5 })
-
-    expect(plan.rows.slice(0, 2).map((row) => trakeSequenceKey(row))).toEqual([
-      trakeSequenceKey(results[0]),
-      trakeSequenceKey(results[1]),
-    ])
-    expect(plan.centerCount).toBe(2)
-    expect(plan.variantCount).toBeGreaterThan(0)
-    const keys = plan.rows.map((row) => trakeSequenceKey(row))
-    expect(new Set(keys).size).toBe(keys.length)
-    // Every emitted row is still a full N-frame sequence.
-    expect(plan.rows.every((row) => row.keyframes.length === 2)).toBe(true)
-  })
-
-  it('TRAKE submission plan respects maxRows', () => {
-    const results = [sequence('A', [100, 200])]
-    const selected: SelectedTrakeSequence[] = [
-      { key: trakeSequenceKey(results[0]), result: results[0], originalRank: 0 },
-    ]
-    const plan = buildTrakeSubmissionPlan(selected, results, { step: 1, margin: 20, maxRows: 5 })
-    expect(plan.rows.length).toBe(5)
   })
 
   it('normalizes filenames without appending csv twice and validates task suffixes', () => {

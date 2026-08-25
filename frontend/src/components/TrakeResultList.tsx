@@ -1,13 +1,9 @@
-import { useMemo, useState } from 'react'
 import type { TrakeVideoResultItem } from '../api/types'
 import { trakeSequenceKey } from '../utils/submissionExport'
 import styles from './TrakeResultList.module.css'
 
 export interface TrakeResultListProps {
   results: TrakeVideoResultItem[]
-  // Per-video top-k sequences (before the submission cap), keyed by video_id.
-  // The "Details" button expands a video's card into these.
-  sequencesByVideo?: Record<string, TrakeVideoResultItem[]>
   selectedSequenceKeys?: Set<string>
   onToggleSequence?: (result: TrakeVideoResultItem, originalRank: number) => void
   onOpenDetail?: (result: TrakeVideoResultItem, keyframeIndex: number) => void
@@ -56,72 +52,28 @@ export function formatTrakeTimestamp(seconds: number): string {
 // the same video are grouped after ranking, preserving backend result order.
 export function TrakeResultList({
   results,
-  sequencesByVideo,
   selectedSequenceKeys,
   onToggleSequence,
   onOpenDetail,
 }: TrakeResultListProps) {
-  const [expandedVideos, setExpandedVideos] = useState<Set<string>>(() => new Set())
-
-  const rankByKey = useMemo(() => {
-    const map = new Map<string, number>()
-    results.forEach((result, index) => map.set(trakeSequenceKey(result), index))
-    return map
-  }, [results])
-
   if (results.length === 0) {
     return <div className={styles.empty}>No results yet -- try a search.</div>
   }
 
   const groups = groupByVideo(results)
 
-  function toggleExpanded(videoId: string): void {
-    setExpandedVideos((prev) => {
-      const next = new Set(prev)
-      if (next.has(videoId)) next.delete(videoId)
-      else next.add(videoId)
-      return next
-    })
-  }
-
   return (
     <div className={styles.list}>
-      {groups.map((group) => {
-        const expanded = expandedVideos.has(group.videoId)
-        const detailSequences = sequencesByVideo?.[group.videoId] ?? []
-        const hasMore = detailSequences.length > group.sequences.length
-        // Expanded view shows the video's full top-k; collapsed shows only the
-        // sequence(s) that made the submission list. Detail rows reuse their
-        // rank from `results` when present, else -1 (display only).
-        const rendered: RankedTrakeResult[] =
-          expanded && detailSequences.length > 0
-            ? detailSequences.map((result) => ({
-                result,
-                originalRank: rankByKey.get(trakeSequenceKey(result)) ?? -1,
-              }))
-            : group.sequences
-        return (
-          <div key={group.videoId} className={styles.card}>
-            <div className={styles.header}>
-              <span className={styles.videoId}>{group.videoId}</span>
-              <div className={styles.headerActions}>
-                {hasMore && (
-                  <button
-                    type="button"
-                    className={styles.detailsButton}
-                    onClick={() => toggleExpanded(group.videoId)}
-                    aria-expanded={expanded}
-                  >
-                    {expanded ? 'Hide' : `Details (${detailSequences.length})`}
-                  </button>
-                )}
-                <span className={styles.sequenceCount}>
-                  {rendered.length} sequence{rendered.length === 1 ? '' : 's'}
-                </span>
-              </div>
-            </div>
-            <div className={styles.sequences}>
-              {rendered.map(({ result, originalRank }, index) => {
+      {groups.map((group) => (
+        <div key={group.videoId} className={styles.card}>
+          <div className={styles.header}>
+            <span className={styles.videoId}>{group.videoId}</span>
+            <span className={styles.sequenceCount}>
+              {group.sequences.length} sequence{group.sequences.length === 1 ? '' : 's'}
+            </span>
+          </div>
+          <div className={styles.sequences}>
+            {group.sequences.map(({ result, originalRank }, index) => {
               const sequenceKey = trakeSequenceKey(result)
               const sequenceSelected = selectedSequenceKeys?.has(sequenceKey) ?? false
               return (
@@ -176,10 +128,9 @@ export function TrakeResultList({
                 </div>
               )
             })}
-            </div>
           </div>
-        )
-      })}
+        </div>
+      ))}
     </div>
   )
 }
