@@ -30,6 +30,7 @@ from app.services.quest_service import GeminiQueryRewriter, QueryRewriteService,
 from app.services.search_service import SearchService
 from app.services.thumbnail_service import ThumbnailService
 from app.services.trake_embedding_cache import TrakeEmbeddingCache
+from app.services.trake_service import TrakeService, load_trake_config
 from app.services.vqa_service import (
     GeminiVqaClient,
     QaService,
@@ -235,6 +236,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Loaded once per FastAPI process. With multiple uvicorn workers, each
     # worker owns one RAM copy of the TRAKE corpus cache.
     await app.state.trake_embedding_cache.load()
+    # TRAKE's candidate-chaining pipeline. Built after the cache load because
+    # it memoizes a keyframe_id -> corpus-row index over it, and shared as a
+    # singleton so that index survives across requests (app/dependencies.py).
+    app.state.trake_service = TrakeService(
+        encoder=app.state.encoder,
+        trake_cache=app.state.trake_embedding_cache,
+        search_service=search_service,
+        query_translator=app.state.query_translator,
+        config=load_trake_config(),
+    )
     yield
     await app.state.quest_http_client.aclose()
     await app.state.asr_es_store.close()

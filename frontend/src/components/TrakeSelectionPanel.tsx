@@ -1,6 +1,6 @@
 import type { TrakeVideoResultItem } from '../api/types'
 import {
-  buildTrakeFinalRanking,
+  buildTrakeSubmissionPlan,
   suggestedFilename,
   validateCsvFilename,
   validateTrakeEventCount,
@@ -13,6 +13,10 @@ export interface TrakeSelectionPanelProps {
   selection: SelectedTrakeSequence[]
   exportName: string
   eventCount: number
+  frameSweepStep: number
+  frameSweepMargin: number
+  onFrameSweepStepChange: (value: number) => void
+  onFrameSweepMarginChange: (value: number) => void
   onExportNameChange: (value: string) => void
   onMoveSelection: (index: number, direction: -1 | 1) => void
   onRemoveSelection: (key: string) => void
@@ -25,6 +29,10 @@ export function TrakeSelectionPanel({
   selection,
   exportName,
   eventCount,
+  frameSweepStep,
+  frameSweepMargin,
+  onFrameSweepStepChange,
+  onFrameSweepMarginChange,
   onExportNameChange,
   onMoveSelection,
   onRemoveSelection,
@@ -32,7 +40,11 @@ export function TrakeSelectionPanel({
   onExport,
 }: TrakeSelectionPanelProps) {
   const validation = validateCsvFilename(exportName, 'trake')
-  const finalRows = buildTrakeFinalRanking(results, selection)
+  const plan = buildTrakeSubmissionPlan(selection, results, {
+    step: frameSweepStep,
+    margin: frameSweepMargin,
+  })
+  const finalRows = plan.rows
   const eventCountError = validateTrakeEventCount(finalRows, eventCount)
   const disableReason =
     !validation.isValid
@@ -78,7 +90,32 @@ export function TrakeSelectionPanel({
           <span>Selected sequences</span>
           <span>{selection.length}</span>
         </div>
-        <div className={styles.hint}>Final TRAKE export will contain {finalRows.length} row(s).</div>
+        <div className={styles.sweepGrid}>
+          <label className={styles.label}>
+            Raw step
+            <input
+              className={styles.input}
+              type="number"
+              min={1}
+              value={frameSweepStep}
+              onChange={(event) => onFrameSweepStepChange(Number(event.currentTarget.value))}
+            />
+          </label>
+          <label className={styles.label}>
+            Margin
+            <input
+              className={styles.input}
+              type="number"
+              min={0}
+              value={frameSweepMargin}
+              onChange={(event) => onFrameSweepMarginChange(Number(event.currentTarget.value))}
+            />
+          </label>
+        </div>
+        <div className={styles.hint}>
+          Final TRAKE export: {finalRows.length} row(s) — {plan.centerCount} sequence,{' '}
+          {plan.variantCount} per-event variant, {plan.rankingFallbackCount} fallback.
+        </div>
         {selection.length === 0 ? (
           <div className={styles.empty}>Selected sequences appear here.</div>
         ) : (

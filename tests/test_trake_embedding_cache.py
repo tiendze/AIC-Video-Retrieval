@@ -7,10 +7,10 @@ from typing import Any
 import numpy as np
 import pytest
 
-from app.services.dante_service import compute_similarity_matrix
 from app.services.trake_embedding_cache import (
     TrakeEmbeddingCache,
     TrakeEmbeddingCacheError,
+    compute_similarity_matrix,
 )
 from app.services.trake_service import TrakeService
 

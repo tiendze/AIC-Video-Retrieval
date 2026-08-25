@@ -85,19 +85,19 @@ def get_health_service(
     )
 
 
-def get_trake_service(
-    encoder: MultimodalEncoder = Depends(get_encoder),
-    trake_cache: TrakeEmbeddingCache = Depends(get_trake_embedding_cache),
-    query_translator: QueryTranslator = Depends(get_query_translator),
-) -> TrakeService:
-    return TrakeService(
-        encoder=encoder,
-        trake_cache=trake_cache,
-        query_translator=query_translator,
-    )
-
-
 def get_search_service(
     request: Request,
 ) -> SearchService:
     return request.app.state.search_service
+
+
+def get_trake_service(request: Request) -> TrakeService:
+    """Built once in the lifespan, not per request.
+
+    `TrakeService` memoizes a `keyframe_id -> corpus row` index over the whole
+    TRAKE cache (~2e5 entries). Rebuilding that on every request would add more
+    latency than the chaining itself, so the instance is a singleton on
+    `app.state`, keyed internally on the cache's `load_count` so a cache reload
+    still invalidates the index.
+    """
+    return request.app.state.trake_service
