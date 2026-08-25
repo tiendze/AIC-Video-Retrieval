@@ -7,20 +7,51 @@ import { SearchBar } from './SearchBar'
 
 const ASR_GATE: AsrGate = {
   query: 'thủy lợi',
-  segment_hit_count: 57,
+  queries: ['thủy lợi'],
+  match_mode: 'any',
+  detected: true,
+  asr_detected_any: true,
+  matched_segment_count: 1,
+  scanned_segment_count: 57,
   candidate_video_count: 1,
+  asr_matches: [
+    {
+      query: 'thủy lợi',
+      detected: true,
+      matches: [
+        {
+          segment_id: 'V1_seg1',
+          text: 'công trình thủy lợi',
+          start_time: 151.2,
+          end_time: 158.4,
+        },
+      ],
+    },
+  ],
   videos: [
     {
       video_id: 'V1',
-      video_rank: 1,
-      best_bm25_score: 8.73,
+      detected: true,
+      asr_matches: [
+        {
+          query: 'thủy lợi',
+          detected: true,
+          matches: [
+            {
+              segment_id: 'V1_seg1',
+              text: 'công trình thủy lợi',
+              start_time: 151.2,
+              end_time: 158.4,
+            },
+          ],
+        },
+      ],
       segments: [
         {
           segment_id: 'V1_seg1',
           text: 'công trình thủy lợi',
           start_time: 151.2,
           end_time: 158.4,
-          raw_bm25: 8.73,
         },
       ],
     },
@@ -30,10 +61,16 @@ const ASR_GATE: AsrGate = {
 describe('SearchBar', () => {
   function renderSearchBar(overrides: Partial<ComponentProps<typeof SearchBar>> = {}) {
     const props: ComponentProps<typeof SearchBar> = {
+      textQueries: [''],
+      onTextQueryChange: vi.fn(),
+      onAddTextQuery: vi.fn(),
+      onRemoveTextQuery: vi.fn(),
       globalTextQuery: '',
       textCandidateK: 300,
       ocrQuery: '',
       ocrCandidateK: 100,
+      titleQuery: '',
+      titleCandidateK: 100,
       asrQuery: '',
       asrVideoCandidateK: 20,
       asrGate: null,
@@ -42,12 +79,15 @@ describe('SearchBar', () => {
       candidatePoolSize: null,
       textCandidateCount: 0,
       ocrCandidateCount: 0,
+      titleCandidateCount: 0,
       stage2Queries: [],
       finalTopK: 20,
       onGlobalTextQueryChange: vi.fn(),
       onTextCandidateKChange: vi.fn(),
       onOcrQueryChange: vi.fn(),
       onOcrCandidateKChange: vi.fn(),
+      onTitleQueryChange: vi.fn(),
+      onTitleCandidateKChange: vi.fn(),
       onAsrQueryChange: vi.fn(),
       onAsrVideoCandidateKChange: vi.fn(),
       onStage2QueryTextChange: vi.fn(),
@@ -63,6 +103,9 @@ describe('SearchBar', () => {
       onRerankCandidates: vi.fn(),
       onEnhance: vi.fn(),
       ...overrides,
+    }
+    if (overrides.globalTextQuery !== undefined && overrides.textQueries === undefined) {
+      props.textQueries = [overrides.globalTextQuery]
     }
     render(<SearchBar {...props} />)
     return props
@@ -86,14 +129,40 @@ describe('SearchBar', () => {
     expect(props.onRetrieveCandidates).toHaveBeenCalledTimes(1)
   })
 
-  it('keeps Text and OCR candidate counts independent', () => {
+  it('allows Stage 1 retrieval with only ASR input when transcripts are ready', async () => {
+    const user = userEvent.setup()
+    const props = renderSearchBar({ asrQuery: 'thủy lợi' })
+    const retrieveButton = screen.getByRole('button', { name: 'Retrieve Candidates' })
+
+    expect(retrieveButton).toBeEnabled()
+    await user.click(retrieveButton)
+
+    expect(props.onRetrieveCandidates).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps Text, OCR, and Title candidate counts independent', () => {
     const props = renderSearchBar()
 
     fireEvent.change(screen.getByLabelText('text candidates'), { target: { value: '250' } })
     fireEvent.change(screen.getByLabelText('ocr candidates'), { target: { value: '75' } })
+    fireEvent.change(screen.getByLabelText('title candidates'), { target: { value: '30' } })
 
     expect(props.onTextCandidateKChange).toHaveBeenLastCalledWith(250)
     expect(props.onOcrCandidateKChange).toHaveBeenLastCalledWith(75)
+    expect(props.onTitleCandidateKChange).toHaveBeenLastCalledWith(30)
+  })
+
+  it('adds and removes Stage 1 text query rows', async () => {
+    const user = userEvent.setup()
+    const props = renderSearchBar({ textQueries: ['dam', 'reservoir'] })
+
+    await user.type(screen.getByLabelText('text q2'), '!')
+    await user.click(screen.getByRole('button', { name: /\+ Add query/i }))
+    await user.click(screen.getByRole('button', { name: /remove text query 2/i }))
+
+    expect(props.onTextQueryChange).toHaveBeenCalledWith(1, 'reservoir!')
+    expect(props.onAddTextQuery).toHaveBeenCalledTimes(1)
+    expect(props.onRemoveTextQuery).toHaveBeenCalledWith(1)
   })
 
   it('renders ASR controls and reports the active gated video count', () => {
@@ -104,13 +173,14 @@ describe('SearchBar', () => {
       candidatePoolSize: 300,
       textCandidateCount: 300,
       ocrCandidateCount: 0,
+      titleCandidateCount: 0,
     })
 
     expect(screen.getByLabelText('stage 1 asr')).toHaveValue('thủy lợi')
     expect(screen.getByLabelText('stage 1 asr')).toHaveAttribute('maxlength', '1000')
     expect(screen.getByLabelText('asr candidate videos')).toHaveValue(20)
     expect(screen.getByLabelText('asr candidate videos')).toHaveAttribute('max', '100')
-    expect(screen.getByText('Text 300 · OCR 0 · ASR 12 videos')).toBeInTheDocument()
+    expect(screen.getByText('Text 300 · OCR 0 · Title OCR 0 · ASR 12 detected')).toBeInTheDocument()
 
     fireEvent.change(screen.getByLabelText('stage 1 asr'), {
       target: { value: 'new topic' },
@@ -129,9 +199,9 @@ describe('SearchBar', () => {
       candidatePoolSize: 0,
     })
 
-    expect(screen.getByText('Text 0 · OCR 0 · ASR 0 videos')).toBeInTheDocument()
+    expect(screen.getByText('Text 0 · OCR 0 · Title OCR 0 · ASR 0 detected')).toBeInTheDocument()
     expect(
-      screen.getByText('No transcript video matched—clear or revise the ASR query.'),
+      screen.getByText('No transcript video matched - clear or revise the ASR query.'),
     ).toBeInTheDocument()
   })
 

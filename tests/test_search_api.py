@@ -27,6 +27,7 @@ from app.schemas.request.search import MAX_UPLOAD_SIZE_BYTES, KisCandidateReques
 from app.services.asr_retrieval_service import (
     AsrEvidenceSegment,
     AsrGateResult,
+    AsrQueryMatch,
     AsrVideoEvidence,
 )
 from app.services.kis_scoring import (
@@ -85,7 +86,19 @@ class _FakeSearchService:
         self._error = error
         self.search_calls: list[tuple[str, str, int]] = []
         self.retrieve_kis_candidates_calls: list[
-            tuple[str | None, int, str | None, int, str | None, int]
+            tuple[
+                str | None,
+                list[str],
+                int,
+                str | None,
+                int,
+                str | None,
+                int,
+                str | None,
+                list[str],
+                str,
+                int,
+            ]
         ] = []
         self.rerank_kis_candidates_calls: list[
             tuple[list[str], list[tuple[int, str, str]], int]
@@ -105,11 +118,28 @@ class _FakeSearchService:
         text_top_k: int,
         ocr_query: str | None,
         ocr_top_k: int,
-        asr_query: str | None,
-        asr_video_top_k: int,
+        text_queries=None,
+        title_query: str | None = None,
+        title_top_k: int = 0,
+        asr_query: str | None = None,
+        asr_queries=None,
+        asr_match_mode: str = "any",
+        asr_video_top_k: int = 20,
     ) -> KisCandidatePool:
         self.retrieve_kis_candidates_calls.append(
-            (text_query, text_top_k, ocr_query, ocr_top_k, asr_query, asr_video_top_k)
+            (
+                text_query,
+                list(text_queries or []),
+                text_top_k,
+                ocr_query,
+                ocr_top_k,
+                title_query,
+                title_top_k,
+                asr_query,
+                list(asr_queries or []),
+                asr_match_mode,
+                asr_video_top_k,
+            )
         )
         if self._error is not None:
             raise self._error
@@ -350,7 +380,19 @@ def test_kis_candidate_retrieval_accepts_stage1_shape_and_uses_candidate_default
 
     assert response.status_code == 200
     assert service.retrieve_kis_candidates_calls == [
-        ("a man in a red shirt", 300, None, 100, None, 20)
+        (
+            "a man in a red shirt",
+            ["a man in a red shirt"],
+            300,
+            None,
+            100,
+            None,
+            100,
+            None,
+            [],
+            "any",
+            20,
+        )
     ]
 
 
@@ -366,33 +408,38 @@ def test_kis_candidate_request_rejects_overlong_asr_query():
         KisCandidateRequest(text_query="dam", asr_query="x" * 1001)
 
 
-def test_asr_alone_does_not_satisfy_stage1_keyframe_query_requirement():
-    response = _client(_FakeSearchService()).post(
+def test_asr_alone_satisfies_stage1_candidate_retrieval_requirement():
+    service = _FakeSearchService()
+    response = _client(service).post(
         "/api/search/kis/candidates",
         json={"text_query": None, "ocr_query": None, "asr_query": "thủy lợi"},
     )
 
-    assert response.status_code == 422
+    assert response.status_code == 200
+    assert service.retrieve_kis_candidates_calls == [
+        (None, [], 300, None, 100, None, 100, "thủy lợi", ["thủy lợi"], "any", 20)
+    ]
 
 
 def test_kis_candidate_response_maps_top_level_asr_gate_once():
+    segment = AsrEvidenceSegment(
+        segment_id="L21_V001_seg10",
+        text="công trình thủy lợi",
+        start_time=151.2,
+        end_time=158.4,
+    )
+    match = AsrQueryMatch(query="thủy lợi", detected=True, matches=[segment])
     asr_gate = AsrGateResult(
-        query="thủy lợi",
-        segment_hit_count=1,
+        queries=["thủy lợi"],
+        match_mode="any",
+        scanned_segment_count=1,
+        asr_matches=[match],
         videos=[
             AsrVideoEvidence(
                 video_id="L21_V001",
-                video_rank=1,
-                best_bm25_score=8.73,
-                segments=[
-                    AsrEvidenceSegment(
-                        segment_id="L21_V001_seg10",
-                        text="công trình thủy lợi",
-                        start_time=151.2,
-                        end_time=158.4,
-                        raw_bm25=8.73,
-                    )
-                ],
+                detected=True,
+                asr_matches=[match],
+                segments=[segment],
             )
         ],
     )
@@ -412,18 +459,24 @@ def test_kis_candidate_response_maps_top_level_asr_gate_once():
     assert response.status_code == 200
     body = response.json()
     assert body["asr_gate"]["candidate_video_count"] == 1
+    assert body["asr_gate"]["asr_detected_any"] is True
     assert body["asr_gate"]["videos"][0]["segments"][0] == {
         "segment_id": "L21_V001_seg10",
         "text": "công trình thủy lợi",
         "start_time": 151.2,
         "end_time": 158.4,
-        "raw_bm25": 8.73,
     }
     assert "asr_gate" not in body["results"][0]
 
 
 def test_active_asr_zero_hit_returns_200_with_empty_active_gate():
-    empty_gate = AsrGateResult(query="không có kết quả", segment_hit_count=0, videos=[])
+    empty_gate = AsrGateResult(
+        queries=["không có kết quả"],
+        match_mode="any",
+        scanned_segment_count=0,
+        asr_matches=[AsrQueryMatch(query="không có kết quả", detected=False, matches=[])],
+        videos=[],
+    )
     empty_pool = KisCandidatePool([], 0, 0, [], asr_gate=empty_gate)
 
     response = _client(_FakeSearchService(candidate_pool=empty_pool)).post(
@@ -433,6 +486,7 @@ def test_active_asr_zero_hit_returns_200_with_empty_active_gate():
 
     assert response.status_code == 200
     assert response.json()["asr_gate"]["videos"] == []
+    assert response.json()["asr_gate"]["detected"] is False
     assert response.json()["candidate_ids"] == []
 
 
@@ -464,12 +518,47 @@ def test_kis_candidate_retrieval_returns_pool_metadata_and_stage1_breakdown():
     assert body["candidate_ids"] == ["L21_V001_f10"]
     assert body["candidate_pool_size"] == 1
     assert body["text_candidate_count"] == 1
+    assert body["ocr_candidate_count"] == 0
+    assert body["title_candidate_count"] == 0
+    assert body["rrf_k"] == 60
     hit = body["results"][0]
     assert "final_score" not in hit
     assert hit["stage1"] == {
         "source_modalities": ["text"],
         "text": {"query": "a man in a red shirt", "raw_cosine": 0.91, "rank": 1},
     }
+
+
+def test_kis_candidate_retrieval_accepts_multi_text_queries_and_title_query():
+    service = _FakeSearchService(candidate_pool=_ONE_CANDIDATE_POOL)
+    client = _client(service)
+
+    response = client.post(
+        "/api/search/kis/candidates",
+        json={
+            "text_queries": ["a dam", "reservoir"],
+            "text_top_k": 50,
+            "title_query": "hydroelectric",
+            "title_top_k": 20,
+        },
+    )
+
+    assert response.status_code == 200
+    assert service.retrieve_kis_candidates_calls == [
+        (
+            "a dam",
+            ["a dam", "reservoir"],
+            50,
+            None,
+            100,
+            "hydroelectric",
+            20,
+            None,
+            [],
+            "any",
+            20,
+        )
+    ]
 
 
 def test_kis_candidate_retrieval_rejects_blank_stage1_before_reaching_service():

@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import bisect
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -89,6 +89,56 @@ def discover_video_ids(vectors_dir: Path) -> list[str]:
             f"missing .jsonl for {sorted(missing_jsonl)}, missing .npy for {sorted(missing_npy)}"
         )
     return sorted(npy_ids)
+
+
+def align_metadata_to_video_ids(
+    video_ids: Sequence[str], metadata_by_id: Mapping[str, dict]
+) -> dict[str, dict]:
+    """Aligns organiser metadata to local video ids.
+
+    The current AIC metadata dump has a duplicate first record: `L21_V001`
+    and `L21_V002` both describe the same YouTube video. The keyframe/vector
+    artifacts are ordered correctly, so the duplicate shifts the metadata
+    content by one row for the rest of the corpus. When that signature is
+    present, map `video_ids[i]` to `metadata_ids[i + 1]` after the first row;
+    otherwise keep the ordinary filename-based mapping.
+    """
+    sorted_video_ids = sorted(video_ids)
+    sorted_metadata_ids = sorted(metadata_by_id)
+    if len(sorted_video_ids) != len(sorted_metadata_ids) or not sorted_video_ids:
+        return {
+            video_id: metadata_by_id[video_id]
+            for video_id in sorted_video_ids
+            if video_id in metadata_by_id
+        }
+
+    first = metadata_by_id.get(sorted_metadata_ids[0])
+    second = metadata_by_id.get(sorted_metadata_ids[1]) if len(sorted_metadata_ids) > 1 else None
+    has_duplicate_first_record = (
+        first is not None
+        and second is not None
+        and first.get("watch_url")
+        and first.get("watch_url") == second.get("watch_url")
+        and first.get("title") == second.get("title")
+    )
+    if not has_duplicate_first_record:
+        return {
+            video_id: metadata_by_id[video_id]
+            for video_id in sorted_video_ids
+            if video_id in metadata_by_id
+        }
+
+    aligned: dict[str, dict] = {}
+    for index, video_id in enumerate(sorted_video_ids):
+        if index == 0:
+            metadata_id = sorted_metadata_ids[0]
+        elif index + 1 < len(sorted_metadata_ids):
+            metadata_id = sorted_metadata_ids[index + 1]
+        else:
+            metadata_id = video_id
+        if metadata_id in metadata_by_id:
+            aligned[video_id] = metadata_by_id[metadata_id]
+    return aligned
 
 
 def load_video_vectors(vectors_dir: Path, video_id: str) -> tuple[np.ndarray, list[dict]]:

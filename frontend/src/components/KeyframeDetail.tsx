@@ -1,7 +1,65 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getVideo, getVideoKeyframes } from '../api/client'
 import type { AsrEvidenceSegment, SearchHit, VideoInfo, VideoKeyframe } from '../api/types'
 import styles from './KeyframeDetail.module.css'
+
+interface YouTubePlayer {
+  getCurrentTime: () => number
+  seekTo: (seconds: number, allowSeekAhead: boolean) => void
+  destroy: () => void
+}
+
+interface YouTubePlayerEvent {
+  target: YouTubePlayer
+  data?: number
+}
+
+interface YouTubePlayerOptions {
+  videoId: string
+  playerVars?: Record<string, number | string>
+  events?: {
+    onReady?: (event: YouTubePlayerEvent) => void
+    onStateChange?: (event: YouTubePlayerEvent) => void
+  }
+}
+
+declare global {
+  interface Window {
+    YT?: {
+      Player: new (element: HTMLElement | string, options: YouTubePlayerOptions) => YouTubePlayer
+      PlayerState: {
+        PAUSED: number
+      }
+    }
+    onYouTubeIframeAPIReady?: () => void
+  }
+}
+
+let youtubeIframeApiPromise: Promise<void> | null = null
+
+function loadYouTubeIframeApi(): Promise<void> {
+  if (window.YT?.Player) return Promise.resolve()
+  if (!youtubeIframeApiPromise) {
+    youtubeIframeApiPromise = new Promise((resolve, reject) => {
+      const previousReady = window.onYouTubeIframeAPIReady
+      window.onYouTubeIframeAPIReady = () => {
+        previousReady?.()
+        resolve()
+      }
+      const existingScript = document.querySelector(
+        'script[src="https://www.youtube.com/iframe_api"]',
+      )
+      if (!existingScript) {
+        const script = document.createElement('script')
+        script.src = 'https://www.youtube.com/iframe_api'
+        script.async = true
+        script.onerror = () => reject(new Error('Could not load YouTube player'))
+        document.head.appendChild(script)
+      }
+    })
+  }
+  return youtubeIframeApiPromise
+}
 
 export interface KeyframeDetailProps {
   hit: SearchHit
@@ -39,6 +97,47 @@ function frameFromVideoKeyframe(videoId: string, keyframe: VideoKeyframe): Detai
     thumbnail_url: keyframe.thumbnail_url,
     image_url: keyframe.image_url,
   }
+}
+
+// oxlint-disable-next-line react/only-export-components -- tested pure helper for player routing
+export function youtubeVideoIdFromUrl(watchUrl: string): string | null {
+  try {
+    const url = new URL(watchUrl)
+    const host = url.hostname.replace(/^www\./, '')
+    if (host === 'youtu.be') return url.pathname.split('/').filter(Boolean)[0] ?? null
+    if (host === 'youtube.com' || host.endsWith('.youtube.com')) {
+      const watchId = url.searchParams.get('v')
+      if (watchId) return watchId
+      const embedMatch = url.pathname.match(/^\/embed\/([^/?]+)/)
+      if (embedMatch) return embedMatch[1]
+    }
+  } catch {
+    return null
+  }
+  return null
+}
+
+function youtubeUrlAtTimestamp(watchUrl: string, timestamp: number): string {
+  const rounded = Math.floor(timestamp)
+  try {
+    const url = new URL(watchUrl)
+    url.searchParams.set('t', `${rounded}s`)
+    return url.toString()
+  } catch {
+    const separator = watchUrl.includes('?') ? '&' : '?'
+    return `${watchUrl}${separator}t=${rounded}s`
+  }
+}
+
+function formatSeconds(seconds: number): string {
+  return seconds.toFixed(3).replace(/\.?0+$/, '')
+}
+
+// oxlint-disable-next-line react/only-export-components -- tested pure helper for YouTube frame lookup
+export function frameIndexFromTimestamp(timestamp: number, fps: number): number | null {
+  if (!Number.isFinite(timestamp) || timestamp < 0) return null
+  if (!Number.isFinite(fps) || fps <= 0) return null
+  return Math.round(timestamp * fps)
 }
 
 const DISTANCE_TIE_TOLERANCE_SECONDS = 1e-9
@@ -85,18 +184,23 @@ export function KeyframeDetail({
   const [neighbors, setNeighbors] = useState<VideoKeyframe[]>([])
   const [currentFrame, setCurrentFrame] = useState<DetailFrame>(() => frameFromHit(hit))
   const [activeEvidence, setActiveEvidence] = useState<AsrEvidenceSegment | null>(null)
+  const [playerOpen, setPlayerOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const stripRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    setCurrentFrame(frameFromHit(hit))
+    setActiveEvidence(null)
+    setPlayerOpen(false)
+  }, [hit])
 
   useEffect(() => {
     let cancelled = false
     setVideo(null)
     setNeighbors([])
     setError(null)
-    setCurrentFrame(frameFromHit(hit))
-    setActiveEvidence(null)
 
-    Promise.all([getVideo(hit.video_id), getVideoKeyframes(hit.video_id)])
+    Promise.all([getVideo(currentFrame.video_id), getVideoKeyframes(currentFrame.video_id)])
       .then(([videoInfo, keyframes]) => {
         if (cancelled) return
         setVideo(videoInfo)
@@ -109,16 +213,18 @@ export function KeyframeDetail({
     return () => {
       cancelled = true
     }
-  }, [hit])
+  }, [currentFrame.video_id])
 
   const stripFrames = useMemo(() => {
-    const videoFrames = neighbors.map((keyframe) => frameFromVideoKeyframe(hit.video_id, keyframe))
+    const videoFrames = neighbors.map((keyframe) =>
+      frameFromVideoKeyframe(currentFrame.video_id, keyframe),
+    )
     const framesById = new Map<string, DetailFrame>()
     for (const frame of [...videoFrames, ...highlightedFrames, currentFrame]) {
       framesById.set(frame.keyframe_id, frame)
     }
     return Array.from(framesById.values()).sort((a, b) => a.timestamp - b.timestamp)
-  }, [currentFrame, highlightedFrames, hit.video_id, neighbors])
+  }, [currentFrame, highlightedFrames, neighbors])
 
   const highlightedKeyframeIds = useMemo(
     () => new Set(highlightedFrames.map((frame) => frame.keyframe_id)),
@@ -130,7 +236,14 @@ export function KeyframeDetail({
   )
   const canGoPrev = currentIndex > 0
   const canGoNext = currentIndex >= 0 && currentIndex < stripFrames.length - 1
-  const youtubeUrl = video ? `${video.watch_url}&t=${Math.floor(currentFrame.timestamp)}s` : null
+  const youtubeUrl =
+    video && video.video_id === currentFrame.video_id
+      ? youtubeUrlAtTimestamp(video.watch_url, currentFrame.timestamp)
+      : null
+  const youtubeVideoId =
+    video && video.video_id === currentFrame.video_id
+      ? youtubeVideoIdFromUrl(video.watch_url)
+      : null
 
   useEffect(() => {
     const active = stripRef.current?.querySelector('[data-active="true"]') as HTMLElement | null
@@ -164,14 +277,23 @@ export function KeyframeDetail({
         <div className={styles.meta}>
           <div>
             <strong>{currentFrame.video_id}</strong> · <span>frame {currentFrame.frame_idx}</span> ·{' '}
-            {currentFrame.timestamp}s
+            {formatSeconds(currentFrame.timestamp)}s
           </div>
           {video && <div className={styles.title}>{video.title}</div>}
           {error && <div className={styles.error}>{error}</div>}
           <div className={styles.actions}>
+            {youtubeVideoId && (
+              <button
+                type="button"
+                className={styles.playButton}
+                onClick={() => setPlayerOpen(true)}
+              >
+                ▶ Play Video
+              </button>
+            )}
             {youtubeUrl && (
               <a className={styles.playButton} href={youtubeUrl} target="_blank" rel="noreferrer">
-                ▶ Play YouTube
+                Open YouTube
               </a>
             )}
             <button
@@ -242,7 +364,7 @@ export function KeyframeDetail({
                     data-highlighted={highlighted || undefined}
                     aria-current={active ? 'true' : undefined}
                     aria-label={`Show frame ${frame.frame_idx}`}
-                    title={`${frame.timestamp}s`}
+                    title={`${formatSeconds(frame.timestamp)}s`}
                   >
                     <img src={frame.thumbnail_url} alt={`frame ${frame.frame_idx}`} />
                   </button>
@@ -260,6 +382,180 @@ export function KeyframeDetail({
             </button>
           </div>
         )}
+        {playerOpen && video && youtubeVideoId && (
+          <YouTubeFrameIndexModal
+            videoId={currentFrame.video_id}
+            youtubeVideoId={youtubeVideoId}
+            title={video.title}
+            fps={video.fps}
+            initialTimestamp={currentFrame.timestamp}
+            onClose={() => setPlayerOpen(false)}
+          />
+        )}
+      </div>
+    </div>
+  )
+}
+
+interface FrameIndexResult {
+  timestamp: number
+  fps: number
+  frameIdx: number
+}
+
+interface YouTubeFrameIndexModalProps {
+  videoId: string
+  youtubeVideoId: string
+  title: string
+  fps: number
+  initialTimestamp: number
+  onClose: () => void
+}
+
+function YouTubeFrameIndexModal({
+  videoId,
+  youtubeVideoId,
+  title,
+  fps,
+  initialTimestamp,
+  onClose,
+}: YouTubeFrameIndexModalProps) {
+  const playerHostRef = useRef<HTMLDivElement>(null)
+  const playerRef = useRef<YouTubePlayer | null>(null)
+  const [currentTime, setCurrentTime] = useState(initialTimestamp)
+  const [playerReady, setPlayerReady] = useState(false)
+  const [playerError, setPlayerError] = useState<string | null>(null)
+  const [frameIndexResult, setFrameIndexResult] = useState<FrameIndexResult | null>(null)
+  const [frameIndexError, setFrameIndexError] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    let createdPlayer: YouTubePlayer | null = null
+    setPlayerReady(false)
+    setPlayerError(null)
+
+    loadYouTubeIframeApi()
+      .then(() => {
+        if (cancelled || !playerHostRef.current || !window.YT?.Player) return
+        createdPlayer = new window.YT.Player(playerHostRef.current, {
+          videoId: youtubeVideoId,
+          playerVars: {
+            autoplay: 1,
+            modestbranding: 1,
+            rel: 0,
+            start: Math.max(0, Math.floor(initialTimestamp)),
+          },
+          events: {
+            onReady: (event) => {
+              playerRef.current = event.target
+              event.target.seekTo(initialTimestamp, true)
+              setCurrentTime(event.target.getCurrentTime())
+              setPlayerReady(true)
+            },
+            onStateChange: (event) => {
+              if (event.data === window.YT?.PlayerState.PAUSED) {
+                setCurrentTime(event.target.getCurrentTime())
+              }
+            },
+          },
+        })
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setPlayerError(error instanceof Error ? error.message : 'Could not load YouTube player')
+        }
+      })
+
+    return () => {
+      cancelled = true
+      const player = playerRef.current ?? createdPlayer
+      player?.destroy()
+      playerRef.current = null
+    }
+  }, [initialTimestamp, youtubeVideoId])
+
+  const handleGetFrameIndex = useCallback((): void => {
+    if (!playerReady) return
+    const timestamp = playerRef.current?.getCurrentTime() ?? currentTime
+    setCurrentTime(timestamp)
+    setCopied(false)
+    const frameIdx = frameIndexFromTimestamp(timestamp, fps)
+    if (frameIdx === null) {
+      setFrameIndexResult(null)
+      setFrameIndexError(`FPS metadata not found for ${videoId}`)
+      return
+    }
+    setFrameIndexError(null)
+    setFrameIndexResult({ timestamp, fps, frameIdx })
+  }, [currentTime, fps, playerReady, videoId])
+
+  async function copyFrameIndex(): Promise<void> {
+    if (!frameIndexResult) return
+    await navigator.clipboard?.writeText(String(frameIndexResult.frameIdx))
+    setCopied(true)
+  }
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent): void {
+      const target = event.target as HTMLElement | null
+      const tagName = target?.tagName
+      const isTyping =
+        tagName === 'INPUT' || tagName === 'TEXTAREA' || target?.isContentEditable === true
+      if (isTyping || event.key.toLowerCase() !== 'c') return
+      event.preventDefault()
+      handleGetFrameIndex()
+    }
+
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [handleGetFrameIndex])
+
+  return (
+    <div className={styles.playerBackdrop} role="dialog" aria-label="Video player">
+      <div className={styles.playerPanel}>
+        <div className={styles.playerHeader}>
+          <div>
+            <strong>{videoId}</strong>
+            <span>{title}</span>
+          </div>
+          <button
+            type="button"
+            className={styles.playerClose}
+            onClick={onClose}
+            aria-label="Close video player"
+          >
+            ✕
+          </button>
+        </div>
+        <div className={styles.playerFrame} ref={playerHostRef} />
+        <div className={styles.playerStatus}>Current: {formatSeconds(currentTime)} s</div>
+        {playerError && <div className={styles.error}>{playerError}</div>}
+        {frameIndexError && <div className={styles.error}>{frameIndexError}</div>}
+        {frameIndexResult && (
+          <div className={styles.frameIndexResult} aria-label="Frame index result">
+            <span>Current: {formatSeconds(frameIndexResult.timestamp)} s</span>
+            <span>FPS: {formatSeconds(frameIndexResult.fps)}</span>
+            <strong>Frame Index: {frameIndexResult.frameIdx}</strong>
+            <button
+              type="button"
+              className={styles.copyButton}
+              onClick={() => void copyFrameIndex()}
+            >
+              {copied ? 'Copied' : 'Copy'}
+            </button>
+          </div>
+        )}
+        <div className={styles.captureActions}>
+          <button
+            type="button"
+            className={styles.captureButton}
+            onClick={handleGetFrameIndex}
+            disabled={!playerReady}
+          >
+            Get Frame Index
+          </button>
+        </div>
       </div>
     </div>
   )

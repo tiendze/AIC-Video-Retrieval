@@ -18,6 +18,7 @@ from pipelines.import_embed_out import (
     ImportedKeyframe,
     ShotRange,
     VectorsOnlyKeyframe,
+    align_metadata_to_video_ids,
     build_imported_keyframes,
     build_vectors_only_rows,
     build_video_document,
@@ -62,6 +63,32 @@ class TestDiscoverVideoIds:
 
         with pytest.raises(ValueError, match="mismatched"):
             discover_video_ids(vectors_dir)
+
+
+class TestAlignMetadataToVideoIds:
+    def test_shifts_metadata_when_first_record_is_duplicated(self):
+        metadata = {
+            "L21_V001": {"watch_url": "https://yt/a", "title": "day 1"},
+            "L21_V002": {"watch_url": "https://yt/a", "title": "day 1"},
+            "L21_V003": {"watch_url": "https://yt/b", "title": "day 2"},
+        }
+
+        aligned = align_metadata_to_video_ids(["L21_V001", "L21_V002", "L21_V003"], metadata)
+
+        assert aligned["L21_V001"] is metadata["L21_V001"]
+        assert aligned["L21_V002"] is metadata["L21_V003"]
+        assert aligned["L21_V003"] is metadata["L21_V003"]
+
+    def test_keeps_filename_mapping_when_metadata_is_not_shifted(self):
+        metadata = {
+            "L21_V001": {"watch_url": "https://yt/a", "title": "day 1"},
+            "L21_V002": {"watch_url": "https://yt/b", "title": "day 2"},
+        }
+
+        aligned = align_metadata_to_video_ids(["L21_V001", "L21_V002"], metadata)
+
+        assert aligned["L21_V001"] is metadata["L21_V001"]
+        assert aligned["L21_V002"] is metadata["L21_V002"]
 
 
 class TestLoadVideoVectors:

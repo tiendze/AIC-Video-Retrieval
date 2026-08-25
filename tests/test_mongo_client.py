@@ -16,7 +16,7 @@ from typing import Any
 
 from pymongo.errors import ServerSelectionTimeoutError
 
-from app.stores.mongo_client import MongoStore
+from app.stores.mongo_client import MongoStore, match_title_query
 
 
 class _FakeCursor:
@@ -187,3 +187,48 @@ async def test_scroll_all_videos_yields_every_document_across_the_corpus(monkeyp
     result = [doc async for doc in store.scroll_all_videos()]
 
     assert {doc["video_id"] for doc in result} == {"L21_V001", "L25_V009"}
+
+
+def test_title_match_uses_whole_tokens_for_short_queries() -> None:
+    assert match_title_query("Gà", "MÓN GÀ NƯỚNG").detected is True
+    assert match_title_query("Gà", "GÀ NƯỚNG MẬT ONG NGON KHÓ CƯỠNG").match_type == "token"
+    assert match_title_query("Gà", "CÁCH NẤU MÓN GÀ KHO GỪNG").detected is True
+    assert match_title_query("Gà", "MON GA NUONG").detected is True
+
+    assert match_title_query("Gà", "MÓN NGON MỖI NGÀY").detected is False
+    assert match_title_query("Gà", "CƠM GẠO LỨT DINH DƯỠNG").detected is False
+    assert match_title_query("Cá", "CÁCH LÀM MÓN NGON").detected is False
+    assert match_title_query("Bò", "CÁCH LÀM BỘT CHIÊN").detected is False
+
+
+def test_title_match_uses_contiguous_token_phrase_for_multi_word_queries() -> None:
+    match = match_title_query("Thịt gà", "CÁCH LÀM THỊT GÀ XÀO SẢ ỚT")
+
+    assert match.detected is True
+    assert match.match_type == "phrase"
+    assert match.matched_text == "thịt gà"
+    assert match_title_query("Thịt gà", "THỊT HEO GÀ XÀO").detected is False
+
+
+async def test_title_search_does_not_match_ga_inside_ngay_or_gao(monkeypatch):
+    monkeypatch.setattr(
+        "app.stores.mongo_client.AsyncMongoClient",
+        lambda uri: _FakeAsyncMongoClient([]),
+    )
+    store = MongoStore(uri="mongodb://fake")
+    store.videos = _FakeKeyframesCollection(
+        [
+            {
+                "video_id": "L26_V034",
+                "title": "THỊT BÊ XÀO LĂN NGON THÍCH MÊ MÓN NGON MỖI NGÀY VIVU TV",
+            },
+            {"video_id": "L26_V035", "title": "CƠM GẠO LỨT DINH DƯỠNG"},
+            {"video_id": "L26_V036", "title": "GÀ NƯỚNG MẬT ONG NGON KHÓ CƯỠNG"},
+        ]
+    )
+
+    results = await store.search_videos_by_title("Gà", top_k=100)
+
+    assert [doc["video_id"] for doc in results] == ["L26_V036"]
+    assert results[0]["title_match_type"] == "token"
+    assert results[0]["title_matched_text"] == "gà"

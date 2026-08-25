@@ -16,7 +16,8 @@ export interface ResultGridProps {
   onOpenDetail?: (hit: SearchHit) => void
 }
 
-const CARD_SIZE_PX = 160
+const CARD_WIDTH_PX = 220
+const CARD_HEIGHT_PX = 160
 const GAP_PX = 4
 
 // plan §P1.6: "Virtualized rendering cho lưới hàng nghìn thumbnail" --
@@ -43,14 +44,14 @@ export function ResultGrid({
 
   const columns = Math.max(
     1,
-    Math.floor((scrollRef.current?.clientWidth ?? CARD_SIZE_PX) / (CARD_SIZE_PX + GAP_PX)),
+    Math.floor((scrollRef.current?.clientWidth ?? CARD_WIDTH_PX) / (CARD_WIDTH_PX + GAP_PX)),
   )
   const rowCount = Math.ceil(hits.length / columns)
 
   const rowVirtualizer = useVirtualizer({
     count: rowCount,
     getScrollElement: () => scrollElementRef?.current ?? scrollRef.current,
-    estimateSize: () => CARD_SIZE_PX + GAP_PX,
+    estimateSize: () => CARD_HEIGHT_PX + GAP_PX,
     scrollMargin,
     overscan: 3,
   })
@@ -84,14 +85,15 @@ export function ResultGrid({
                 transform: `translateY(${virtualRow.start - scrollMargin}px)`,
               }}
             >
-              {rowHits.map((hit) => (
+              {rowHits.map((hit, columnIndex) => (
                 <div
                   key={hit.keyframe_id}
                   className={styles.cell}
-                  style={{ width: CARD_SIZE_PX, height: CARD_SIZE_PX }}
+                  style={{ width: CARD_WIDTH_PX, height: CARD_HEIGHT_PX }}
                 >
                   <ResultCard
                     hit={hit}
+                    rank={hit.fused_image_rank ?? rowStart + columnIndex + 1}
                     selected={hit.keyframe_id === selectedKeyframeId}
                     manuallySelected={manuallySelectedKeys?.has(`${hit.video_id}:${hit.frame_idx}`)}
                     manualSelectionLabel={manualSelectionLabel}

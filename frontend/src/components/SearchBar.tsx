@@ -11,10 +11,16 @@ import { QueryInput } from './QueryInput'
 import styles from './SearchBar.module.css'
 
 export interface SearchBarProps {
+  textQueries: string[]
+  onTextQueryChange: (index: number, value: string) => void
+  onAddTextQuery: () => void
+  onRemoveTextQuery: (index: number) => void
   globalTextQuery: string
   textCandidateK: number
   ocrQuery: string
   ocrCandidateK: number
+  titleQuery: string
+  titleCandidateK: number
   asrQuery: string
   asrVideoCandidateK: number
   asrGate: AsrGate | null
@@ -23,12 +29,15 @@ export interface SearchBarProps {
   candidatePoolSize: number | null
   textCandidateCount: number
   ocrCandidateCount: number
+  titleCandidateCount: number
   stage2Queries: KisQueryRow[]
   finalTopK: number
   onGlobalTextQueryChange: (value: string) => void
   onTextCandidateKChange: (value: number) => void
   onOcrQueryChange: (value: string) => void
   onOcrCandidateKChange: (value: number) => void
+  onTitleQueryChange: (value: string) => void
+  onTitleCandidateKChange: (value: number) => void
   onAsrQueryChange: (value: string) => void
   onAsrVideoCandidateKChange: (value: number) => void
   onStage2QueryTextChange: (id: string, value: string) => void
@@ -49,10 +58,16 @@ export interface SearchBarProps {
 
 export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function SearchBar(
   {
+    textQueries,
+    onTextQueryChange,
+    onAddTextQuery,
+    onRemoveTextQuery,
     globalTextQuery,
     textCandidateK,
     ocrQuery,
     ocrCandidateK,
+    titleQuery,
+    titleCandidateK,
     asrQuery,
     asrVideoCandidateK,
     asrGate,
@@ -61,12 +76,15 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
     candidatePoolSize,
     textCandidateCount,
     ocrCandidateCount,
+    titleCandidateCount,
     stage2Queries,
     finalTopK,
     onGlobalTextQueryChange,
     onTextCandidateKChange,
     onOcrQueryChange,
     onOcrCandidateKChange,
+    onTitleQueryChange,
+    onTitleCandidateKChange,
     onAsrQueryChange,
     onAsrVideoCandidateKChange,
     onStage2QueryTextChange,
@@ -86,7 +104,10 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
   },
   ref,
 ) {
-  const hasStage1Input = globalTextQuery.trim().length > 0 || ocrQuery.trim().length > 0
+  const hasTextInput = textQueries.some((query) => query.trim().length > 0)
+  const hasAsrInput = !asrDisabled && asrQuery.trim().length > 0
+  const hasStage1Input =
+    hasTextInput || ocrQuery.trim().length > 0 || titleQuery.trim().length > 0 || hasAsrInput
   const activeStage2Queries = stage2Queries.filter((row) =>
     row.type === 'abe'
       ? row.pairs.some((pair) => pair.attribute.trim() && pair.object.trim())
@@ -116,17 +137,45 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
           )}
         </div>
         <div className={styles.stageGrid}>
-          <label className={styles.fieldWide}>
-            <span>Text Q0 (FG-CLIP)</span>
-            <QueryInput
-              ref={ref}
-              aria-label="text q0"
-              type="text"
-              placeholder="Five men sitting on a boat at night..."
-              value={globalTextQuery}
-              onValueChange={onGlobalTextQueryChange}
-            />
-          </label>
+          <div className={styles.fieldWide}>
+            <div className={styles.queryListHeader}>
+              <span>Text queries (FG-CLIP)</span>
+              <button type="button" className={styles.addInlineButton} onClick={onAddTextQuery}>
+                + Add query
+              </button>
+            </div>
+            <div className={styles.textQueryList}>
+              {textQueries.map((query, index) => (
+                <div className={styles.textQueryRow} key={`stage1-text-${index}`}>
+                  <QueryInput
+                    ref={index === 0 ? ref : undefined}
+                    aria-label={index === 0 ? 'text q0' : `text q${index + 1}`}
+                    type="text"
+                    placeholder={
+                      index === 0
+                        ? 'Aerial view of a dam and reservoir...'
+                        : 'Concrete dam under heavy rain...'
+                    }
+                    value={query}
+                    onValueChange={(value) => {
+                      if (index === 0) onGlobalTextQueryChange(value)
+                      else onTextQueryChange(index, value)
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className={styles.removeMini}
+                    disabled={textQueries.length === 1}
+                    aria-label={`remove text query ${index + 1}`}
+                    title="Remove query"
+                    onClick={() => onRemoveTextQuery(index)}
+                  >
+                    x
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
           <NumberField
             label="Text candidates"
             ariaLabel="text candidates"
@@ -156,19 +205,37 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
             onChange={onOcrCandidateKChange}
           />
           <label className={styles.fieldWide}>
-            <span>Optional ASR topic/dialogue</span>
+            <span>Optional Title OCR</span>
+            <QueryInput
+              aria-label="stage 1 title"
+              type="text"
+              placeholder="chicken, football, rain..."
+              value={titleQuery}
+              onValueChange={onTitleQueryChange}
+            />
+          </label>
+          <NumberField
+            label="Title OCR candidates"
+            ariaLabel="title candidates"
+            value={titleCandidateK}
+            min={1}
+            max={MAX_CANDIDATE_K}
+            onChange={onTitleCandidateKChange}
+          />
+          <label className={styles.fieldWide}>
+            <span>Optional ASR keyword/phrase</span>
             <QueryInput
               aria-label="stage 1 asr"
               type="text"
               maxLength={MAX_ASR_QUERY_LENGTH}
-              placeholder="công trình thủy lợi đập hồ chứa"
+              placeholder="con cá, cân, bao nhiêu ký"
               value={asrQuery}
               disabled={asrDisabled}
               onValueChange={onAsrQueryChange}
             />
           </label>
           <NumberField
-            label="ASR candidate videos"
+            label="ASR max videos"
             ariaLabel="asr candidate videos"
             value={asrVideoCandidateK}
             min={1}
@@ -188,21 +255,21 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
             type="button"
             className={styles.enhancer}
             disabled={!globalTextQuery.trim() || enhanceLoading}
-            title="Viết lại Text Q0 bằng AI (QUEST nhánh 1)"
+            title="Viet lai Text Q0 bang AI (QUEST nhanh 1)"
             onClick={() => onEnhance(globalTextQuery)}
           >
             AI enhancer{enhanceLoading ? '...' : ''}
           </button>
           {candidatePoolSize !== null && (
             <span className={styles.poolBreakdown}>
-              {`Text ${textCandidateCount} · OCR ${ocrCandidateCount}${
-                asrGate ? ` · ASR ${asrGate.candidate_video_count} videos` : ''
+              {`Text ${textCandidateCount} · OCR ${ocrCandidateCount} · Title OCR ${titleCandidateCount}${
+                asrGate ? ` · ASR ${asrGate.candidate_video_count} detected` : ''
               }`}
             </span>
           )}
           {asrGate?.candidate_video_count === 0 && (
             <span className={styles.hint}>
-              No transcript video matched—clear or revise the ASR query.
+              No transcript video matched - clear or revise the ASR query.
             </span>
           )}
         </div>
@@ -211,7 +278,7 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
       {candidatePoolSize !== null && (
         <section className={styles.stage}>
           <div className={styles.stageHeader}>
-            <span>Stage 2 — Constraint Reranking</span>
+            <span>Stage 2 - Constraint Reranking</span>
             <strong>Candidate Pool: {candidatePoolSize}</strong>
           </div>
           <div className={styles.queryList}>
@@ -271,7 +338,7 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
                           title="Remove pair"
                           onClick={() => onRemoveAbePair(row.id, pair.id)}
                         >
-                          ×
+                          x
                         </button>
                       </div>
                     ))}
@@ -305,7 +372,7 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
                   title="Remove query"
                   onClick={() => onRemoveStage2Query(row.id)}
                 >
-                  ×
+                  x
                 </button>
               </div>
             ))}

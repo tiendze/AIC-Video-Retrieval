@@ -248,33 +248,38 @@ async def test_score_by_ids_returns_empty_dict_for_empty_input(monkeypatch):
     assert store._client.search_calls == []
 
 
-async def test_asr_search_returns_exact_total_hits_and_typed_hits(monkeypatch):
+async def test_asr_scroll_all_returns_source_documents(monkeypatch):
     store = _store(monkeypatch)
-    store._client.search_response = {
-        "hits": {
-            "total": {"value": 57, "relation": "eq"},
-            "hits": [
-                {
-                    "_score": 8.73,
-                    "_source": {
-                        "segment_id": "L21_V001_seg10",
-                        "video_id": "L21_V001",
-                        "text": "cong trinh thuy loi",
-                        "start_time": 151.2,
-                        "end_time": 158.4,
-                        "start_frame_idx": 3780,
-                        "end_frame_idx": 3960,
-                    },
-                }
-            ],
+    docs = [
+        {
+            "segment_id": "L21_V001_seg10",
+            "video_id": "L21_V001",
+            "text": "cong trinh thuy loi",
+            "start_time": 151.2,
+            "end_time": 158.4,
+            "start_frame_idx": 3780,
+            "end_frame_idx": 3960,
         }
-    }
+    ]
+    scan_calls: list[dict] = []
 
-    result = await store.search("cong trinh thuy loi", 200)
+    async def fake_async_scan(client, index, query):
+        scan_calls.append({"client": client, "index": index, "query": query})
+        for doc in docs:
+            yield {"_source": doc}
 
-    assert result.total_hits == 57
-    assert result.hits[0].score == 8.73
-    assert store._client.search_calls[0]["track_total_hits"] is True
+    monkeypatch.setattr("app.stores.es_client.async_scan", fake_async_scan)
+
+    result = [doc async for doc in store.scroll_all()]
+
+    assert result == docs
+    assert scan_calls == [
+        {
+            "client": store._client,
+            "index": "asr_segments",
+            "query": {"query": {"match_all": {}}},
+        }
+    ]
 
 
 async def test_asr_index_exists_uses_indices_exists(monkeypatch):

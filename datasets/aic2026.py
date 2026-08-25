@@ -116,8 +116,17 @@ class AIC2026Adapter:
         if metadata is None:
             raise FileNotFoundError(
                 f"No metadata file for {video_id}; publish_date is unavailable."
-            )
+        )
         return datetime.strptime(metadata["publish_date"], _PUBLISH_DATE_FORMAT).date()
+
+    def load_metadata(self, video_id: str) -> dict | None:
+        """Returns the organiser metadata JSON for `video_id`, when present.
+
+        This is separate from `iter_videos()` because some import paths have
+        keyframe/vector artifacts and metadata locally, but not the raw `.mp4`
+        files that `iter_videos()` uses for video discovery.
+        """
+        return self._load_metadata(video_id)
 
     def load_reference_keyframes(self, video_id: str) -> Sequence[ReferenceKeyframe]:
         """Reads `map-keyframes/<video_id>.csv` — every value is a string on

@@ -90,6 +90,37 @@ class TestVerifyManifest:
 
         verify_manifest(manifest, local_config, checkpoint_dir)  # does not raise
 
+    def test_skip_checkpoint_parity_does_not_require_local_model_files(self, tmp_path):
+        manifest = {
+            "model_id": "models/PhoWhisper-large-ct2",
+            "checkpoint_sha256": "not-checked",
+            "vocabulary_sha256": "not-checked",
+        }
+        local_config = AsrConfig(model_id="models/PhoWhisper-large-ct2")
+
+        verify_manifest(
+            manifest,
+            local_config,
+            tmp_path / "missing-checkpoint",
+            skip_checkpoint_parity=True,
+        )
+
+    def test_skip_checkpoint_parity_still_rejects_model_id_mismatch(self, tmp_path):
+        manifest = {
+            "model_id": "models/OtherModel-ct2",
+            "checkpoint_sha256": "not-checked",
+            "vocabulary_sha256": "not-checked",
+        }
+        local_config = AsrConfig(model_id="models/PhoWhisper-large-ct2")
+
+        with pytest.raises(AsrArtifactError, match="model_id mismatch"):
+            verify_manifest(
+                manifest,
+                local_config,
+                tmp_path / "missing-checkpoint",
+                skip_checkpoint_parity=True,
+            )
+
 
 class TestDiscoverVideoIds:
     def test_returns_sorted_video_ids_from_jsonl_filenames(self, tmp_path):

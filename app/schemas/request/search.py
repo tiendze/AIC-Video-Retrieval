@@ -25,6 +25,7 @@ MAX_TOP_K: int = _config["max_top_k"]
 DEFAULT_TEXT_CANDIDATE_K: int = _config["default_text_candidate_k"]
 DEFAULT_OCR_CANDIDATE_K: int = _config["default_ocr_candidate_k"]
 MAX_CANDIDATE_K: int = _config["max_candidate_k"]
+DEFAULT_TITLE_CANDIDATE_K: int = _config.get("default_title_candidate_k", DEFAULT_OCR_CANDIDATE_K)
 DEFAULT_ASR_VIDEO_CANDIDATE_K: int = _config["default_asr_video_candidate_k"]
 MAX_ASR_VIDEO_CANDIDATE_K: int = _config["max_asr_video_candidate_k"]
 MAX_ASR_QUERY_LENGTH: int = _config["max_asr_query_length"]
@@ -90,25 +91,73 @@ def _blank_to_none(value: str | None) -> str | None:
 
 class KisCandidateRequest(BaseModel):
     text_query: str | None = None
+    text_queries: list[str] = Field(default_factory=list)
     text_top_k: int = Field(default=DEFAULT_TEXT_CANDIDATE_K, ge=1, le=MAX_CANDIDATE_K)
     ocr_query: str | None = None
     ocr_top_k: int = Field(default=DEFAULT_OCR_CANDIDATE_K, ge=1, le=MAX_CANDIDATE_K)
+    title_query: str | None = None
+    title_top_k: int = Field(default=DEFAULT_TITLE_CANDIDATE_K, ge=1, le=MAX_CANDIDATE_K)
     asr_query: str | None = Field(default=None, max_length=MAX_ASR_QUERY_LENGTH)
+    asr_queries: list[str] = Field(default_factory=list)
+    asr_match_mode: Literal["any", "all"] = "any"
     asr_video_top_k: int = Field(
         default=DEFAULT_ASR_VIDEO_CANDIDATE_K,
         ge=1,
         le=MAX_ASR_VIDEO_CANDIDATE_K,
     )
 
-    @field_validator("text_query", "ocr_query", "asr_query", mode="before")
+    @field_validator("text_query", "ocr_query", "title_query", "asr_query", mode="before")
     @classmethod
     def empty_strings_are_absent(cls, value: str | None) -> str | None:
         return _blank_to_none(value)
 
+    @field_validator("text_queries", mode="before")
+    @classmethod
+    def text_queries_accepts_single_string(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [value]
+        return value  # type: ignore[return-value]
+
+    @field_validator("asr_queries", mode="before")
+    @classmethod
+    def asr_queries_accepts_single_string(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [value]
+        return value  # type: ignore[return-value]
+
     @model_validator(mode="after")
     def at_least_one_stage1_query(self) -> KisCandidateRequest:
-        if self.text_query is None and self.ocr_query is None:
-            raise ValueError("Stage 1 requires Text Q0 or OCR query")
+        normalized_text_queries: list[str] = []
+        if self.text_query is not None:
+            normalized_text_queries.append(self.text_query)
+        for query in self.text_queries:
+            stripped = query.strip()
+            if stripped:
+                normalized_text_queries.append(stripped)
+        self.text_queries = list(dict.fromkeys(normalized_text_queries))
+        self.text_query = self.text_queries[0] if self.text_queries else None
+        normalized_asr_queries: list[str] = []
+        if self.asr_query is not None:
+            normalized_asr_queries.append(self.asr_query)
+        for query in self.asr_queries:
+            stripped = query.strip()
+            if stripped:
+                if len(stripped) > MAX_ASR_QUERY_LENGTH:
+                    raise ValueError("ASR query must be at most max_asr_query_length")
+                normalized_asr_queries.append(stripped)
+        self.asr_queries = list(dict.fromkeys(normalized_asr_queries))
+        self.asr_query = self.asr_queries[0] if self.asr_queries else None
+        if (
+            self.text_query is None
+            and self.ocr_query is None
+            and self.title_query is None
+            and not self.asr_queries
+        ):
+            raise ValueError("Stage 1 requires Text, OCR, Title, or ASR query")
         return self
 
 

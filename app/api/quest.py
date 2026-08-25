@@ -24,17 +24,17 @@ from app.schemas.response.quest import (
     ImageCandidateResponse,
     ImageCandidatesResponse,
     ImageSearchResponse,
+    QuestSearchHitResponse,
     QueryRewriteResponse,
 )
-from app.schemas.response.search import SearchHitResponse
 from app.services.quest_service import QueryRewriteService, QuestService, QuestServiceError
 from app.services.search_service import SearchHit
 
 router = APIRouter()
 
 
-def _to_hit_response(hit: SearchHit) -> SearchHitResponse:
-    return SearchHitResponse(
+def _to_hit_response(hit: SearchHit) -> QuestSearchHitResponse:
+    return QuestSearchHitResponse(
         keyframe_id=hit.keyframe_id,
         video_id=hit.video_id,
         score=hit.score,

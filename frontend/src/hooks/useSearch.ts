@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   DEFAULT_ASR_VIDEO_CANDIDATE_K,
   DEFAULT_OCR_CANDIDATE_K,
+  DEFAULT_TITLE_CANDIDATE_K,
   DEFAULT_TEXT_CANDIDATE_K,
   DEFAULT_TOP_K,
 } from '../api/constants'
@@ -25,11 +26,17 @@ export interface KisCandidatePoolState {
   candidatePoolSize: number
   textCandidateCount: number
   ocrCandidateCount: number
+  titleCandidateCount: number
+  rrfK: number
   asrGate: AsrGate | null
   hits: SearchHit[]
 }
 
 export interface UseSearchResult {
+  textQueries: string[]
+  setTextQuery: (index: number, query: string) => void
+  addTextQuery: () => void
+  removeTextQuery: (index: number) => void
   globalTextQuery: string
   setGlobalTextQuery: (query: string) => void
   textCandidateK: number
@@ -38,6 +45,10 @@ export interface UseSearchResult {
   setOcrQuery: (query: string) => void
   ocrCandidateK: number
   setOcrCandidateK: (topK: number) => void
+  titleQuery: string
+  setTitleQuery: (query: string) => void
+  titleCandidateK: number
+  setTitleCandidateK: (topK: number) => void
   asrQuery: string
   setAsrQuery: (query: string) => void
   asrVideoCandidateK: number
@@ -70,12 +81,6 @@ export interface UseSearchResult {
   setResults: (hits: SearchHit[]) => void
   isLoading: boolean
   error: string | null
-  // Measured client-side (request start -> response parsed) -- prep for
-  // P1.7's p50/p95 latency table (plan §P1.6: "useSearch.ts đã đo latency
-  // sẵn để P1.7 chỉ việc thu thập"). QUEST-populated results reset this to
-  // null (via setLatencyMs) -- P1.7's measurement is specific to
-  // POST /api/search, so a stale number here would misrepresent a result
-  // set that came from a different endpoint entirely.
   latencyMs: number | null
   setLatencyMs: (latencyMs: number | null) => void
   // `overrideQuery` lets a caller search by exact text without first
@@ -95,10 +100,6 @@ export interface UseSearchOptions {
 
 type ResultsOwner = 'kis' | 'image' | 'external' | null
 
-// KIS Stage 2 rows are keyed by a stable id so removing a middle row never
-// re-associates focus/caret with the wrong input. AbortController cancels
-// an in-flight request when a newer one starts, so a slow first response
-// can't overwrite a later one's results.
 let kisRowIdCounter = 0
 function nextKisRowId(): string {
   kisRowIdCounter += 1
@@ -133,6 +134,13 @@ function activePayload(rows: KisQueryRow[]): KisQueryPayload[] {
     .filter((row): row is KisQueryPayload => row !== null)
 }
 
+function parseAsrQueries(value: string): string[] {
+  return value
+    .split(',')
+    .map((query) => query.trim())
+    .filter(Boolean)
+}
+
 function withAsrEvidence(
   hit: SearchHit,
   evidenceByVideo: Map<string, AsrVideoEvidence>,
@@ -142,10 +150,12 @@ function withAsrEvidence(
 }
 
 export function useSearch({ asrReady = true }: UseSearchOptions = {}): UseSearchResult {
-  const [globalTextQueryValue, setGlobalTextQueryValue] = useState('')
+  const [textQueriesValue, setTextQueriesValue] = useState<string[]>([''])
   const [textCandidateKValue, setTextCandidateKValue] = useState(DEFAULT_TEXT_CANDIDATE_K)
   const [ocrQueryValue, setOcrQueryValue] = useState('')
   const [ocrCandidateKValue, setOcrCandidateKValue] = useState(DEFAULT_OCR_CANDIDATE_K)
+  const [titleQueryValue, setTitleQueryValue] = useState('')
+  const [titleCandidateKValue, setTitleCandidateKValue] = useState(DEFAULT_TITLE_CANDIDATE_K)
   const [asrQueryValue, setAsrQueryValue] = useState('')
   const [asrVideoCandidateKValue, setAsrVideoCandidateKValue] = useState(
     DEFAULT_ASR_VIDEO_CANDIDATE_K,
@@ -161,7 +171,7 @@ export function useSearch({ asrReady = true }: UseSearchOptions = {}): UseSearch
   const kisAbortRef = useRef<AbortController | null>(null)
   const kisRequestGenerationRef = useRef(0)
   const resultsOwnerRef = useRef<ResultsOwner>(null)
-  const primaryTextQuery = globalTextQueryValue
+  const primaryTextQuery = textQueriesValue[0] ?? ''
 
   const invalidateCandidatePool = useCallback((preserveNonKisResults = false) => {
     kisRequestGenerationRef.current += 1
@@ -192,12 +202,44 @@ export function useSearch({ asrReady = true }: UseSearchOptions = {}): UseSearch
   }, [asrQueryValue, asrReady, invalidateCandidatePool])
 
   const setGlobalTextQuery = useCallback((query: string) => {
-    setGlobalTextQueryValue(query)
+    setTextQueriesValue((prev) => {
+      const next = prev.length > 0 ? [...prev] : ['']
+      next[0] = query
+      return next
+    })
+    invalidateCandidatePool()
+  }, [invalidateCandidatePool])
+
+  const setTextQuery = useCallback((index: number, query: string) => {
+    setTextQueriesValue((prev) => prev.map((value, i) => (i === index ? query : value)))
+    invalidateCandidatePool()
+  }, [invalidateCandidatePool])
+
+  const addTextQuery = useCallback(() => {
+    setTextQueriesValue((prev) => [...prev, ''])
+    invalidateCandidatePool()
+  }, [invalidateCandidatePool])
+
+  const removeTextQuery = useCallback((index: number) => {
+    setTextQueriesValue((prev) => {
+      const next = prev.filter((_, i) => i !== index)
+      return next.length > 0 ? next : ['']
+    })
     invalidateCandidatePool()
   }, [invalidateCandidatePool])
 
   const setOcrQuery = useCallback((query: string) => {
     setOcrQueryValue(query)
+    invalidateCandidatePool()
+  }, [invalidateCandidatePool])
+
+  const setTitleQuery = useCallback((query: string) => {
+    setTitleQueryValue(query)
+    invalidateCandidatePool()
+  }, [invalidateCandidatePool])
+
+  const setAsrQuery = useCallback((query: string) => {
+    setAsrQueryValue(query)
     invalidateCandidatePool()
   }, [invalidateCandidatePool])
 
@@ -211,8 +253,8 @@ export function useSearch({ asrReady = true }: UseSearchOptions = {}): UseSearch
     invalidateCandidatePool()
   }, [invalidateCandidatePool])
 
-  const setAsrQuery = useCallback((query: string) => {
-    setAsrQueryValue(query)
+  const setTitleCandidateK = useCallback((topK: number) => {
+    setTitleCandidateKValue(topK)
     invalidateCandidatePool()
   }, [invalidateCandidatePool])
 
@@ -307,10 +349,13 @@ export function useSearch({ asrReady = true }: UseSearchOptions = {}): UseSearch
   }, [])
 
   const retrieveCandidates = useCallback((overrideQuery?: string) => {
-    const textQuery = (overrideQuery ?? globalTextQueryValue).trim()
+    const textQueries = overrideQuery
+      ? [overrideQuery.trim()].filter(Boolean)
+      : textQueriesValue.map((query) => query.trim()).filter(Boolean)
     const ocrQuery = ocrQueryValue.trim()
-    const asrQuery = asrReady ? asrQueryValue.trim() : ''
-    if (!textQuery && !ocrQuery) return
+    const titleQuery = titleQueryValue.trim()
+    const asrQueries = asrReady ? parseAsrQueries(asrQueryValue) : []
+    if (textQueries.length === 0 && !ocrQuery && !titleQuery && asrQueries.length === 0) return
     abortRef.current?.abort()
     const controller = new AbortController()
     abortRef.current = controller
@@ -323,11 +368,16 @@ export function useSearch({ asrReady = true }: UseSearchOptions = {}): UseSearch
 
     retrieveKisCandidatesApi(
       {
-        text_query: textQuery || null,
+        text_query: textQueries[0] ?? null,
+        text_queries: textQueries,
         text_top_k: textCandidateKValue,
         ocr_query: ocrQuery || null,
         ocr_top_k: ocrCandidateKValue,
-        asr_query: asrQuery || null,
+        title_query: titleQuery || null,
+        title_top_k: titleCandidateKValue,
+        asr_query: asrQueries[0] ?? null,
+        asr_queries: asrQueries,
+        asr_match_mode: 'any',
         asr_video_top_k: asrVideoCandidateKValue,
       },
       controller.signal,
@@ -349,6 +399,8 @@ export function useSearch({ asrReady = true }: UseSearchOptions = {}): UseSearch
           candidatePoolSize: response.candidate_pool_size,
           textCandidateCount: response.text_candidate_count,
           ocrCandidateCount: response.ocr_candidate_count,
+          titleCandidateCount: response.title_candidate_count,
+          rrfK: response.rrf_k,
           asrGate,
           hits,
         }
@@ -379,10 +431,12 @@ export function useSearch({ asrReady = true }: UseSearchOptions = {}): UseSearch
     asrReady,
     asrVideoCandidateKValue,
     finalTopK,
-    globalTextQueryValue,
     ocrCandidateKValue,
     ocrQueryValue,
     textCandidateKValue,
+    textQueriesValue,
+    titleCandidateKValue,
+    titleQueryValue,
   ])
 
   const rerankCandidates = useCallback(() => {
@@ -479,7 +533,11 @@ export function useSearch({ asrReady = true }: UseSearchOptions = {}): UseSearch
   }, [finalTopK])
 
   return {
-    globalTextQuery: globalTextQueryValue,
+    textQueries: textQueriesValue,
+    setTextQuery,
+    addTextQuery,
+    removeTextQuery,
+    globalTextQuery: primaryTextQuery,
     setGlobalTextQuery,
     textCandidateK: textCandidateKValue,
     setTextCandidateK,
@@ -487,6 +545,10 @@ export function useSearch({ asrReady = true }: UseSearchOptions = {}): UseSearch
     setOcrQuery,
     ocrCandidateK: ocrCandidateKValue,
     setOcrCandidateK,
+    titleQuery: titleQueryValue,
+    setTitleQuery,
+    titleCandidateK: titleCandidateKValue,
+    setTitleCandidateK,
     asrQuery: asrQueryValue,
     setAsrQuery,
     asrVideoCandidateK: asrVideoCandidateKValue,

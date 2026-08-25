@@ -21,7 +21,9 @@ from PIL import Image
 
 from app.services.abe import AbeQueryComponents, AbeRankedQuery
 from app.services.asr_retrieval_service import (
+    AsrEvidenceSegment,
     AsrGateResult,
+    AsrQueryMatch,
     AsrRetrievalService,
     AsrRetrievalUnavailable,
     AsrVideoEvidence,
@@ -82,10 +84,10 @@ class _FakeMilvusStore:
     ) -> None:
         self._hits = hits
         self._vector_rows = vector_rows or {}
-        # Lets a multi-sentence Stage 1 test give each split piece its own
-        # distinct hit set (a real per-vector Milvus search would), instead of
-        # every call returning the same static `hits` -- `None` (the default)
-        # preserves every existing single-query test unchanged.
+        # Lets a multi-query/multi-sentence Stage 1 test give each vector its
+        # own distinct hit set (a real per-vector Milvus search would),
+        # instead of every call returning the same static `hits` -- `None`
+        # (the default) preserves every existing single-query test unchanged.
         self._hits_by_call = hits_by_call
         self.search_calls: list[dict[str, Any]] = []
         self.get_vectors_by_ids_calls: list[list[str]] = []
@@ -170,42 +172,70 @@ class _FakeEsStoreDown:
 class FakeAsrService:
     def __init__(self, result: AsrGateResult) -> None:
         self.result = result
-        self.calls: list[tuple[str, int]] = []
+        self.calls: list[tuple[list[str], int, str]] = []
 
-    async def retrieve(self, query: str, video_top_k: int) -> AsrGateResult:
-        self.calls.append((query, video_top_k))
+    async def retrieve(self, query, video_top_k: int, match_mode: str = "any") -> AsrGateResult:
+        queries = list(query) if not isinstance(query, str) else [query]
+        self.calls.append((queries, video_top_k, match_mode))
         return self.result
 
 
 class FailingAsrService:
-    async def retrieve(self, query: str, video_top_k: int) -> AsrGateResult:
+    async def retrieve(self, query, video_top_k: int, match_mode: str = "any") -> AsrGateResult:
         raise AsrRetrievalUnavailable("simulated ASR failure")
 
 
 def gate_result(video_ids: Sequence[str]) -> AsrGateResult:
+    query = "hydraulic"
+    matches = [
+        AsrQueryMatch(
+            query=query,
+            detected=bool(video_ids),
+            matches=[],
+        )
+    ]
     return AsrGateResult(
-        query="hydraulic",
-        segment_hit_count=len(video_ids),
+        queries=[query],
+        match_mode="any",
+        scanned_segment_count=len(video_ids),
+        asr_matches=matches,
         videos=[
             AsrVideoEvidence(
                 video_id=video_id,
-                video_rank=rank,
-                best_bm25_score=float(len(video_ids) - rank + 1),
+                detected=True,
+                asr_matches=matches,
                 segments=[],
             )
-            for rank, video_id in enumerate(video_ids, start=1)
+            for video_id in video_ids
         ],
     )
 
 
 class _FakeMongoStore:
-    def __init__(self, docs_by_id: dict[str, dict[str, Any]]) -> None:
+    def __init__(
+        self,
+        docs_by_id: dict[str, dict[str, Any]],
+        videos_by_title: list[dict[str, Any]] | None = None,
+        keyframes_by_video: dict[str, list[dict[str, Any]]] | None = None,
+    ) -> None:
         self._docs_by_id = docs_by_id
+        self._videos_by_title = videos_by_title or []
+        self._keyframes_by_video = keyframes_by_video or {}
         self.get_keyframes_by_ids_calls: list[list[str]] = []
+        self.search_videos_by_title_calls: list[tuple[str, int]] = []
+        self.get_keyframes_for_video_calls: list[str] = []
 
     async def get_keyframes_by_ids(self, keyframe_ids) -> dict[str, dict[str, Any]]:
         self.get_keyframes_by_ids_calls.append(list(keyframe_ids))
         return {kid: self._docs_by_id[kid] for kid in keyframe_ids if kid in self._docs_by_id}
+
+    async def search_videos_by_title(self, query_text: str, top_k: int) -> list[dict[str, Any]]:
+        self.search_videos_by_title_calls.append((query_text, top_k))
+        return self._videos_by_title[:top_k]
+
+    async def get_keyframes_for_video(self, video_id: str) -> list[dict[str, Any]]:
+        self.get_keyframes_for_video_calls.append(video_id)
+        return self._keyframes_by_video.get(video_id, [])
 
 
 class _FakeQueryTranslator:
@@ -234,6 +264,8 @@ def _service(
     bm25_scores_by_query: dict[str, dict[str, float]] | None = None,
     text_vectors_by_query: dict[str, np.ndarray] | None = None,
     model_id: str = "fake-encoder",
+    title_video_hits: list[dict[str, Any]] | None = None,
+    keyframes_by_video: dict[str, list[dict[str, Any]]] | None = None,
     asr_service: AsrRetrievalService | None = None,
 ) -> tuple[SearchService, _FakeEncoder, _FakeMilvusStore, _FakeEsStore, _FakeMongoStore]:
     default_vector = np.zeros((1, 4), dtype=np.float32)
@@ -248,7 +280,9 @@ def _service(
     es_store = _FakeEsStore(
         es_hits or [], texts_by_id=ocr_texts_by_id, scores_by_query=bm25_scores_by_query
     )
-    mongo_store = _FakeMongoStore(mongo_docs or {})
+    mongo_store = _FakeMongoStore(
+        mongo_docs or {}, videos_by_title=title_video_hits, keyframes_by_video=keyframes_by_video
+    )
     service_kwargs: dict[str, Any] = {}
     if asr_service is not None:
         service_kwargs["asr_retrieval_service"] = asr_service
@@ -579,9 +613,7 @@ async def test_kis_stage1_text_splits_a_multi_sentence_query_and_unions_candidat
         ocr_top_k=5,
     )
 
-    assert encoder.encode_text_calls == [
-        ["Con lân đứng ở cột.", "Sau đó nhảy sang cột khác."]
-    ]
+    assert encoder.encode_text_calls == [["Con lân đứng ở cột.", "Sau đó nhảy sang cột khác."]]
     assert len(milvus_store.search_calls) == 2
     assert es_store.search_calls == []
     assert sorted(pool.candidate_ids) == ["A", "B"]
@@ -617,15 +649,18 @@ async def test_kis_stage1_text_single_sentence_query_still_makes_exactly_one_mil
     assert len(milvus_store.search_calls) == 1
 
 
-async def test_kis_stage1_text_keeps_the_higher_cosine_when_a_candidate_matches_both_sentences():
-    # A candidate that Milvus surfaces for BOTH sentences must be scored by
-    # its BEST match, not whichever sentence happened to search first -- the
-    # OR semantics this whole feature exists for (docs/research-query-
-    # refinement.md §4-§5: Stage 1 is OR, Stage 2 stays AND).
+async def test_kis_stage1_text_fuses_scores_from_both_sentences_a_candidate_matches():
+    # A sentence-split query reuses the SAME multi-query union + fused-score
+    # pipeline `text_queries` (explicit multi-box Stage 1) already uses
+    # (merge 2026-08-25 with origin/main's "multiple query stage 1" feature):
+    # candidate ids still union across sentences (OR, unchanged recall), but
+    # the display/fused score sums each sentence's cosine rather than taking
+    # the max -- a candidate matching MORE of the split sentences ranks
+    # higher. Per-sentence detail survives in stage1.text_queries.
     sentence1_vector = np.array([1.0, 0.0], dtype=np.float32)
     sentence2_vector = np.array([0.0, 1.0], dtype=np.float32)
     # A's stored embedding matches sentence2 perfectly (cosine=1.0) and
-    # sentence1 not at all (cosine=0.0) -- the max across sentences must win.
+    # sentence1 not at all (cosine=0.0) -- fused score is their sum, 1.0.
     a_embedding = np.array([0.0, 1.0], dtype=np.float32)
     hit_a_from_sentence1 = {
         "keyframe_id": "A",
@@ -654,8 +689,12 @@ async def test_kis_stage1_text_keeps_the_higher_cosine_when_a_candidate_matches_
         text_query="Câu một. Câu hai.", text_top_k=2, ocr_query=None, ocr_top_k=5
     )
 
-    assert pool.results[0].stage1.text.raw_cosine == pytest.approx(1.0)
-    assert pool.results[0].stage1.text.query == "Câu hai."
+    assert pool.results[0].fused_image_score == pytest.approx(1.0)
+    per_sentence = {score.query: score.raw_cosine for score in pool.results[0].stage1.text_queries}
+    assert per_sentence == {
+        "Câu một.": pytest.approx(0.0),
+        "Câu hai.": pytest.approx(1.0),
+    }
 
 
 async def test_kis_stage1_text_and_ocr_use_independent_k_and_deduplicate_union():
@@ -726,10 +765,197 @@ async def test_kis_stage1_text_and_ocr_use_independent_k_and_deduplicate_union()
     assert pool.candidate_pool_size == 3
     assert pool.text_candidate_count == 2
     assert pool.ocr_candidate_count == 2
-    assert [hit.keyframe_id for hit in pool.results] == ["B", "A", "C"]
-    assert pool.results[0].stage1.source_modalities == ["text", "ocr"]
-    assert pool.results[1].stage1.source_modalities == ["text"]
-    assert pool.results[1].stage1.ocr.query_score == pytest.approx(0.0)
+    assert [hit.keyframe_id for hit in pool.results] == ["A", "B", "C"]
+    assert pool.results[0].score == pytest.approx(0.9)
+    assert pool.results[1].score == pytest.approx(0.8)
+    assert pool.results[1].stage1.source_modalities == ["text", "ocr"]
+    assert pool.results[1].stage1.ocr.query_score == pytest.approx(1.0)
+    assert pool.results[0].stage1.source_modalities == ["text"]
+    assert pool.results[0].stage1.ocr.query_score == pytest.approx(0.0)
+
+
+async def test_kis_stage1_multi_text_queries_union_deduplicate_and_fuse_true_cosines():
+    hits_q1 = [
+        {
+            "keyframe_id": "A",
+            "distance": 1.0,
+            "entity": {"video_id": "VA", "frame_idx": 10, "timestamp": 0.4},
+        },
+        {
+            "keyframe_id": "B",
+            "distance": 0.9,
+            "entity": {"video_id": "VB", "frame_idx": 20, "timestamp": 0.8},
+        },
+        {
+            "keyframe_id": "C",
+            "distance": 0.2,
+            "entity": {"video_id": "VC", "frame_idx": 30, "timestamp": 1.2},
+        },
+    ]
+    hits_q2 = [
+        {
+            "keyframe_id": "B",
+            "distance": 0.1,
+            "entity": {"video_id": "VB", "frame_idx": 20, "timestamp": 0.8},
+        },
+        {
+            "keyframe_id": "C",
+            "distance": 0.8,
+            "entity": {"video_id": "VC", "frame_idx": 30, "timestamp": 1.2},
+        },
+        {
+            "keyframe_id": "D",
+            "distance": 1.0,
+            "entity": {"video_id": "VD", "frame_idx": 40, "timestamp": 1.6},
+        },
+    ]
+    vector_rows = {
+        "A": {
+            "keyframe_id": "A",
+            "embedding": np.array([1.0, 0.0], dtype=np.float32),
+            "video_id": "VA",
+            "frame_idx": 10,
+            "timestamp": 0.4,
+        },
+        "B": {
+            "keyframe_id": "B",
+            "embedding": np.array([1.0, 1.0], dtype=np.float32),
+            "video_id": "VB",
+            "frame_idx": 20,
+            "timestamp": 0.8,
+        },
+        "C": {
+            "keyframe_id": "C",
+            "embedding": np.array([0.0, 1.0], dtype=np.float32),
+            "video_id": "VC",
+            "frame_idx": 30,
+            "timestamp": 1.2,
+        },
+        "D": {
+            "keyframe_id": "D",
+            "embedding": np.array([0.5, 1.0], dtype=np.float32),
+            "video_id": "VD",
+            "frame_idx": 40,
+            "timestamp": 1.6,
+        },
+    }
+    mongo_docs = {
+        keyframe_id: {
+            "video_id": row["video_id"],
+            "frame_idx": row["frame_idx"],
+            "timestamp": row["timestamp"],
+            "thumbnail_path": f"{keyframe_id}.jpg",
+        }
+        for keyframe_id, row in vector_rows.items()
+    }
+    service, encoder, milvus_store, es_store, _ = _service(
+        mongo_docs=mongo_docs,
+        vector_rows=vector_rows,
+        milvus_hits_by_call=[hits_q1, hits_q2],
+        text_vectors_by_query={
+            "horizontal": np.array([1.0, 0.0], dtype=np.float32),
+            "vertical": np.array([0.0, 1.0], dtype=np.float32),
+        },
+    )
+
+    pool = await service.retrieve_kis_candidates(
+        text_query=None,
+        text_queries=["horizontal", "vertical"],
+        text_top_k=3,
+        ocr_query=None,
+        ocr_top_k=5,
+    )
+
+    assert encoder.encode_text_calls == [["horizontal", "vertical"]]
+    assert [call["top_k"] for call in milvus_store.search_calls] == [3, 3]
+    assert es_store.search_calls == []
+    assert pool.candidate_ids == ["A", "B", "C", "D"]
+    assert pool.text_candidate_count == 4
+    assert len({(hit.video_id, hit.frame_idx) for hit in pool.results}) == 4
+    by_id = {hit.keyframe_id: hit for hit in pool.results}
+    assert by_id["A"].stage1.text_queries[0].original_rank == 1
+    assert by_id["A"].stage1.text_queries[1].original_rank is None
+    assert by_id["A"].stage1.text_queries[1].raw_cosine == pytest.approx(0.0)
+    assert by_id["B"].score == pytest.approx(2 * (0.5**0.5))
+    assert [hit.keyframe_id for hit in pool.results][:2] == ["B", "D"]
+
+
+async def test_kis_stage1_multi_text_deduplicates_identical_video_frame_identity():
+    hits_q1 = [
+        {
+            "keyframe_id": "A1",
+            "distance": 0.9,
+            "entity": {"video_id": "V1", "frame_idx": 10, "timestamp": 0.4},
+        },
+        {
+            "keyframe_id": "A2",
+            "distance": 0.8,
+            "entity": {"video_id": "V1", "frame_idx": 10, "timestamp": 0.4},
+        },
+        {
+            "keyframe_id": "B",
+            "distance": 0.7,
+            "entity": {"video_id": "V1", "frame_idx": 20, "timestamp": 0.8},
+        },
+    ]
+    mongo_docs = {
+        "A1": {"video_id": "V1", "frame_idx": 10, "timestamp": 0.4, "thumbnail_path": "a.jpg"},
+        "B": {"video_id": "V1", "frame_idx": 20, "timestamp": 0.8, "thumbnail_path": "b.jpg"},
+    }
+    service, *_ = _service(
+        mongo_docs=mongo_docs,
+        milvus_hits_by_call=[hits_q1],
+        text_vectors_by_query={"query": np.array([1.0, 0.0], dtype=np.float32)},
+    )
+
+    pool = await service.retrieve_kis_candidates(
+        text_query=None,
+        text_queries=["query"],
+        text_top_k=3,
+        ocr_query=None,
+        ocr_top_k=5,
+    )
+
+    assert pool.candidate_ids == ["A1", "B"]
+    assert [(hit.video_id, hit.frame_idx) for hit in pool.results] == [("V1", 10), ("V1", 20)]
+
+
+async def test_kis_stage1_title_query_uses_video_title_metadata_without_ocr_or_milvus():
+    keyframes_by_video = {
+        "V1": [
+            {
+                "keyframe_id": "A",
+                "video_id": "V1",
+                "frame_idx": 10,
+                "timestamp": 0.4,
+                "thumbnail_path": "a.jpg",
+            }
+        ]
+    }
+    mongo_docs = {
+        "A": {"video_id": "V1", "frame_idx": 10, "timestamp": 0.4, "thumbnail_path": "a.jpg"}
+    }
+    service, _, milvus_store, es_store, mongo_store = _service(
+        mongo_docs=mongo_docs,
+        title_video_hits=[{"video_id": "V1", "title": "Chicken soup recipe", "score": 2.0}],
+        keyframes_by_video=keyframes_by_video,
+    )
+
+    pool = await service.retrieve_kis_candidates(
+        text_query=None,
+        text_top_k=5,
+        ocr_query=None,
+        ocr_top_k=5,
+        title_query="chicken",
+        title_top_k=1,
+    )
+
+    assert milvus_store.search_calls == []
+    assert es_store.search_calls == []
+    assert mongo_store.search_videos_by_title_calls == [("chicken", 1)]
+    assert pool.title_candidate_count == 1
+    assert pool.results[0].stage1.source_modalities == ["title"]
+    assert pool.results[0].stage1.title.video_title == "Chicken soup recipe"
 
 
 async def test_kis_stage1_allows_ocr_only_candidate_retrieval():
@@ -817,6 +1043,72 @@ async def test_kis_stage1_empty_asr_preserves_existing_candidate_behavior():
     assert all(call.get("video_ids") is None for call in es.search_calls)
 
 
+async def test_asr_only_retrieves_representative_keyframes_without_text_ocr_or_title():
+    segment = AsrEvidenceSegment(
+        segment_id="V1_seg1",
+        text="công trình thủy lợi",
+        start_time=9.0,
+        end_time=11.0,
+    )
+    query_match = AsrQueryMatch(query="thủy lợi", detected=True, matches=[segment])
+    gate = AsrGateResult(
+        queries=["thủy lợi"],
+        match_mode="any",
+        scanned_segment_count=2,
+        asr_matches=[query_match],
+        videos=[
+            AsrVideoEvidence(
+                video_id="V1",
+                detected=True,
+                asr_matches=[query_match],
+                segments=[segment],
+            )
+        ],
+    )
+    mongo_docs = {
+        "early": {
+            "video_id": "V1",
+            "frame_idx": 5,
+            "timestamp": 2.0,
+            "thumbnail_path": "early.jpg",
+        },
+        "near": {
+            "video_id": "V1",
+            "frame_idx": 25,
+            "timestamp": 10.2,
+            "thumbnail_path": "near.jpg",
+        },
+    }
+    service, _, milvus, es, mongo = _service(
+        mongo_docs=mongo_docs,
+        keyframes_by_video={
+            "V1": [
+                dict(mongo_docs["early"], keyframe_id="early", global_index=1),
+                dict(mongo_docs["near"], keyframe_id="near", global_index=2),
+            ]
+        },
+        asr_service=FakeAsrService(gate),
+    )
+
+    pool = await service.retrieve_kis_candidates(
+        text_query=None,
+        text_top_k=300,
+        ocr_query=None,
+        ocr_top_k=100,
+        asr_query="thủy lợi",
+        asr_video_top_k=20,
+    )
+
+    assert pool.candidate_ids == ["near"]
+    assert [hit.keyframe_id for hit in pool.results] == ["near"]
+    assert pool.results[0].stage1.source_modalities == ["asr"]
+    assert pool.results[0].score == 0.0
+    assert pool.asr_gate is gate
+    assert mongo.get_keyframes_for_video_calls == ["V1"]
+    assert milvus.search_calls == []
+    assert es.search_calls == []
+
+
 async def test_active_asr_filters_text_and_ocr_before_top_k():
     # Omitting the filter from either Stage 1 branch must fail this test;
     # applying it after retrieval would allow global candidates into the pool.
@@ -858,12 +1150,68 @@ async def test_active_asr_filters_text_and_ocr_before_top_k():
         asr_service=FakeAsrService(gate),
     )
 
-    pool = await service.retrieve_kis_candidates("night boat", 300, "SAIGON", 100, "hydraulic", 20)
+    pool = await service.retrieve_kis_candidates(
+        "night boat", 300, "SAIGON", 100, asr_query="hydraulic", asr_video_top_k=20
+    )
 
     assert milvus.search_calls[0]["video_ids"] == ["V2", "V1"]
     assert es.search_calls[0]["video_ids"] == ["V2", "V1"]
     assert pool.asr_gate is gate
     assert all("asr" not in hit.stage1.source_modalities for hit in pool.results)
+
+
+async def test_active_asr_prioritizes_ocr_title_hits_from_candidate_videos():
+    gate = gate_result(["V2"])
+    mongo_docs = {
+        "A": {"video_id": "V1", "frame_idx": 10, "timestamp": 0.4, "thumbnail_path": "a.jpg"},
+        "B": {"video_id": "V2", "frame_idx": 20, "timestamp": 0.8, "thumbnail_path": "b.jpg"},
+    }
+    service, _, _, _, _ = _service(
+        es_hits=[
+            {
+                "keyframe_id": "A",
+                "ocr_text": "BRAND",
+                "video_id": "V1",
+                "timestamp": 0.4,
+                "score": 10.0,
+            },
+            {
+                "keyframe_id": "B",
+                "ocr_text": "BRAND",
+                "video_id": "V2",
+                "timestamp": 0.8,
+                "score": 1.0,
+            },
+        ],
+        mongo_docs=mongo_docs,
+        ocr_texts_by_id={"A": "BRAND", "B": "BRAND"},
+        bm25_scores_by_query={"BRAND": {"A": 10.0, "B": 1.0}},
+        title_video_hits=[
+            {"video_id": "V1", "title": "strong title", "score": 10.0},
+            {"video_id": "V2", "title": "weak title", "score": 1.0},
+        ],
+        keyframes_by_video={
+            "V1": [dict(mongo_docs["A"], keyframe_id="A")],
+            "V2": [dict(mongo_docs["B"], keyframe_id="B")],
+        },
+        asr_service=FakeAsrService(gate),
+    )
+
+    pool = await service.retrieve_kis_candidates(
+        text_query=None,
+        text_top_k=5,
+        ocr_query="BRAND",
+        ocr_top_k=2,
+        title_query="title",
+        title_top_k=2,
+        asr_query="hydraulic",
+        asr_video_top_k=1,
+    )
+
+    assert pool.asr_gate is gate
+    assert [hit.keyframe_id for hit in pool.results[:2]] == ["B", "A"]
+    assert pool.results[0].score < pool.results[1].score
+    assert pool.results[0].stage1.source_modalities == ["ocr", "title", "asr"]
 
 
 async def test_active_asr_drops_text_candidate_without_any_stored_frame_idx(caplog):
@@ -887,7 +1235,9 @@ async def test_active_asr_drops_text_candidate_without_any_stored_frame_idx(capl
         asr_service=FakeAsrService(gate),
     )
 
-    pool = await service.retrieve_kis_candidates("night boat", 300, None, 100, "hydraulic", 20)
+    pool = await service.retrieve_kis_candidates(
+        "night boat", 300, None, 100, asr_query="hydraulic", asr_video_top_k=20
+    )
 
     assert pool.candidate_ids == []
     assert pool.results == []
@@ -916,7 +1266,9 @@ async def test_active_asr_keeps_legitimate_stored_frame_idx_zero():
         asr_service=FakeAsrService(gate_result(["V1"])),
     )
 
-    pool = await service.retrieve_kis_candidates("first frame", 300, None, 100, "hydraulic", 20)
+    pool = await service.retrieve_kis_candidates(
+        "first frame", 300, None, 100, asr_query="hydraulic", asr_video_top_k=20
+    )
 
     assert pool.candidate_ids == ["first-frame"]
     assert [hit.frame_idx for hit in pool.results] == [0]
@@ -927,7 +1279,9 @@ async def test_active_zero_hit_gate_never_runs_global_keyframe_search():
     # semantic query to run after ASR finds no eligible video.
     service, _, milvus, es, _ = _service(asr_service=FakeAsrService(gate_result([])))
 
-    pool = await service.retrieve_kis_candidates("dam", 300, None, 100, "dam", 20)
+    pool = await service.retrieve_kis_candidates(
+        "dam", 300, None, 100, asr_query="dam", asr_video_top_k=20
+    )
 
     assert pool.candidate_ids == []
     assert pool.asr_gate is not None
@@ -942,7 +1296,9 @@ async def test_active_asr_unavailable_is_a_specific_503_error():
     service, _, _, _, _ = _service(asr_service=FailingAsrService())
 
     with pytest.raises(SearchServiceError) as caught:
-        await service.retrieve_kis_candidates("dam", 300, None, 100, "dam", 20)
+        await service.retrieve_kis_candidates(
+            "dam", 300, None, 100, asr_query="dam", asr_video_top_k=20
+        )
 
     assert caught.value.error_code == "asr_unavailable"
     assert caught.value.status_code == 503
@@ -954,7 +1310,9 @@ async def test_shared_es_failure_is_reported_once_when_ocr_and_asr_are_active():
     service, _, _, es, _ = _service(asr_service=FailingAsrService())
 
     with pytest.raises(SearchServiceError) as caught:
-        await service.retrieve_kis_candidates("dam", 300, "SAIGON", 100, "dam", 20)
+        await service.retrieve_kis_candidates(
+            "dam", 300, "SAIGON", 100, asr_query="dam", asr_video_top_k=20
+        )
 
     assert caught.value.error_code == "asr_unavailable"
     assert es.search_calls == []

@@ -33,6 +33,8 @@ vi.mock('./api/client', () => ({
     candidate_pool_size: 0,
     text_candidate_count: 0,
     ocr_candidate_count: 0,
+    title_candidate_count: 0,
+    rrf_k: 60,
     results: [],
   }),
   rerankKisCandidates: vi.fn().mockResolvedValue({
@@ -188,6 +190,8 @@ describe('App', () => {
       candidate_pool_size: 1,
       text_candidate_count: 1,
       ocr_candidate_count: 0,
+      title_candidate_count: 0,
+      rrf_k: 60,
       results: [
         {
           keyframe_id: 'L21_V001_f10',
@@ -213,7 +217,7 @@ describe('App', () => {
 
       expect(screen.getByLabelText('KIS selection export')).toBeInTheDocument()
       expect(screen.getByText('Selected Results')).toBeInTheDocument()
-      expect(screen.getByText('frame 10')).toBeInTheDocument()
+      expect(screen.getAllByText('frame 10').length).toBeGreaterThan(0)
       expect(screen.getByText('Will export: query-1-kis.csv')).toBeInTheDocument()
     } finally {
       restoreViewportSize()
@@ -281,6 +285,8 @@ describe('App', () => {
       candidate_pool_size: 1,
       text_candidate_count: 1,
       ocr_candidate_count: 0,
+      title_candidate_count: 0,
+      rrf_k: 60,
       results: [
         {
           keyframe_id: 'L21_V001_f10',
@@ -376,6 +382,8 @@ describe('App', () => {
       candidate_pool_size: 1,
       text_candidate_count: 1,
       ocr_candidate_count: 0,
+      title_candidate_count: 0,
+      rrf_k: 60,
       results: [
         {
           keyframe_id: 'L21_V001_f10',
@@ -479,6 +487,8 @@ describe('App', () => {
       candidate_pool_size: 0,
       text_candidate_count: 0,
       ocr_candidate_count: 0,
+      title_candidate_count: 0,
+      rrf_k: 60,
       results: [],
     })
 

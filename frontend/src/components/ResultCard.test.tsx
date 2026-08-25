@@ -5,8 +5,7 @@ import { ResultCard } from './ResultCard'
 import type { SearchHit } from '../api/types'
 import styles from './ResultCard.module.css'
 
-// RED reproducer for PRD §F9 / plan §P1.6 acceptance criterion:
-// "video_id + timestamp hiển thị NGAY TRÊN mỗi thumbnail, không cần hover."
+// Result labels prioritize the submission identity: video_id + raw frame_idx.
 
 const HIT: SearchHit = {
   keyframe_id: 'L21_V001_f10',
@@ -21,31 +20,43 @@ const HIT: SearchHit = {
 
 const ASR_VIDEO = {
   video_id: 'L21_V001',
-  video_rank: 1,
-  best_bm25_score: 8.73,
+  detected: true,
+  asr_matches: [
+    {
+      query: 'công trình thủy lợi',
+      detected: true,
+      matches: [
+        {
+          segment_id: 'L21_V001_seg10',
+          text: 'công trình thủy lợi',
+          start_time: 151.2,
+          end_time: 158.4,
+        },
+      ],
+    },
+  ],
   segments: [
     {
       segment_id: 'L21_V001_seg10',
       text: 'công trình thủy lợi',
       start_time: 151.2,
       end_time: 158.4,
-      raw_bm25: 8.73,
     },
   ],
 }
 
 describe('ResultCard', () => {
-  it('shows video_id and timestamp as always-visible text, not only on hover', () => {
+  it('shows video_id and frame as always-visible text, not only on hover', () => {
     render(<ResultCard hit={HIT} onSelect={vi.fn()} onFindSimilar={vi.fn()} />)
 
     // getByText fails on content hidden via CSS (e.g. opacity:0 shown only
     // on :hover) unless it is actually visible in the accessibility tree --
     // this is the behavioral check, not a class-name check.
     expect(screen.getByText('L21_V001')).toBeVisible()
-    expect(screen.getByText('42.5s')).toBeVisible()
+    expect(screen.getByText('frame 10')).toBeVisible()
   })
 
-  it('keeps the ASR video rank visible when the detail control is present', async () => {
+  it('keeps the ASR detected badge visible when the detail control is present', async () => {
     const onOpenDetail = vi.fn()
     const hit = { ...HIT, asr_evidence: ASR_VIDEO }
     render(
@@ -57,7 +68,7 @@ describe('ResultCard', () => {
       />,
     )
 
-    const badge = screen.getByText('ASR #1')
+    const badge = screen.getByText('ASR detected')
     expect(badge).toBeVisible()
     expect(badge).toHaveClass(styles.asrBadgeBelowDetail)
     expect(screen.queryByText('công trình thủy lợi')).not.toBeInTheDocument()

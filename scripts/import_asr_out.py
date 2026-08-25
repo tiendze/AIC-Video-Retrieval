@@ -23,6 +23,9 @@ Routine import prerequisites:
 
 Routine import:
   python scripts/import_asr_out.py --asr-out-dir data/asr_out
+  python scripts/import_asr_out.py --asr-out-dir data/asr_out --skip-checkpoint-parity
+  python scripts/import_asr_out.py --asr-out-dir data/asr_out --skip-checkpoint-parity \
+    --trust-artifact-video-info
   python scripts/import_asr_out.py --asr-out-dir data/asr_out --limit-videos 1  # eyeball one first
 
 The owner-only `--reset` flag only bypasses the different-model_id guard. It
@@ -91,6 +94,22 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--limit-videos", type=int, default=0, help="0 = no limit; >0 to eyeball first"
     )
+    parser.add_argument(
+        "--skip-checkpoint-parity",
+        action="store_true",
+        help=(
+            "trust the asr_out manifest without reading local model.bin/vocabulary.json; "
+            "still requires manifest model_id to match configs/ingest/asr.yaml"
+        ),
+    )
+    parser.add_argument(
+        "--trust-artifact-video-info",
+        action="store_true",
+        help=(
+            "do not require local .mp4 files; use fps/frame_count from runs.jsonl instead "
+            "of cross-checking against local video metadata"
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -117,11 +136,23 @@ async def _main() -> int:
     # the repo root, no need to reconstruct it from just the last segment.
     checkpoint_dir = _REPO_ROOT / asr_config.model_id
     try:
-        verify_manifest(manifest, asr_config, checkpoint_dir)
+        verify_manifest(
+            manifest,
+            asr_config,
+            checkpoint_dir,
+            skip_checkpoint_parity=args.skip_checkpoint_parity,
+        )
     except AsrArtifactError as exc:
         logger.error("Artifact rejected -- refusing to import: %s", exc)
         return 1
-    logger.info("Manifest verified: model_id=%s matches local checkpoint", manifest["model_id"])
+    if args.skip_checkpoint_parity:
+        logger.warning(
+            "Manifest checkpoint parity skipped: trusting artifact model_id=%s without local "
+            "model.bin/vocabulary.json SHA verification",
+            manifest["model_id"],
+        )
+    else:
+        logger.info("Manifest verified: model_id=%s matches local checkpoint", manifest["model_id"])
 
     mongo = MongoStore(uri=settings.mongo_uri)
     await mongo.ensure_indexes()
@@ -149,8 +180,14 @@ async def _main() -> int:
             await es.close()
             return 1
 
-    adapter = AIC2026Adapter(dataset_root=args.dataset_root, eval_set_path=args.eval_set_path)
-    videos_by_id = {v.video_id: v for v in adapter.iter_videos("all")}
+    videos_by_id = {}
+    if args.trust_artifact_video_info:
+        logger.warning(
+            "Local video info verification skipped: using fps/frame_count from runs.jsonl"
+        )
+    else:
+        adapter = AIC2026Adapter(dataset_root=args.dataset_root, eval_set_path=args.eval_set_path)
+        videos_by_id = {v.video_id: v for v in adapter.iter_videos("all")}
 
     segments_dir = args.asr_out_dir / "segments"
     run_index = load_run_index(args.asr_out_dir / "runs.jsonl")
@@ -175,32 +212,35 @@ async def _main() -> int:
             skipped.append(video_id)
             continue
 
-        video_ref = videos_by_id.get(video_id)
-        if video_ref is None:
-            logger.error(
-                "%s: not found via AIC2026Adapter.iter_videos('all') -- skipping", video_id
-            )
-            failed.append(video_id)
-            continue
-
         try:
-            local_video_info = read_video_info(video_ref.source_path)
-            verify_video_info_matches(
-                video_id,
-                local_video_info,
-                kaggle_fps=run_row["fps"],
-                kaggle_frame_count=run_row["frame_count"],
-                fps_tolerance=offline_config["fps_tolerance"],
-                frame_count_tolerance=offline_config["frame_count_tolerance"],
-            )
+            if args.trust_artifact_video_info:
+                fps = float(run_row["fps"])
+                frame_count = int(run_row["frame_count"])
+            else:
+                video_ref = videos_by_id.get(video_id)
+                if video_ref is None:
+                    raise AsrArtifactError(
+                        f"{video_id}: not found via AIC2026Adapter.iter_videos('all')"
+                    )
+                local_video_info = read_video_info(video_ref.source_path)
+                verify_video_info_matches(
+                    video_id,
+                    local_video_info,
+                    kaggle_fps=run_row["fps"],
+                    kaggle_frame_count=run_row["frame_count"],
+                    fps_tolerance=offline_config["fps_tolerance"],
+                    frame_count_tolerance=offline_config["frame_count_tolerance"],
+                )
+                fps = local_video_info.fps
+                frame_count = local_video_info.frame_count
             raw_rows = load_raw_segment_rows(segments_dir / f"{video_id}.jsonl")
             segments = build_segments_for_video(raw_rows, offline_config["resegment_min_pause_sec"])
             summary = await run_asr(
                 video_id,
                 segments,
                 es=es,
-                fps=local_video_info.fps,
-                frame_count=local_video_info.frame_count,
+                fps=fps,
+                frame_count=frame_count,
                 config=asr_config,
             )
             await mongo.upsert_asr_run(
@@ -209,7 +249,7 @@ async def _main() -> int:
                     asr_status=STATUS_DONE,
                     num_segments=summary.kept_segments,
                     model_id=asr_config.model_id,
-                    fps=local_video_info.fps,
+                    fps=fps,
                 )
             )
             imported.append(video_id)

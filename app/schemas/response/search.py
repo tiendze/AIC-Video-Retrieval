@@ -12,7 +12,7 @@ for existing callers/tests/debugging."""
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class TextQueryScoreResponse(BaseModel):
@@ -100,6 +100,14 @@ class Stage1TextScoreResponse(BaseModel):
     rank: int
 
 
+class Stage1TextQueryScoreResponse(BaseModel):
+    query_index: int
+    query: str
+    raw_cosine: float
+    original_rank: int | None
+    rank: int
+
+
 class Stage1OcrScoreResponse(BaseModel):
     query: str
     raw_bm25: float
@@ -110,16 +118,33 @@ class Stage1OcrScoreResponse(BaseModel):
     rank: int
 
 
+class Stage1TitleScoreResponse(BaseModel):
+    query: str
+    video_title: str
+    title_score: float
+    rank: int
+    match_type: str | None = None
+    matched_text: str | None = None
+    matched_tokens: list[str] = Field(default_factory=list)
+
+
 class Stage1RetrievalResponse(BaseModel):
     source_modalities: list[str]
     text: Stage1TextScoreResponse | None = None
     ocr: Stage1OcrScoreResponse | None = None
+    title: Stage1TitleScoreResponse | None = None
+    text_queries: list[Stage1TextQueryScoreResponse] | None = None
+    fused_image_score: float | None = None
+    fused_image_rank: int | None = None
 
 
 class SearchHitResponse(BaseModel):
     keyframe_id: str
     video_id: str
     score: float
+    fused_image_score: float | None = None
+    fused_image_rank: int | None = None
+    video_title: str | None = None
     frame_idx: int
     timestamp: float
     thumbnail_path: str
@@ -146,20 +171,31 @@ class AsrEvidenceSegmentResponse(BaseModel):
     text: str
     start_time: float
     end_time: float
-    raw_bm25: float
+
+
+class AsrQueryMatchResponse(BaseModel):
+    query: str
+    detected: bool
+    matches: list[AsrEvidenceSegmentResponse] = Field(default_factory=list)
 
 
 class AsrVideoEvidenceResponse(BaseModel):
     video_id: str
-    video_rank: int
-    best_bm25_score: float
+    detected: bool
+    asr_matches: list[AsrQueryMatchResponse] = Field(default_factory=list)
     segments: list[AsrEvidenceSegmentResponse]
 
 
 class AsrGateResponse(BaseModel):
     query: str
-    segment_hit_count: int
+    queries: list[str]
+    match_mode: str
+    detected: bool
+    asr_detected_any: bool
+    matched_segment_count: int
+    scanned_segment_count: int
     candidate_video_count: int
+    asr_matches: list[AsrQueryMatchResponse] = Field(default_factory=list)
     videos: list[AsrVideoEvidenceResponse]
 
 
@@ -168,6 +204,8 @@ class KisCandidateResponse(BaseModel):
     candidate_pool_size: int
     text_candidate_count: int
     ocr_candidate_count: int
+    title_candidate_count: int = 0
+    rrf_k: int = 60
     results: list[KisCandidateHitResponse]
     asr_gate: AsrGateResponse | None = None
 
