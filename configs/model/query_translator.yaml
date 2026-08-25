@@ -21,7 +21,14 @@
 #
 # Flip back to `local_nmt` to run fully offline or to re-measure the baseline;
 # nothing else needs to change.
-kind: llm
+#
+# Set back to `local_nmt` 2026-08-25: chủ dự án hết quota Gemini. Leaving
+# `kind: llm` without quota is actively WORSE than never having enabled it --
+# every query would burn a doomed API call and wait out the full 8s timeout
+# before FallbackTranslator degrades to EnViT5, i.e. 8 wasted seconds per
+# search while an operator is being timed. The llm block below is kept intact
+# so flipping back is one word once quota returns.
+kind: local_nmt
 
 llm:
   # NOT a default -- gemini-2.5-flash ignores `response_format` and returns

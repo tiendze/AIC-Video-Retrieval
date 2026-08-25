@@ -19,6 +19,13 @@ Two implementations satisfy the Protocol, selected by `kind` in
 - `LocalNmtTranslator` -- EnViT5, offline, no quota, no network.
 - `GeminiTranslator` -- an LLM asked to translate *for retrieval*.
 
+`GlossaryCorrectedTranslator` wraps either one and deterministically patches a
+short list of Vietnamese cultural/cinematography terms that EnViT5 reliably
+mistranslates (see `DEFAULT_GLOSSARY` below) -- built for the case where
+`GeminiTranslator` is unavailable (no API quota, 2026-08-25) but the fix its
+prompt already provides for these specific terms still needs an offline
+equivalent for `kind: local_nmt`.
+
 The LLM branch exists because EnViT5's failures are silent and land exactly on
 the words that carry the retrieval signal. Measured on the 25 SOTUYEN1 contest
 queries at git 5191098: `con lân` -> "phosphor", `cầm dù` -> "carrying
@@ -35,10 +42,12 @@ the property this module exists to protect.
 from __future__ import annotations
 
 import logging
+import re
 import time
+import unicodedata
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Protocol
+from typing import Any, NamedTuple, Protocol
 
 from pydantic import BaseModel, Field
 
@@ -307,14 +316,101 @@ class FallbackTranslator:
         return future.result(timeout=self._timeout_sec)
 
 
+class GlossaryRule(NamedTuple):
+    """One deterministic correction: if `vi_trigger` appears in the ORIGINAL
+    Vietnamese as a whole word/phrase, and `en_search` appears in the
+    translated English as a whole word, replace it with `en_replacement`.
+
+    Both sides match on WORD BOUNDARIES, not bare substrings -- code review
+    2026-08-25 found the original bare-substring version could corrupt a
+    CORRECT translation: `vi_trigger="lân"` also matches inside "lân cận"
+    (vicinity) or "lân bang" (neighboring country), and `en_search="phosphor"`
+    also matches inside "phosphorescent" -- a legitimately correct translation
+    of an unrelated Vietnamese term ("lân tinh") that happens to share the
+    "lân" syllable. `DEFAULT_GLOSSARY` below uses the actual multi-word phrase
+    measured for each failure (e.g. "con lân", not bare "lân") specifically to
+    stay clear of these homographs -- narrowing the trigger, not just adding
+    `\\b`, is what keeps a common word like "dù" (although) from firing on
+    every query that uses it in its ordinary sense instead of "cầm dù"
+    (holding an umbrella).
+
+    Gating on the Vietnamese trigger, not just the English match, matters
+    beyond that: an unrelated translation that happens to contain "greenery"
+    for its own reasons must not be rewritten just because that string
+    appears."""
+
+    vi_trigger: str
+    en_search: str
+    en_replacement: str
+
+
+def _word_boundary_pattern(term: str) -> re.Pattern[str]:
+    return re.compile(rf"\b{re.escape(term)}\b", re.IGNORECASE)
+
+
+# Every entry here is a reproduced, measured EnViT5 failure -- not a guess.
+# Source: the 25 SOTUYEN1 contest queries, git 5191098 (see this module's
+# docstring and docs/research-query-refinement.md §3.2). `en_search` is the
+# EXACT string EnViT5 produced -- not a stemmed/guessed root -- so a form that
+# was never actually observed (e.g. singular "parachute": only the plural
+# "parachutes" was measured) is deliberately left unhandled rather than
+# guessed at. Two known EnViT5 failures are deliberately NOT here because they
+# are DROPPED content, not a wrong phrase to find-and-replace: "hơn 5 người"
+# -> "five people" (dropped "more than") and query-p1-4's entirely-missing
+# second clause -- there is no wrong string to search for in either case.
+DEFAULT_GLOSSARY: tuple[GlossaryRule, ...] = (
+    GlossaryRule("con lân", "phosphor", "lion dance costume"),
+    GlossaryRule("cầm dù", "parachutes", "umbrellas"),
+    GlossaryRule("lia cam", "orange peel", "camera pan"),
+    GlossaryRule("lục bình", "greenery", "water hyacinth"),
+    GlossaryRule("trống cơ", "muscle drum", "drum"),
+)
+
+
+class GlossaryCorrectedTranslator:
+    """Wraps `wrapped` and applies `rules` to its output. A pure post-process
+    -- `wrapped.translate()` still runs unmodified, so this never changes
+    whether a translation succeeds or raises, only its text on success.
+
+    Both sides are matched case-insensitively after NFC normalization, so a
+    sentence-initial capitalized trigger ("Con lân...") or a combining-
+    diacritic (NFD-decomposed) source still matches -- code review 2026-08-25:
+    this diff also introduced Stage 1 sentence splitting, which raises the
+    odds a glossary term lands as the first word of an independently
+    translated fragment."""
+
+    def __init__(self, wrapped: QueryTranslator, rules: tuple[GlossaryRule, ...] = ()) -> None:
+        self._wrapped = wrapped
+        self._rules = rules
+
+    @property
+    def model_id(self) -> str:
+        return self._wrapped.model_id
+
+    def translate(self, vietnamese: str) -> str:
+        english = self._wrapped.translate(vietnamese)
+        normalized_vi = unicodedata.normalize("NFC", vietnamese).casefold()
+        for rule in self._rules:
+            trigger = unicodedata.normalize("NFC", rule.vi_trigger).casefold()
+            if trigger not in normalized_vi:
+                continue
+            english = _word_boundary_pattern(rule.en_search).sub(rule.en_replacement, english)
+        return english
+
+
 def _build_local_nmt(config: Mapping[str, Any]) -> QueryTranslator:
-    return LocalNmtTranslator(
+    local_nmt = LocalNmtTranslator(
         model_id=config["model_id"],
         device=config["device"],
         source_prefix=config["source_prefix"],
         target_prefix=config["target_prefix"],
         max_new_tokens=config["max_new_tokens"],
     )
+    # Unconditional and safe for any local_nmt model, not just EnViT5: each
+    # rule only fires when its exact measured-wrong English phrase is present,
+    # so a better model that never produces that phrase makes the rule a
+    # no-op rather than corrupting an already-correct translation.
+    return GlossaryCorrectedTranslator(local_nmt, rules=DEFAULT_GLOSSARY)
 
 
 def build_query_translator(

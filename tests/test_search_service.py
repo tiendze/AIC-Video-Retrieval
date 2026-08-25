@@ -75,10 +75,18 @@ class _FakeEncoder:
 
 class _FakeMilvusStore:
     def __init__(
-        self, hits: list[dict[str, Any]], vector_rows: dict[str, dict[str, Any]] | None = None
+        self,
+        hits: list[dict[str, Any]],
+        vector_rows: dict[str, dict[str, Any]] | None = None,
+        hits_by_call: list[list[dict[str, Any]]] | None = None,
     ) -> None:
         self._hits = hits
         self._vector_rows = vector_rows or {}
+        # Lets a multi-sentence Stage 1 test give each split piece its own
+        # distinct hit set (a real per-vector Milvus search would), instead of
+        # every call returning the same static `hits` -- `None` (the default)
+        # preserves every existing single-query test unchanged.
+        self._hits_by_call = hits_by_call
         self.search_calls: list[dict[str, Any]] = []
         self.get_vectors_by_ids_calls: list[list[str]] = []
 
@@ -89,6 +97,7 @@ class _FakeMilvusStore:
         filter_expr: str = "",
         video_ids: Sequence[str] | None = None,
     ) -> list[dict]:
+        call_index = len(self.search_calls)
         self.search_calls.append(
             {
                 "query_vector": query_vector,
@@ -97,6 +106,8 @@ class _FakeMilvusStore:
                 "video_ids": video_ids,
             }
         )
+        if self._hits_by_call is not None:
+            return self._hits_by_call[call_index]
         return self._hits
 
     def get_vectors_by_ids(self, keyframe_ids) -> dict[str, dict[str, Any]]:
@@ -213,6 +224,7 @@ class _FakeQueryTranslator:
 
 def _service(
     milvus_hits: list[dict] | None = None,
+    milvus_hits_by_call: list[list[dict]] | None = None,
     es_hits: list[dict] | None = None,
     mongo_docs: dict[str, dict] | None = None,
     query_vector: np.ndarray | None = None,
@@ -230,7 +242,9 @@ def _service(
         text_vectors_by_query=text_vectors_by_query,
         model_id=model_id,
     )
-    milvus_store = _FakeMilvusStore(milvus_hits or [], vector_rows=vector_rows)
+    milvus_store = _FakeMilvusStore(
+        milvus_hits or [], vector_rows=vector_rows, hits_by_call=milvus_hits_by_call
+    )
     es_store = _FakeEsStore(
         es_hits or [], texts_by_id=ocr_texts_by_id, scores_by_query=bm25_scores_by_query
     )
@@ -520,6 +534,128 @@ async def test_kis_stage1_text_rejects_beit3_encoder_before_query_encoding():
 
     assert encoder.encode_text_calls == []
     assert milvus_store.search_calls == []
+
+
+async def test_kis_stage1_text_splits_a_multi_sentence_query_and_unions_candidates():
+    # query-p1-16-trake.txt-shaped scenario: a long query written as multiple
+    # sentences. Each sentence surfaces a DIFFERENT candidate in Milvus (a
+    # real per-vector search would too) -- Stage 1 must union them, not just
+    # keep the first sentence's hits, or a sub-query Stage 1 never searched
+    # for can never be found by Stage 2 either (docs/research-query-
+    # refinement.md §4).
+    vector = np.array([1.0, 0.0], dtype=np.float32)
+    hit_a = {
+        "keyframe_id": "A",
+        "distance": 0.9,
+        "entity": {"video_id": "V1", "frame_idx": 10, "timestamp": 0.4},
+    }
+    hit_b = {
+        "keyframe_id": "B",
+        "distance": 0.8,
+        "entity": {"video_id": "V1", "frame_idx": 20, "timestamp": 0.8},
+    }
+    mongo_docs = {
+        "A": {"video_id": "V1", "frame_idx": 10, "timestamp": 0.4, "thumbnail_path": "a.jpg"},
+        "B": {"video_id": "V1", "frame_idx": 20, "timestamp": 0.8, "thumbnail_path": "b.jpg"},
+    }
+    vector_rows = {
+        "A": {"keyframe_id": "A", "embedding": vector, "video_id": "V1", "frame_idx": 10},
+        "B": {"keyframe_id": "B", "embedding": vector, "video_id": "V1", "frame_idx": 20},
+    }
+    service, encoder, milvus_store, es_store, _ = _service(
+        milvus_hits_by_call=[[hit_a], [hit_b]],
+        mongo_docs=mongo_docs,
+        vector_rows=vector_rows,
+        text_vectors_by_query={
+            "Con lân đứng ở cột.": vector,
+            "Sau đó nhảy sang cột khác.": vector,
+        },
+    )
+
+    pool = await service.retrieve_kis_candidates(
+        text_query="Con lân đứng ở cột. Sau đó nhảy sang cột khác.",
+        text_top_k=2,
+        ocr_query=None,
+        ocr_top_k=5,
+    )
+
+    assert encoder.encode_text_calls == [
+        ["Con lân đứng ở cột.", "Sau đó nhảy sang cột khác."]
+    ]
+    assert len(milvus_store.search_calls) == 2
+    assert es_store.search_calls == []
+    assert sorted(pool.candidate_ids) == ["A", "B"]
+    assert pool.text_candidate_count == 2
+
+
+async def test_kis_stage1_text_single_sentence_query_still_makes_exactly_one_milvus_call():
+    # Regression lock: a query with no sentence-terminal punctuation must
+    # behave EXACTLY as before splitting existed -- one encode_text call with
+    # one string, one Milvus search call.
+    row_vector = np.array([1.0, 0.0], dtype=np.float32)
+    query_vector = np.array([[1.0, 0.0]], dtype=np.float32)
+    hit_a = {
+        "keyframe_id": "A",
+        "distance": 0.9,
+        "entity": {"video_id": "V1", "frame_idx": 10, "timestamp": 0.4},
+    }
+    mongo_docs = {
+        "A": {"video_id": "V1", "frame_idx": 10, "timestamp": 0.4, "thumbnail_path": "a.jpg"},
+    }
+    service, encoder, milvus_store, _, _ = _service(
+        milvus_hits=[hit_a],
+        mongo_docs=mongo_docs,
+        vector_rows={"A": {"keyframe_id": "A", "embedding": row_vector}},
+        query_vector=query_vector,
+    )
+
+    await service.retrieve_kis_candidates(
+        text_query="red shirt", text_top_k=2, ocr_query=None, ocr_top_k=5
+    )
+
+    assert encoder.encode_text_calls == [["red shirt"]]
+    assert len(milvus_store.search_calls) == 1
+
+
+async def test_kis_stage1_text_keeps_the_higher_cosine_when_a_candidate_matches_both_sentences():
+    # A candidate that Milvus surfaces for BOTH sentences must be scored by
+    # its BEST match, not whichever sentence happened to search first -- the
+    # OR semantics this whole feature exists for (docs/research-query-
+    # refinement.md §4-§5: Stage 1 is OR, Stage 2 stays AND).
+    sentence1_vector = np.array([1.0, 0.0], dtype=np.float32)
+    sentence2_vector = np.array([0.0, 1.0], dtype=np.float32)
+    # A's stored embedding matches sentence2 perfectly (cosine=1.0) and
+    # sentence1 not at all (cosine=0.0) -- the max across sentences must win.
+    a_embedding = np.array([0.0, 1.0], dtype=np.float32)
+    hit_a_from_sentence1 = {
+        "keyframe_id": "A",
+        "distance": 0.1,
+        "entity": {"video_id": "V1", "frame_idx": 10, "timestamp": 0.4},
+    }
+    hit_a_from_sentence2 = {
+        "keyframe_id": "A",
+        "distance": 0.1,
+        "entity": {"video_id": "V1", "frame_idx": 10, "timestamp": 0.4},
+    }
+    mongo_docs = {
+        "A": {"video_id": "V1", "frame_idx": 10, "timestamp": 0.4, "thumbnail_path": "a.jpg"},
+    }
+    service, _, _, _, _ = _service(
+        milvus_hits_by_call=[[hit_a_from_sentence1], [hit_a_from_sentence2]],
+        mongo_docs=mongo_docs,
+        vector_rows={"A": {"keyframe_id": "A", "embedding": a_embedding}},
+        text_vectors_by_query={
+            "Câu một.": sentence1_vector,
+            "Câu hai.": sentence2_vector,
+        },
+    )
+
+    pool = await service.retrieve_kis_candidates(
+        text_query="Câu một. Câu hai.", text_top_k=2, ocr_query=None, ocr_top_k=5
+    )
+
+    assert pool.results[0].stage1.text.raw_cosine == pytest.approx(1.0)
+    assert pool.results[0].stage1.text.query == "Câu hai."
 
 
 async def test_kis_stage1_text_and_ocr_use_independent_k_and_deduplicate_union():

@@ -85,6 +85,7 @@ from app.services.kis_scoring import (
     ocr_coverage,
     rank_percentiles,
 )
+from app.services.query_decomposition import split_into_sentences
 from app.services.query_translator import QueryTranslator
 from app.stores.es_client import EsStore
 from app.stores.milvus_client import MilvusStore
@@ -250,25 +251,40 @@ class SearchService:
         text_stage1_by_id: dict[str, Stage1TextScore] = {}
         text_metadata_by_id: dict[str, dict] = {}
         text_candidate_ids: list[str] = []
-        text_query_vector: np.ndarray | None = None
+        text_query_vectors: list[np.ndarray] = []
         if text_query:
             _assert_kis_fg_clip_encoder(self._encoder)
-            text_inputs = await self._prepare_text_inputs([text_query])
+            # Split into sentences: an OR-union across pieces, not a second
+            # encoder call per piece -- one batched encode_text call for all
+            # of them, same as Stage 2's multi-KisQuery path below. A query
+            # with no sentence boundary splits to exactly [text_query], so
+            # single-query behaviour is byte-for-byte unchanged (docs/
+            # research-query-refinement.md §4-§6: Stage 1 widens recall via
+            # OR, only Stage 2's geomean stays AND).
+            text_sentences = split_into_sentences(text_query)
+            text_inputs = await self._prepare_text_inputs(text_sentences)
             text_vectors = await asyncio.to_thread(self._encoder.encode_text, text_inputs)
-            text_query_vector = np.asarray(text_vectors[0], dtype=np.float32)
-            text_hits = await asyncio.to_thread(
-                self._milvus_store.search, text_vectors[0], text_top_k, "", video_ids
-            )
-            for rank, hit in enumerate(text_hits, start=1):
-                keyframe_id = hit["keyframe_id"]
-                if keyframe_id not in text_stage1_by_id:
-                    text_candidate_ids.append(keyframe_id)
-                    text_stage1_by_id[keyframe_id] = Stage1TextScore(
-                        query=text_query,
-                        raw_cosine=float(hit["distance"]),
-                        rank=rank,
-                    )
-                    text_metadata_by_id[keyframe_id] = _metadata_from_milvus_hit(hit)
+            text_query_vectors = [np.asarray(v, dtype=np.float32) for v in text_vectors]
+            best_raw_cosine_by_id: dict[str, float] = {}
+            for sentence, vector in zip(text_sentences, text_vectors):
+                sentence_hits = await asyncio.to_thread(
+                    self._milvus_store.search, vector, text_top_k, "", video_ids
+                )
+                for rank, hit in enumerate(sentence_hits, start=1):
+                    keyframe_id = hit["keyframe_id"]
+                    raw_cosine = float(hit["distance"])
+                    if keyframe_id not in text_stage1_by_id:
+                        text_candidate_ids.append(keyframe_id)
+                        text_metadata_by_id[keyframe_id] = _metadata_from_milvus_hit(hit)
+                    # A candidate surfaced by multiple sentences is scored by
+                    # its BEST match, not whichever sentence searched first.
+                    if raw_cosine > best_raw_cosine_by_id.get(keyframe_id, _MISSING_TEXT_RAW_SCORE):
+                        best_raw_cosine_by_id[keyframe_id] = raw_cosine
+                        text_stage1_by_id[keyframe_id] = Stage1TextScore(
+                            query=sentence,
+                            raw_cosine=raw_cosine,
+                            rank=rank,
+                        )
 
         ocr_stage1_by_id: dict[str, Stage1OcrScore] = {}
         ocr_candidate_ids: list[str] = []
@@ -307,27 +323,40 @@ class SearchService:
         ocr_source_ids = set(ocr_candidate_ids)
 
         vector_rows_by_id: dict[str, dict] = {}
-        if text_query and text_query_vector is not None:
+        if text_query and text_query_vectors:
             vector_rows_by_id = await asyncio.to_thread(
                 self._milvus_store.get_vectors_by_ids, candidate_ids
             )
             text_scores_by_id: dict[str, float] = {}
+            text_best_sentence_by_id: dict[str, str] = {}
             for keyframe_id in candidate_ids:
                 vector_row = vector_rows_by_id.get(keyframe_id)
                 if vector_row is not None:
-                    text_scores_by_id[keyframe_id] = _cosine_similarity(
-                        text_query_vector,
-                        np.asarray(vector_row["embedding"], dtype=np.float32),
+                    embedding = np.asarray(vector_row["embedding"], dtype=np.float32)
+                    # Re-score against EVERY sentence vector, keep the best --
+                    # the same OR semantics as the first-pass Milvus search
+                    # above, now applied uniformly across the full candidate
+                    # pool (including candidates a DIFFERENT sentence found).
+                    best_score, best_sentence = max(
+                        (
+                            (float(_cosine_similarity(vector, embedding)), sentence)
+                            for vector, sentence in zip(text_query_vectors, text_sentences)
+                        ),
+                        key=lambda scored: scored[0],
                     )
+                    text_scores_by_id[keyframe_id] = best_score
+                    text_best_sentence_by_id[keyframe_id] = best_sentence
                 else:
-                    text_scores_by_id[keyframe_id] = text_stage1_by_id.get(
+                    fallback = text_stage1_by_id.get(
                         keyframe_id,
                         Stage1TextScore(text_query, _MISSING_TEXT_RAW_SCORE, len(candidate_ids)),
-                    ).raw_cosine
+                    )
+                    text_scores_by_id[keyframe_id] = fallback.raw_cosine
+                    text_best_sentence_by_id[keyframe_id] = fallback.query
             text_rankings = rank_percentiles(text_scores_by_id, candidate_ids)
             text_stage1_by_id = {
                 keyframe_id: Stage1TextScore(
-                    query=text_query,
+                    query=text_best_sentence_by_id[keyframe_id],
                     raw_cosine=text_rankings[keyframe_id].raw_score,
                     rank=text_rankings[keyframe_id].rank,
                 )
