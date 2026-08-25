@@ -89,6 +89,7 @@ from app.services.kis_scoring import (
     ocr_coverage,
     rank_percentiles,
 )
+from app.services.query_decomposition import split_into_sentences
 from app.services.query_translator import QueryTranslator
 from app.stores.es_client import EsStore
 from app.stores.milvus_client import MilvusStore
@@ -243,7 +244,16 @@ class SearchService:
         asr_match_mode: AsrMatchMode = "any",
         asr_video_top_k: int = 20,
     ) -> KisCandidatePool:
-        text_queries = _normalize_stage1_text_queries(text_query, text_queries)
+        # A single Text Q0 box with multiple sentences is treated as if the
+        # operator had typed each sentence into its own query box: split
+        # first, then feed the pieces through the SAME multi-query union +
+        # fused-score pipeline the explicit `text_queries` boxes use, so a
+        # query with no sentence boundary still normalizes to exactly
+        # [text_query] and single-query behaviour is unchanged.
+        text_query_sentences = split_into_sentences(text_query) if text_query else []
+        text_queries = _normalize_stage1_text_queries(
+            None, [*text_query_sentences, *(text_queries or ())]
+        )
         ocr_query = ocr_query.strip() if ocr_query is not None else None
         title_query = title_query.strip() if title_query is not None else None
         asr_queries = _normalize_stage1_asr_queries(asr_query, asr_queries)
@@ -292,9 +302,7 @@ class SearchService:
             text_vectors = await asyncio.to_thread(self._encoder.encode_text, text_inputs)
             text_searches = await asyncio.gather(
                 *[
-                    asyncio.to_thread(
-                        self._milvus_store.search, vector, text_top_k, "", video_ids
-                    )
+                    asyncio.to_thread(self._milvus_store.search, vector, text_top_k, "", video_ids)
                     for vector in text_vectors
                 ]
             )
@@ -303,9 +311,7 @@ class SearchService:
                 text_metadata_by_id,
                 text_original_ranks_by_query,
                 text_original_scores_by_query,
-            ) = (
-                _stage1_text_candidate_union(text_searches)
-            )
+            ) = _stage1_text_candidate_union(text_searches)
             text_source_ids = set(text_candidate_ids)
 
         ocr_stage1_by_id: dict[str, Stage1OcrScore] = {}
@@ -370,15 +376,13 @@ class SearchService:
             vector_rows_by_id = await asyncio.to_thread(
                 self._milvus_store.get_vectors_by_ids, candidate_ids
             )
-            text_query_scores_by_id, fused_text_scores_by_id, _ = (
-                _stage1_text_scores_for_union(
-                    candidate_ids=candidate_ids,
-                    text_queries=text_queries,
-                    text_vectors=np.asarray(text_vectors, dtype=np.float32),
-                    vector_rows_by_id=vector_rows_by_id,
-                    original_ranks_by_query=text_original_ranks_by_query,
-                    original_scores_by_query=text_original_scores_by_query,
-                )
+            text_query_scores_by_id, fused_text_scores_by_id, _ = _stage1_text_scores_for_union(
+                candidate_ids=candidate_ids,
+                text_queries=text_queries,
+                text_vectors=np.asarray(text_vectors, dtype=np.float32),
+                vector_rows_by_id=vector_rows_by_id,
+                original_ranks_by_query=text_original_ranks_by_query,
+                original_scores_by_query=text_original_scores_by_query,
             )
             text_stage1_by_id = {
                 keyframe_id: Stage1TextScore(

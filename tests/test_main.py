@@ -137,7 +137,9 @@ def _stub_real_infra(monkeypatch: pytest.MonkeyPatch) -> None:
         lambda asr_store: _FakeAsrRetrievalService(asr_store),
     )
     monkeypatch.setattr(main_module, "_build_mongo_store", lambda settings: _FakeMongoStore())
-    monkeypatch.setattr(main_module, "_build_query_translator", lambda: _FakeQueryTranslator())
+    monkeypatch.setattr(
+        main_module, "_build_query_translator", lambda settings: _FakeQueryTranslator()
+    )
     monkeypatch.setattr(
         main_module,
         "_build_trake_embedding_cache",
