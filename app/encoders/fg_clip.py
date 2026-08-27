@@ -131,6 +131,10 @@ class FGClipEncoder:
         vectors = [self._encode_text_batch(batch) for batch in self._batched(texts)]
         return np.concatenate(vectors, axis=0).astype(np.float32)
 
+    def encode_local_phrases(self, phrases: Sequence[str]) -> np.ndarray:
+        """Encode phrase-level visual concepts for 8x8 patch MaxSim scoring."""
+        return self.encode_text(phrases)
+
     def encode_text_tokens(self, texts: Sequence[str]) -> list[LocalTextEmbeddings]:
         if not texts:
             return []

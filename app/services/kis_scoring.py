@@ -61,6 +61,14 @@ class KisConfig:
     abe_patch_cache_dtype: str = "float16"
     abe_patch_batch_size: int = 16
     rrf_k: int = 60
+    local_retrieval_enabled: bool = True
+    local_dense_root: str = "data/fgclip_dense_8x8"
+    local_grid_size: int = 8
+    local_num_patches: int = 64
+    local_embedding_dim: int = 512
+    local_global_retrieval_k: int = 1000
+    local_score_batch_size: int = 256
+    local_mmap_cache_size: int = 64
 
     def __post_init__(self) -> None:
         if self.candidate_multiplier < 2:
@@ -95,9 +103,27 @@ class KisConfig:
             raise ValueError("abe_patch_batch_size must be positive")
         if self.rrf_k < 1:
             raise ValueError("rrf_k must be positive")
+        if self.local_grid_size < 1:
+            raise ValueError("kis.local_retrieval.grid_size must be positive")
+        if self.local_num_patches != self.local_grid_size * self.local_grid_size:
+            raise ValueError("kis.local_retrieval.num_patches must equal grid_size * grid_size")
+        if self.local_embedding_dim < 1:
+            raise ValueError("kis.local_retrieval.embedding_dim must be positive")
+        if self.local_global_retrieval_k < 1:
+            raise ValueError("kis.local_retrieval.global_retrieval_k must be positive")
+        if self.local_score_batch_size < 1:
+            raise ValueError("kis.local_retrieval.local_score_batch_size must be positive")
+        if self.local_mmap_cache_size < 1:
+            raise ValueError("kis.local_retrieval.mmap_cache_size must be positive")
 
     @classmethod
     def from_mapping(cls, config: Mapping[str, object]) -> KisConfig:
+        kis_section = config.get("kis", {})
+        if not isinstance(kis_section, Mapping):
+            kis_section = {}
+        local_section = kis_section.get("local_retrieval", {})
+        if not isinstance(local_section, Mapping):
+            local_section = {}
         return cls(
             candidate_multiplier=int(config.get("kis_candidate_multiplier", 5)),
             candidate_min=int(config.get("kis_candidate_min", 100)),
@@ -117,6 +143,14 @@ class KisConfig:
             abe_patch_cache_dtype=str(config.get("abe_patch_cache_dtype", "float16")),
             abe_patch_batch_size=int(config.get("abe_patch_batch_size", 16)),
             rrf_k=int(config.get("rrf_k", 60)),
+            local_retrieval_enabled=bool(local_section.get("enabled", True)),
+            local_dense_root=str(local_section.get("dense_root", "data/fgclip_dense_8x8")),
+            local_grid_size=int(local_section.get("grid_size", 8)),
+            local_num_patches=int(local_section.get("num_patches", 64)),
+            local_embedding_dim=int(local_section.get("embedding_dim", 512)),
+            local_global_retrieval_k=int(local_section.get("global_retrieval_k", 1000)),
+            local_score_batch_size=int(local_section.get("local_score_batch_size", 256)),
+            local_mmap_cache_size=int(local_section.get("mmap_cache_size", 64)),
         )
 
 
@@ -249,6 +283,10 @@ class Stage1RetrievalScore:
     text_queries: tuple[Stage1TextQueryScore, ...] = ()
     fused_image_score: float | None = None
     fused_image_rank: int | None = None
+    local_score: float | None = None
+    local_query_scores: tuple[float, ...] = ()
+    local_retrieval_used: bool | None = None
+    local_embedding_available: bool | None = None
 
 
 @dataclass(frozen=True)

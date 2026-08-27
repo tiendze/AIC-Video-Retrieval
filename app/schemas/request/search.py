@@ -92,7 +92,8 @@ def _blank_to_none(value: str | None) -> str | None:
 class KisCandidateRequest(BaseModel):
     text_query: str | None = None
     text_queries: list[str] = Field(default_factory=list)
-    text_top_k: int = Field(default=DEFAULT_TEXT_CANDIDATE_K, ge=1, le=MAX_CANDIDATE_K)
+    local_phrases_by_query: list[list[str]] = Field(default_factory=list)
+    text_top_k: int = Field(default=DEFAULT_TEXT_CANDIDATE_K, ge=1)
     ocr_query: str | None = None
     ocr_top_k: int = Field(default=DEFAULT_OCR_CANDIDATE_K, ge=1, le=MAX_CANDIDATE_K)
     title_query: str | None = None
@@ -120,6 +121,17 @@ class KisCandidateRequest(BaseModel):
             return [value]
         return value  # type: ignore[return-value]
 
+    @field_validator("local_phrases_by_query", mode="before")
+    @classmethod
+    def local_phrases_accepts_absent_or_single_group(cls, value: object) -> list[list[str]]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [[value]]
+        if isinstance(value, list) and all(isinstance(item, str) for item in value):
+            return [value]
+        return value  # type: ignore[return-value]
+
     @field_validator("asr_queries", mode="before")
     @classmethod
     def asr_queries_accepts_single_string(cls, value: object) -> list[str]:
@@ -131,14 +143,39 @@ class KisCandidateRequest(BaseModel):
 
     @model_validator(mode="after")
     def at_least_one_stage1_query(self) -> KisCandidateRequest:
+        text_entries: list[tuple[str, list[str]]] = []
+        local_groups = [
+            _normalize_local_phrase_group(group) for group in self.local_phrases_by_query
+        ]
+        if self.text_queries:
+            if self.text_query is not None and (
+                not self.text_queries or self.text_query.strip() != self.text_queries[0].strip()
+            ):
+                text_entries.append((self.text_query, []))
+            for index, query in enumerate(self.text_queries):
+                phrases = local_groups[index] if index < len(local_groups) else []
+                text_entries.append((query, phrases))
+        elif self.text_query is not None:
+            text_entries.append((self.text_query, local_groups[0] if local_groups else []))
+
         normalized_text_queries: list[str] = []
-        if self.text_query is not None:
-            normalized_text_queries.append(self.text_query)
-        for query in self.text_queries:
+        normalized_local_phrases: list[list[str]] = []
+        query_index_by_text: dict[str, int] = {}
+        for query, phrases in text_entries:
             stripped = query.strip()
-            if stripped:
+            if not stripped:
+                continue
+            existing_index = query_index_by_text.get(stripped)
+            if existing_index is None:
+                query_index_by_text[stripped] = len(normalized_text_queries)
                 normalized_text_queries.append(stripped)
-        self.text_queries = list(dict.fromkeys(normalized_text_queries))
+                normalized_local_phrases.append(list(phrases))
+            else:
+                normalized_local_phrases[existing_index] = _merge_local_phrases(
+                    normalized_local_phrases[existing_index], phrases
+                )
+        self.text_queries = normalized_text_queries
+        self.local_phrases_by_query = normalized_local_phrases
         self.text_query = self.text_queries[0] if self.text_queries else None
         normalized_asr_queries: list[str] = []
         if self.asr_query is not None:
@@ -159,6 +196,32 @@ class KisCandidateRequest(BaseModel):
         ):
             raise ValueError("Stage 1 requires Text, OCR, Title, or ASR query")
         return self
+
+
+def _normalize_local_phrase_group(phrases: list[str]) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for phrase in phrases:
+        stripped = phrase.strip()
+        if not stripped:
+            continue
+        key = stripped.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(stripped)
+    return normalized
+
+
+def _merge_local_phrases(left: list[str], right: list[str]) -> list[str]:
+    merged = list(left)
+    seen = {phrase.casefold() for phrase in merged}
+    for phrase in right:
+        key = phrase.casefold()
+        if key not in seen:
+            seen.add(key)
+            merged.append(phrase)
+    return merged
 
 
 class KisRerankRequest(BaseModel):

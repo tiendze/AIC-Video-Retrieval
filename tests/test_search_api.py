@@ -89,6 +89,7 @@ class _FakeSearchService:
             tuple[
                 str | None,
                 list[str],
+                list[list[str]],
                 int,
                 str | None,
                 int,
@@ -119,6 +120,7 @@ class _FakeSearchService:
         ocr_query: str | None,
         ocr_top_k: int,
         text_queries=None,
+        local_phrases_by_query=None,
         title_query: str | None = None,
         title_top_k: int = 0,
         asr_query: str | None = None,
@@ -130,6 +132,7 @@ class _FakeSearchService:
             (
                 text_query,
                 list(text_queries or []),
+                [list(group) for group in (local_phrases_by_query or [])],
                 text_top_k,
                 ocr_query,
                 ocr_top_k,
@@ -383,6 +386,7 @@ def test_kis_candidate_retrieval_accepts_stage1_shape_and_uses_candidate_default
         (
             "a man in a red shirt",
             ["a man in a red shirt"],
+            [[]],
             300,
             None,
             100,
@@ -403,6 +407,35 @@ def test_kis_candidate_request_normalizes_blank_asr_and_uses_default_video_k():
     assert body.asr_video_top_k == 20
 
 
+def test_kis_candidate_request_allows_unbounded_text_top_k():
+    body = KisCandidateRequest(text_query="dam", text_top_k=5000)
+
+    assert body.text_top_k == 5000
+
+
+def test_kis_candidate_request_still_caps_ocr_and_title_top_k():
+    with pytest.raises(ValueError):
+        KisCandidateRequest(ocr_query="dam", ocr_top_k=1001)
+
+    with pytest.raises(ValueError):
+        KisCandidateRequest(title_query="dam", title_top_k=1001)
+
+
+def test_kis_candidate_request_normalizes_local_phrases_by_text_query_index():
+    body = KisCandidateRequest(
+        text_queries=["a man holding a packet", "woman beside him"],
+        local_phrases_by_query=[
+            [" man ", "red seasoning packet", "man"],
+            ["woman", "", "woman beside him"],
+        ],
+    )
+
+    assert body.local_phrases_by_query == [
+        ["man", "red seasoning packet"],
+        ["woman", "woman beside him"],
+    ]
+
+
 def test_kis_candidate_request_rejects_overlong_asr_query():
     with pytest.raises(ValueError):
         KisCandidateRequest(text_query="dam", asr_query="x" * 1001)
@@ -417,7 +450,7 @@ def test_asr_alone_satisfies_stage1_candidate_retrieval_requirement():
 
     assert response.status_code == 200
     assert service.retrieve_kis_candidates_calls == [
-        (None, [], 300, None, 100, None, 100, "thủy lợi", ["thủy lợi"], "any", 20)
+        (None, [], [], 300, None, 100, None, 100, "thủy lợi", ["thủy lợi"], "any", 20)
     ]
 
 
@@ -537,6 +570,7 @@ def test_kis_candidate_retrieval_accepts_multi_text_queries_and_title_query():
         "/api/search/kis/candidates",
         json={
             "text_queries": ["a dam", "reservoir"],
+            "local_phrases_by_query": [["dam wall", " dam wall "], ["reservoir"]],
             "text_top_k": 50,
             "title_query": "hydroelectric",
             "title_top_k": 20,
@@ -548,6 +582,7 @@ def test_kis_candidate_retrieval_accepts_multi_text_queries_and_title_query():
         (
             "a dam",
             ["a dam", "reservoir"],
+            [["dam wall"], ["reservoir"]],
             50,
             None,
             100,

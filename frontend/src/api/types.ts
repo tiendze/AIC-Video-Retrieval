@@ -38,6 +38,7 @@ export interface KisQueryRow {
 export interface KisCandidatePayload {
   text_query?: string | null
   text_queries?: string[]
+  local_phrases_by_query?: string[][]
   text_top_k: number
   ocr_query?: string | null
   ocr_top_k: number
@@ -180,6 +181,10 @@ export interface Stage1RetrievalScore {
   title?: Stage1TitleScore
   fused_image_score?: number
   fused_image_rank?: number
+  local_score?: number
+  local_query_scores?: number[]
+  local_retrieval_used?: boolean
+  local_embedding_available?: boolean
 }
 
 export interface AsrEvidenceSegment {
@@ -222,6 +227,10 @@ export interface SearchHit {
   score: number
   fused_image_score?: number
   fused_image_rank?: number
+  local_score?: number
+  local_query_scores?: number[]
+  local_retrieval_used?: boolean
+  local_embedding_available?: boolean
   video_title?: string
   final_score?: number
   active_modalities?: number

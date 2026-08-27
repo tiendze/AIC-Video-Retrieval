@@ -12,6 +12,7 @@ tests/integration/ for the real-server counterparts.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -28,6 +29,7 @@ from app.services.asr_retrieval_service import (
     AsrRetrievalUnavailable,
     AsrVideoEvidence,
 )
+from app.services.kis_local_retrieval import KISLocalEmbeddingStore
 from app.services.kis_scoring import (
     AbePair,
     AbePairScore,
@@ -73,6 +75,9 @@ class _FakeEncoder:
                 [self._text_vectors_by_query[text] for text in texts], dtype=np.float32
             )
         return self._vector
+
+    def encode_local_phrases(self, phrases):
+        return self.encode_text(phrases)
 
 
 class _FakeMilvusStore:
@@ -264,6 +269,8 @@ def _service(
     title_video_hits: list[dict[str, Any]] | None = None,
     keyframes_by_video: dict[str, list[dict[str, Any]]] | None = None,
     asr_service: AsrRetrievalService | None = None,
+    kis_config: KisConfig | None = None,
+    local_embedding_store: Any | None = None,
 ) -> tuple[SearchService, _FakeEncoder, _FakeMilvusStore, _FakeEsStore, _FakeMongoStore]:
     default_vector = np.zeros((1, 4), dtype=np.float32)
     encoder = _FakeEncoder(
@@ -289,7 +296,8 @@ def _service(
         es_store=es_store,
         mongo_store=mongo_store,
         query_translator=query_translator,
-        kis_config=KisConfig(candidate_multiplier=2, candidate_min=4),
+        kis_config=kis_config or KisConfig(candidate_multiplier=2, candidate_min=4),
+        local_embedding_store=local_embedding_store,
         **service_kwargs,
     )
     return service, encoder, milvus_store, es_store, mongo_store
@@ -334,6 +342,25 @@ def _fake_abe_ranked(
             rankings=rankings,
         )
     }
+
+
+def _write_local_video(
+    root: Path,
+    video_id: str,
+    frame_indices: Sequence[int],
+    embeddings: np.ndarray,
+) -> KISLocalEmbeddingStore:
+    video_dir = root / video_id.split("_", 1)[0] / video_id
+    video_dir.mkdir(parents=True, exist_ok=True)
+    np.save(video_dir / "embeddings.npy", embeddings.astype(np.float16))
+    np.save(video_dir / "frame_idx.npy", np.asarray(frame_indices, dtype=np.int64))
+    return KISLocalEmbeddingStore(
+        dense_root=root,
+        grid_size=2,
+        num_patches=4,
+        embedding_dim=2,
+        mmap_cache_size=2,
+    )
 
 
 async def test_semantic_mode_embeds_query_and_searches_milvus_with_the_query_vector():
@@ -547,6 +574,269 @@ async def test_kis_stage1_text_only_retrieves_configured_text_candidates():
     assert pool.results[0].final_score is None
     assert pool.results[0].stage1.text.raw_cosine == pytest.approx(0.9)
     assert pool.results[0].stage1.text.rank == 1
+
+
+async def test_kis_stage1_no_local_phrases_keeps_old_text_top_k_behavior():
+    hits = [
+        {
+            "keyframe_id": "A",
+            "distance": 0.9,
+            "entity": {"video_id": "V1", "frame_idx": 10, "timestamp": 0.4},
+        }
+    ]
+    mongo_docs = {
+        "A": {"video_id": "V1", "frame_idx": 10, "timestamp": 0.4, "thumbnail_path": "a.jpg"}
+    }
+    service, _, milvus_store, _, _ = _service(
+        milvus_hits=hits,
+        mongo_docs=mongo_docs,
+        query_vector=np.array([[1.0, 0.0]], dtype=np.float32),
+        kis_config=KisConfig(
+            candidate_multiplier=2,
+            candidate_min=4,
+            local_global_retrieval_k=1000,
+        ),
+    )
+
+    pool = await service.retrieve_kis_candidates(
+        text_query="red shirt",
+        text_top_k=2,
+        ocr_query=None,
+        ocr_top_k=5,
+        local_phrases_by_query=[[]],
+    )
+
+    assert milvus_store.search_calls[0]["top_k"] == 2
+    assert pool.results[0].local_retrieval_used is None
+
+
+async def test_kis_stage1_local_phrase_rerank_uses_deep_global_pool_and_rescues_target(
+    tmp_path: Path,
+):
+    hits = [
+        {
+            "keyframe_id": "A",
+            "distance": 0.99,
+            "entity": {"video_id": "L21_V001", "frame_idx": 10, "timestamp": 0.4},
+        },
+        {
+            "keyframe_id": "B",
+            "distance": 0.2,
+            "entity": {"video_id": "L21_V001", "frame_idx": 20, "timestamp": 0.8},
+        },
+        {
+            "keyframe_id": "target",
+            "distance": 0.1,
+            "entity": {"video_id": "L21_V001", "frame_idx": 30, "timestamp": 1.2},
+        },
+    ]
+    mongo_docs = {
+        keyframe_id: {
+            "video_id": "L21_V001",
+            "frame_idx": frame_idx,
+            "timestamp": frame_idx / 25,
+            "thumbnail_path": f"{keyframe_id}.jpg",
+        }
+        for keyframe_id, frame_idx in {"A": 10, "B": 20, "target": 30}.items()
+    }
+    local_store = _write_local_video(
+        tmp_path,
+        "L21_V001",
+        [10, 20, 30],
+        np.asarray(
+            [
+                [[[0.0, 1.0]]] * 4,
+                [[[0.6, 0.8]]] * 4,
+                [[[1.0, 0.0]]] * 4,
+            ],
+            dtype=np.float32,
+        ).reshape(3, 4, 2),
+    )
+    service, encoder, milvus_store, _, _ = _service(
+        milvus_hits=hits,
+        mongo_docs=mongo_docs,
+        query_vector=np.array([[1.0, 0.0]], dtype=np.float32),
+        text_vectors_by_query={
+            "global query": np.array([1.0, 0.0], dtype=np.float32),
+            "red packet": np.array([1.0, 0.0], dtype=np.float32),
+        },
+        kis_config=KisConfig(
+            candidate_multiplier=2,
+            candidate_min=4,
+            local_grid_size=2,
+            local_num_patches=4,
+            local_embedding_dim=2,
+            local_global_retrieval_k=1000,
+            local_score_batch_size=8,
+        ),
+        local_embedding_store=local_store,
+    )
+
+    pool = await service.retrieve_kis_candidates(
+        text_query="global query",
+        text_top_k=2,
+        ocr_query=None,
+        ocr_top_k=5,
+        local_phrases_by_query=[["red packet"]],
+    )
+
+    assert milvus_store.search_calls[0]["top_k"] == 1000
+    assert encoder.encode_text_calls == [["global query"], ["red packet"]]
+    assert [hit.keyframe_id for hit in pool.results] == ["target", "B"]
+    assert pool.candidate_ids == ["target", "B"]
+    assert pool.results[0].local_score == pytest.approx(1.0)
+    assert pool.results[0].local_query_scores == pytest.approx((1.0,))
+    assert pool.results[0].local_retrieval_used is True
+    assert pool.results[0].local_embedding_available is True
+    assert pool.results[0].stage1.fused_image_score == pytest.approx(0.1)
+
+
+async def test_kis_stage1_local_phrase_reranks_ocr_only_candidate(tmp_path: Path):
+    milvus_hits = [
+        {
+            "keyframe_id": "text-hit",
+            "distance": 0.9,
+            "entity": {"video_id": "L21_V001", "frame_idx": 10, "timestamp": 0.4},
+        }
+    ]
+    es_hits = [
+        {
+            "keyframe_id": "ocr-rescue",
+            "ocr_text": "SAIGON",
+            "video_id": "L21_V001",
+            "timestamp": 0.8,
+            "score": 10.0,
+        }
+    ]
+    mongo_docs = {
+        "text-hit": {
+            "video_id": "L21_V001",
+            "frame_idx": 10,
+            "timestamp": 0.4,
+            "thumbnail_path": "text.jpg",
+        },
+        "ocr-rescue": {
+            "video_id": "L21_V001",
+            "frame_idx": 20,
+            "timestamp": 0.8,
+            "thumbnail_path": "ocr.jpg",
+        },
+    }
+    local_store = _write_local_video(
+        tmp_path,
+        "L21_V001",
+        [10, 20],
+        np.asarray(
+            [
+                [[[0.0, 1.0]]] * 4,
+                [[[1.0, 0.0]]] * 4,
+            ],
+            dtype=np.float32,
+        ).reshape(2, 4, 2),
+    )
+    service, _, _, _, _ = _service(
+        milvus_hits=milvus_hits,
+        es_hits=es_hits,
+        mongo_docs=mongo_docs,
+        query_vector=np.array([[1.0, 0.0]], dtype=np.float32),
+        ocr_texts_by_id={"ocr-rescue": "SAIGON"},
+        bm25_scores_by_query={"SAIGON": {"ocr-rescue": 10.0}},
+        text_vectors_by_query={
+            "global query": np.array([1.0, 0.0], dtype=np.float32),
+            "red packet": np.array([1.0, 0.0], dtype=np.float32),
+        },
+        kis_config=KisConfig(
+            candidate_multiplier=2,
+            candidate_min=4,
+            local_grid_size=2,
+            local_num_patches=4,
+            local_embedding_dim=2,
+            local_global_retrieval_k=1000,
+            local_score_batch_size=8,
+        ),
+        local_embedding_store=local_store,
+    )
+
+    pool = await service.retrieve_kis_candidates(
+        text_query="global query",
+        text_top_k=2,
+        ocr_query="SAIGON",
+        ocr_top_k=1,
+        local_phrases_by_query=[["red packet"]],
+    )
+
+    assert [hit.keyframe_id for hit in pool.results] == ["ocr-rescue", "text-hit"]
+    assert pool.results[0].stage1.source_modalities == ["ocr"]
+    assert pool.results[0].local_score == pytest.approx(1.0)
+
+
+async def test_kis_stage1_local_missing_embedding_falls_back_after_scored_candidates(
+    tmp_path: Path,
+):
+    hits = [
+        {
+            "keyframe_id": "missing-local",
+            "distance": 0.99,
+            "entity": {"video_id": "L21_V001", "frame_idx": 99, "timestamp": 4.0},
+        },
+        {
+            "keyframe_id": "has-local",
+            "distance": 0.1,
+            "entity": {"video_id": "L21_V001", "frame_idx": 10, "timestamp": 0.4},
+        },
+    ]
+    mongo_docs = {
+        "missing-local": {
+            "video_id": "L21_V001",
+            "frame_idx": 99,
+            "timestamp": 4.0,
+            "thumbnail_path": "missing.jpg",
+        },
+        "has-local": {
+            "video_id": "L21_V001",
+            "frame_idx": 10,
+            "timestamp": 0.4,
+            "thumbnail_path": "has.jpg",
+        },
+    }
+    local_store = _write_local_video(
+        tmp_path,
+        "L21_V001",
+        [10],
+        np.asarray([[[[1.0, 0.0]]] * 4], dtype=np.float32).reshape(1, 4, 2),
+    )
+    service, _, _, _, _ = _service(
+        milvus_hits=hits,
+        mongo_docs=mongo_docs,
+        query_vector=np.array([[1.0, 0.0]], dtype=np.float32),
+        text_vectors_by_query={
+            "global query": np.array([1.0, 0.0], dtype=np.float32),
+            "red packet": np.array([1.0, 0.0], dtype=np.float32),
+        },
+        kis_config=KisConfig(
+            candidate_multiplier=2,
+            candidate_min=4,
+            local_grid_size=2,
+            local_num_patches=4,
+            local_embedding_dim=2,
+            local_global_retrieval_k=1000,
+            local_score_batch_size=8,
+        ),
+        local_embedding_store=local_store,
+    )
+
+    pool = await service.retrieve_kis_candidates(
+        text_query="global query",
+        text_top_k=2,
+        ocr_query=None,
+        ocr_top_k=5,
+        local_phrases_by_query=[["red packet"]],
+    )
+
+    assert [hit.keyframe_id for hit in pool.results] == ["has-local", "missing-local"]
+    assert pool.results[0].local_embedding_available is True
+    assert pool.results[1].local_embedding_available is False
+    assert pool.results[1].local_score is None
 
 
 async def test_kis_stage1_text_rejects_beit3_encoder_before_query_encoding():

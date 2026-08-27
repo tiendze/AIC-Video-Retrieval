@@ -35,6 +35,9 @@ import { useSearch } from './hooks/useSearch'
 import { countFilledTrakeEvents, useTrake, type TrakeEventDraft } from './hooks/useTrake'
 import {
   filterHitsByVideoIds,
+  hasLocalRanking,
+  sortHitsByImageRankMode,
+  type ImageRankSortMode,
   type RetrievalViewMode,
   type VideoGroupSortMode,
 } from './utils/retrievalView'
@@ -83,6 +86,10 @@ function App() {
     setTextQuery,
     addTextQuery,
     removeTextQuery,
+    localPhrasesByQuery,
+    setLocalPhrase,
+    addLocalPhrase,
+    removeLocalPhrase,
     globalTextQuery,
     setGlobalTextQuery,
     textCandidateK,
@@ -100,17 +107,6 @@ function App() {
     asrVideoCandidateK,
     setAsrVideoCandidateK,
     candidatePool,
-    stage2Queries,
-    setStage2QueryText,
-    setStage2QueryType,
-    setAbePairAttribute,
-    setAbePairObject,
-    addAbePair,
-    removeAbePair,
-    addStage2Query,
-    removeStage2Query,
-    finalTopK,
-    setFinalTopK,
     query,
     setQuery,
     topK,
@@ -122,7 +118,6 @@ function App() {
     latencyMs,
     setLatencyMs,
     runSearch,
-    rerankCandidates,
     runImageSearch,
   } = useSearch({ asrReady: health?.asr_ready !== false })
   const [selectedHit, setSelectedHit] = useState<SearchHit | null>(null)
@@ -132,18 +127,27 @@ function App() {
   const kisLeftScrollRef = useRef<HTMLDivElement>(null)
   const esDown = health?.elasticsearch_ok === false
   const [viewMode, setViewMode] = useState<RetrievalViewMode>('ranked')
-  const [groupSortMode, setGroupSortMode] = useState<VideoGroupSortMode>('best')
+  const [imageSortMode, setImageSortMode] = useState<ImageRankSortMode>('local')
+  const [groupSortMode, setGroupSortMode] = useState<VideoGroupSortMode>('local')
   const [videoFilter, setVideoFilter] = useState('')
   const [excludedVideoIds, setExcludedVideoIds] = useState<Set<string>>(() => new Set())
   const [kisFrameSweepStep, setKisFrameSweepStep] = useState(10)
   const [kisFrameSweepMargin, setKisFrameSweepMargin] = useState(0)
   const [trakeFrameSweepStep, setTrakeFrameSweepStep] = useState(2)
   const [trakeFrameSweepMargin, setTrakeFrameSweepMargin] = useState(0)
+  const hasLocalResultRanking = useMemo(() => hasLocalRanking(results), [results])
+  const activeImageSortMode: ImageRankSortMode =
+    hasLocalResultRanking && imageSortMode === 'local' ? 'local' : 'global'
+  const activeGroupSortMode: VideoGroupSortMode =
+    hasLocalResultRanking || groupSortMode !== 'local' ? groupSortMode : 'global'
   const visibleResults = useMemo(() => {
     const filtered = filterHitsByVideoIds(results, videoFilter)
-    if (excludedVideoIds.size === 0) return filtered
-    return filtered.filter((hit) => !excludedVideoIds.has(hit.video_id))
-  }, [excludedVideoIds, results, videoFilter])
+    const visible =
+      excludedVideoIds.size === 0
+        ? filtered
+        : filtered.filter((hit) => !excludedVideoIds.has(hit.video_id))
+    return sortHitsByImageRankMode(visible, activeImageSortMode)
+  }, [activeImageSortMode, excludedVideoIds, results, videoFilter])
   const asrMessage = asrReadinessMessage(health)
 
   // QUEST (plan §P2.5, PRD §F5). Both branches push hits into the exact
@@ -365,6 +369,10 @@ function App() {
                 onTextQueryChange={setTextQuery}
                 onAddTextQuery={addTextQuery}
                 onRemoveTextQuery={removeTextQuery}
+                localPhrasesByQuery={localPhrasesByQuery}
+                onLocalPhraseChange={setLocalPhrase}
+                onAddLocalPhrase={addLocalPhrase}
+                onRemoveLocalPhrase={removeLocalPhrase}
                 globalTextQuery={globalTextQuery}
                 textCandidateK={textCandidateK}
                 ocrQuery={ocrQuery}
@@ -380,8 +388,6 @@ function App() {
                 textCandidateCount={candidatePool?.textCandidateCount ?? 0}
                 ocrCandidateCount={candidatePool?.ocrCandidateCount ?? 0}
                 titleCandidateCount={candidatePool?.titleCandidateCount ?? 0}
-                stage2Queries={stage2Queries}
-                finalTopK={finalTopK}
                 onGlobalTextQueryChange={setGlobalTextQuery}
                 onTextCandidateKChange={setTextCandidateK}
                 onOcrQueryChange={setOcrQuery}
@@ -390,17 +396,7 @@ function App() {
                 onTitleCandidateKChange={setTitleCandidateK}
                 onAsrQueryChange={setAsrQuery}
                 onAsrVideoCandidateKChange={setAsrVideoCandidateK}
-                onStage2QueryTextChange={setStage2QueryText}
-                onStage2QueryTypeChange={setStage2QueryType}
-                onAbePairAttributeChange={setAbePairAttribute}
-                onAbePairObjectChange={setAbePairObject}
-                onAddAbePair={addAbePair}
-                onRemoveAbePair={removeAbePair}
-                onAddStage2Query={addStage2Query}
-                onRemoveStage2Query={removeStage2Query}
-                onFinalTopKChange={setFinalTopK}
                 onRetrieveCandidates={runSearch}
-                onRerankCandidates={rerankCandidates}
                 onEnhance={queryRewrite.rewrite}
                 enhanceLoading={queryRewrite.isLoading}
                 ocrDisabled={esDown}
@@ -460,8 +456,11 @@ function App() {
               <ResultBrowserControls
                 viewMode={viewMode}
                 onViewModeChange={setViewMode}
-                groupSortMode={groupSortMode}
+                imageSortMode={activeImageSortMode}
+                onImageSortModeChange={setImageSortMode}
+                groupSortMode={activeGroupSortMode}
                 onGroupSortModeChange={setGroupSortMode}
+                hasLocalRanking={hasLocalResultRanking}
                 videoFilter={videoFilter}
                 onVideoFilterChange={setVideoFilter}
                 excludedCount={excludedVideoIds.size}
@@ -472,6 +471,7 @@ function App() {
               {viewMode === 'ranked' ? (
                 <ResultGrid
                   hits={visibleResults}
+                  rankSourceHits={results}
                   selectedKeyframeId={selectedHit?.keyframe_id}
                   manuallySelectedKeys={manualSearchSelectionKeys}
                   manualSelectionLabel={
@@ -486,7 +486,8 @@ function App() {
               ) : (
                 <GroupedResultList
                   hits={visibleResults}
-                  sortMode={groupSortMode}
+                  rankSourceHits={results}
+                  sortMode={activeGroupSortMode}
                   rrfK={candidatePool?.rrfK ?? DEFAULT_RRF_K}
                   selectedKeyframeId={selectedHit?.keyframe_id}
                   manuallySelectedKeys={manualSearchSelectionKeys}

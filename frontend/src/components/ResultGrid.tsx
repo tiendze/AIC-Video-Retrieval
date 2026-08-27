@@ -1,11 +1,13 @@
-import { useRef, type RefObject } from 'react'
+import { useMemo, useRef, type RefObject } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import type { SearchHit } from '../api/types'
+import { rankedHits } from '../utils/retrievalView'
 import { ResultCard } from './ResultCard'
 import styles from './ResultGrid.module.css'
 
 export interface ResultGridProps {
   hits: SearchHit[]
+  rankSourceHits?: SearchHit[]
   selectedKeyframeId?: string | null
   manuallySelectedKeys?: Set<string>
   manualSelectionLabel?: string
@@ -29,6 +31,7 @@ const GAP_PX = 4
 // roughly one viewport's worth of rows regardless of hit count.
 export function ResultGrid({
   hits,
+  rankSourceHits = hits,
   selectedKeyframeId = null,
   manuallySelectedKeys,
   manualSelectionLabel,
@@ -41,6 +44,7 @@ export function ResultGrid({
   const scrollRef = useRef<HTMLDivElement>(null)
   const usesExternalScroll = scrollElementRef !== undefined
   const scrollMargin = usesExternalScroll ? (scrollRef.current?.offsetTop ?? 0) : 0
+  const ranked = useMemo(() => rankedHits(hits, rankSourceHits), [hits, rankSourceHits])
 
   const columns = Math.max(
     1,
@@ -71,7 +75,7 @@ export function ResultGrid({
       >
         {rowVirtualizer.getVirtualItems().map((virtualRow) => {
           const rowStart = virtualRow.index * columns
-          const rowHits = hits.slice(rowStart, rowStart + columns)
+          const rowHits = ranked.slice(rowStart, rowStart + columns)
           return (
             <div
               key={virtualRow.key}
@@ -85,7 +89,7 @@ export function ResultGrid({
                 transform: `translateY(${virtualRow.start - scrollMargin}px)`,
               }}
             >
-              {rowHits.map((hit, columnIndex) => (
+              {rowHits.map(({ hit, rank, localRank, globalRank }, columnIndex) => (
                 <div
                   key={hit.keyframe_id}
                   className={styles.cell}
@@ -93,7 +97,9 @@ export function ResultGrid({
                 >
                   <ResultCard
                     hit={hit}
-                    rank={hit.fused_image_rank ?? rowStart + columnIndex + 1}
+                    rank={rank ?? rowStart + columnIndex + 1}
+                    localRank={localRank}
+                    globalRank={globalRank}
                     selected={hit.keyframe_id === selectedKeyframeId}
                     manuallySelected={manuallySelectedKeys?.has(`${hit.video_id}:${hit.frame_idx}`)}
                     manualSelectionLabel={manualSelectionLabel}
