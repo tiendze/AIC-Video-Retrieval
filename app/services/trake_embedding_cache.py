@@ -24,6 +24,20 @@ logger = logging.getLogger(__name__)
 _INGEST_COMPLETE_STATUS = "complete"
 
 
+def compute_similarity_matrix(event_vectors: np.ndarray, frame_vectors: np.ndarray) -> np.ndarray:
+    """S[i, t] = cosine_similarity(event_vectors[i], frame_vectors[t]).
+
+    Both inputs are assumed already L2-normalized by the encoder (CLAUDE.md §3),
+    so the plain dot product IS the cosine similarity. Re-normalizing here would
+    silently paper over an encoder that violates that invariant instead of
+    surfacing it.
+
+    event_vectors: shape (N, dim); frame_vectors: shape (T, dim).
+    Returns: shape (N, T).
+    """
+    return event_vectors @ frame_vectors.T
+
+
 class TrakeEmbeddingCacheError(Exception):
     """Raised when the TRAKE cache cannot serve a request.
 

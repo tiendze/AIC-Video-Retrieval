@@ -46,8 +46,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
+import time
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
 
@@ -64,6 +66,12 @@ from app.services.asr_retrieval_service import (
     AsrMatchMode,
     AsrRetrievalService,
     AsrRetrievalUnavailable,
+)
+from app.services.kis_local_retrieval import (
+    KISLocalEmbeddingStore,
+    LocalEmbeddingRef,
+    LocalPhraseReranker,
+    normalize_local_phrase_groups,
 )
 from app.services.kis_scoring import (
     AbeModalityScore,
@@ -159,6 +167,10 @@ class SearchHit:
     thumbnail_path: str
     fused_image_score: float | None = None
     fused_image_rank: int | None = None
+    local_score: float | None = None
+    local_query_scores: tuple[float, ...] = ()
+    local_retrieval_used: bool | None = None
+    local_embedding_available: bool | None = None
     video_title: str | None = None
     final_score: float | None = None
     active_modalities: int | None = None
@@ -193,6 +205,7 @@ class SearchService:
         abe_concept_bank: AbeConceptBank | None = None,
         abe_patch_cache: AbePatchCache | None = None,
         asr_retrieval_service: AsrRetrievalService | None = None,
+        local_embedding_store: KISLocalEmbeddingStore | None = None,
     ) -> None:
         self._encoder = encoder
         self._milvus_store = milvus_store
@@ -206,6 +219,21 @@ class SearchService:
         )
         self._abe_scorer: AbeScorer | None = None
         self._asr_retrieval_service = asr_retrieval_service
+        self._local_embedding_store = local_embedding_store or KISLocalEmbeddingStore.from_config(
+            self._kis_config
+        )
+
+    @property
+    def local_embedding_store(self) -> KISLocalEmbeddingStore:
+        """Shared with `TrakeService` (app/main.py lifespan) so both KIS's
+        Stage 1 phrase rerank and TRAKE's B2 bucket rerank read the same
+        LRU-mmap cache instead of each parsing `manifest.csv` (221,904 rows)
+        and opening its own set of memory maps."""
+        return self._local_embedding_store
+
+    @property
+    def kis_config(self) -> KisConfig:
+        return self._kis_config
 
     async def search(self, query: str, mode: SearchMode, top_k: int) -> list[SearchHit]:
         if mode == "semantic":
@@ -237,6 +265,7 @@ class SearchService:
         ocr_query: str | None,
         ocr_top_k: int,
         text_queries: Sequence[str] | None = None,
+        local_phrases_by_query: Sequence[Sequence[str]] | None = None,
         title_query: str | None = None,
         title_top_k: int = 0,
         asr_query: str | None = None,
@@ -244,16 +273,36 @@ class SearchService:
         asr_match_mode: AsrMatchMode = "any",
         asr_video_top_k: int = 20,
     ) -> KisCandidatePool:
+        request_start = time.perf_counter()
         # A single Text Q0 box with multiple sentences is treated as if the
         # operator had typed each sentence into its own query box: split
         # first, then feed the pieces through the SAME multi-query union +
         # fused-score pipeline the explicit `text_queries` boxes use, so a
         # query with no sentence boundary still normalizes to exactly
         # [text_query] and single-query behaviour is unchanged.
+        #
+        # local_phrases_by_query[0] belongs to the Q0 BOX's meaning, not to
+        # one particular sentence inside it -- KisCandidateRequest's validator
+        # (app/schemas/request/search.py) guarantees text_query ==
+        # text_queries[0] and local_phrases_by_query is index-aligned to
+        # text_queries by the time it reaches here, so Q0's phrases are
+        # duplicated across every sentence split out of Q0 rather than
+        # silently sticking to only the first one.
         text_query_sentences = split_into_sentences(text_query) if text_query else []
+        q0_local_phrases = list(local_phrases_by_query[0]) if local_phrases_by_query else []
         text_queries = _normalize_stage1_text_queries(
             None, [*text_query_sentences, *(text_queries or ())]
         )
+        local_phrases_by_query = [
+            *([q0_local_phrases] * len(text_query_sentences)),
+            *(local_phrases_by_query[1:] if local_phrases_by_query else ()),
+        ]
+        local_phrase_groups = (
+            normalize_local_phrase_groups(text_queries, local_phrases_by_query)
+            if self._kis_config.local_retrieval_enabled
+            else ()
+        )
+        local_retrieval_active = bool(text_queries and local_phrase_groups)
         ocr_query = ocr_query.strip() if ocr_query is not None else None
         title_query = title_query.strip() if title_query is not None else None
         asr_queries = _normalize_stage1_asr_queries(asr_query, asr_queries)
@@ -296,16 +345,26 @@ class SearchService:
         text_vectors = np.empty((0, self._encoder.embedding_dim), dtype=np.float32)
         text_original_ranks_by_query: dict[int, dict[str, int]] = {}
         text_original_scores_by_query: dict[int, dict[str, float]] = {}
+        global_text_retrieval_ms = 0.0
         if text_queries:
             _assert_kis_fg_clip_encoder(self._encoder)
+            global_start = time.perf_counter()
             text_inputs = await self._prepare_text_inputs(text_queries)
             text_vectors = await asyncio.to_thread(self._encoder.encode_text, text_inputs)
+            text_retrieval_k = (
+                max(text_top_k, self._kis_config.local_global_retrieval_k)
+                if local_retrieval_active
+                else text_top_k
+            )
             text_searches = await asyncio.gather(
                 *[
-                    asyncio.to_thread(self._milvus_store.search, vector, text_top_k, "", video_ids)
+                    asyncio.to_thread(
+                        self._milvus_store.search, vector, text_retrieval_k, "", video_ids
+                    )
                     for vector in text_vectors
                 ]
             )
+            global_text_retrieval_ms = (time.perf_counter() - global_start) * 1000
             (
                 text_candidate_ids,
                 text_metadata_by_id,
@@ -547,10 +606,38 @@ class SearchService:
             )
 
         asr_video_ids = set(asr_gate.video_ids) if asr_gate is not None else set()
-        results.sort(
-            key=lambda hit: (_stage1_asr_priority(hit, asr_video_ids), hit.score),
-            reverse=True,
-        )
+        candidate_union_size = len(results)
+        if local_retrieval_active:
+            results = self._local_rerank_stage1_results(
+                results=results,
+                local_phrase_groups=local_phrase_groups,
+                global_text_scores_by_id=fused_text_scores_by_id or {},
+                candidate_union_size=candidate_union_size,
+                global_text_retrieval_ms=global_text_retrieval_ms,
+                request_start=request_start,
+            )
+            results = results[:text_top_k]
+            valid_candidate_ids = [hit.keyframe_id for hit in results]
+            valid_text_ids = {
+                hit.keyframe_id
+                for hit in results
+                if hit.stage1 is not None and "text" in hit.stage1.source_modalities
+            }
+            valid_ocr_ids = {
+                hit.keyframe_id
+                for hit in results
+                if hit.stage1 is not None and "ocr" in hit.stage1.source_modalities
+            }
+            valid_title_ids = {
+                hit.keyframe_id
+                for hit in results
+                if hit.stage1 is not None and "title" in hit.stage1.source_modalities
+            }
+        else:
+            results.sort(
+                key=lambda hit: (_stage1_asr_priority(hit, asr_video_ids), hit.score),
+                reverse=True,
+            )
         if asr_gate is not None:
             returned_video_ids = {hit.video_id for hit in results}
             for video_id in asr_gate.video_ids:
@@ -568,6 +655,88 @@ class SearchService:
             results=results,
             asr_gate=asr_gate,
         )
+
+    def _local_rerank_stage1_results(
+        self,
+        *,
+        results: Sequence[SearchHit],
+        local_phrase_groups,
+        global_text_scores_by_id: dict[str, float],
+        candidate_union_size: int,
+        global_text_retrieval_ms: float,
+        request_start: float,
+    ) -> list[SearchHit]:
+        refs = [
+            LocalEmbeddingRef(
+                keyframe_id=hit.keyframe_id,
+                video_id=hit.video_id,
+                frame_idx=hit.frame_idx,
+            )
+            for hit in results
+        ]
+        reranker = LocalPhraseReranker(
+            encoder=self._encoder,
+            store=self._local_embedding_store,
+            config=self._kis_config,
+        )
+        local_result = reranker.rerank(refs, local_phrase_groups)
+
+        decorated: list[SearchHit] = []
+        for hit in results:
+            score = local_result.scores_by_id[hit.keyframe_id]
+            stage1 = hit.stage1
+            if stage1 is not None:
+                stage1 = replace(
+                    stage1,
+                    local_score=score.local_score,
+                    local_query_scores=score.local_query_scores,
+                    local_retrieval_used=True,
+                    local_embedding_available=score.local_embedding_available,
+                )
+            decorated.append(
+                replace(
+                    hit,
+                    score=score.local_score if score.local_score is not None else hit.score,
+                    local_score=score.local_score,
+                    local_query_scores=score.local_query_scores,
+                    local_retrieval_used=True,
+                    local_embedding_available=score.local_embedding_available,
+                    stage1=stage1,
+                )
+            )
+
+        original_positions = {hit.keyframe_id: index for index, hit in enumerate(results)}
+
+        def sort_key(hit: SearchHit) -> tuple[int, float, float, int, str, int]:
+            local_score = hit.local_score
+            has_local_score = local_score is not None and math.isfinite(local_score)
+            global_score = global_text_scores_by_id.get(hit.keyframe_id, _MISSING_TEXT_RAW_SCORE)
+            return (
+                0 if has_local_score else 1,
+                -float(local_score) if has_local_score else 0.0,
+                -float(global_score) if math.isfinite(global_score) else math.inf,
+                original_positions[hit.keyframe_id],
+                hit.video_id,
+                hit.frame_idx,
+            )
+
+        decorated.sort(key=sort_key)
+        total_kis_ms = (time.perf_counter() - request_start) * 1000
+        logger.info(
+            "kis local retrieval completed: global_text_retrieval_ms=%.1f "
+            "candidate_union_size=%d local_embedding_io_ms=%.1f "
+            "local_phrase_encode_ms=%.1f local_scoring_ms=%.1f "
+            "num_local_candidates=%d num_missing_local_embeddings=%d total_kis_ms=%.1f",
+            global_text_retrieval_ms,
+            candidate_union_size,
+            local_result.embedding_io_ms,
+            local_result.phrase_encode_ms,
+            local_result.scoring_ms,
+            local_result.num_local_candidates,
+            local_result.num_missing_local_embeddings,
+            total_kis_ms,
+        )
+        return decorated
 
     async def _retrieve_stage1_ocr_candidates(
         self,

@@ -1,4 +1,5 @@
 import type {
+  ImageRankSortMode,
   RetrievalViewMode,
   VideoGroupSortMode,
 } from '../utils/retrievalView'
@@ -7,8 +8,11 @@ import styles from './ResultBrowserControls.module.css'
 export interface ResultBrowserControlsProps {
   viewMode: RetrievalViewMode
   onViewModeChange: (mode: RetrievalViewMode) => void
+  imageSortMode: ImageRankSortMode
+  onImageSortModeChange: (mode: ImageRankSortMode) => void
   groupSortMode: VideoGroupSortMode
   onGroupSortModeChange: (mode: VideoGroupSortMode) => void
+  hasLocalRanking: boolean
   videoFilter: string
   onVideoFilterChange: (value: string) => void
   excludedCount: number
@@ -20,8 +24,11 @@ export interface ResultBrowserControlsProps {
 export function ResultBrowserControls({
   viewMode,
   onViewModeChange,
+  imageSortMode,
+  onImageSortModeChange,
   groupSortMode,
   onGroupSortModeChange,
+  hasLocalRanking,
   videoFilter,
   onVideoFilterChange,
   excludedCount,
@@ -49,15 +56,55 @@ export function ResultBrowserControls({
           Group by Video
         </button>
       </div>
+      {viewMode === 'ranked' && (
+        <div className={styles.segment} role="radiogroup" aria-label="image sort">
+          <button
+            type="button"
+            className={imageSortMode === 'local' ? styles.active : ''}
+            aria-pressed={imageSortMode === 'local'}
+            disabled={!hasLocalRanking}
+            title={
+              hasLocalRanking
+                ? 'Sort images by phrase-to-patch local score'
+                : 'Local rank appears after a local phrase search'
+            }
+            onClick={() => onImageSortModeChange('local')}
+          >
+            Local Rank
+          </button>
+          <button
+            type="button"
+            className={imageSortMode === 'global' ? styles.active : ''}
+            aria-pressed={imageSortMode === 'global'}
+            onClick={() => onImageSortModeChange('global')}
+          >
+            Global Rank
+          </button>
+        </div>
+      )}
       {viewMode === 'grouped' && (
         <div className={styles.segment} role="radiogroup" aria-label="video sort">
           <button
             type="button"
-            className={groupSortMode === 'best' ? styles.active : ''}
-            aria-pressed={groupSortMode === 'best'}
-            onClick={() => onGroupSortModeChange('best')}
+            className={groupSortMode === 'local' ? styles.active : ''}
+            aria-pressed={groupSortMode === 'local'}
+            disabled={!hasLocalRanking}
+            title={
+              hasLocalRanking
+                ? 'Sort videos by their best local phrase frame'
+                : 'Local video sort appears after a local phrase search'
+            }
+            onClick={() => onGroupSortModeChange('local')}
           >
-            Best Frame
+            Best Local
+          </button>
+          <button
+            type="button"
+            className={groupSortMode === 'global' ? styles.active : ''}
+            aria-pressed={groupSortMode === 'global'}
+            onClick={() => onGroupSortModeChange('global')}
+          >
+            Best Global
           </button>
           <button
             type="button"
@@ -70,11 +117,12 @@ export function ResultBrowserControls({
         </div>
       )}
       <label className={styles.filter}>
-        <span>Video ID filter</span>
+        <span>Filter</span>
         <input
-          aria-label="video id filter"
+          aria-label="filter"
+          title="Gõ video id (L25_V076) hoặc batch (L25) để lọc kết quả đang thấy -- cách nhau bằng dấu cách."
           value={videoFilter}
-          placeholder="L25_V076 L22_V002"
+          placeholder="L21  L25_V076"
           onChange={(event) => onVideoFilterChange(event.currentTarget.value)}
         />
       </label>

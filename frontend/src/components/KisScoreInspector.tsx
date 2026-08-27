@@ -31,8 +31,20 @@ export function KisScoreInspector({ hit, embedded = false }: KisScoreInspectorPr
   return (
     <ScoreContainer embedded={embedded}>
       <div className={styles.header}>
-        <span>{hit.final_score === undefined ? 'Stage 1 Candidate' : 'Final Geometric Mean'}</span>
-        <span>{hit.final_score === undefined ? formatScore(displayScore) : formatScore(hit.final_score)}</span>
+        <span>
+          {hit.local_retrieval_used
+            ? 'Local Phrase Score'
+            : hit.final_score === undefined
+              ? 'Stage 1 Candidate'
+              : 'Final Geometric Mean'}
+        </span>
+        <span>
+          {hit.local_retrieval_used
+            ? formatScore(hit.local_score ?? displayScore)
+            : hit.final_score === undefined
+              ? formatScore(displayScore)
+              : formatScore(hit.final_score)}
+        </span>
       </div>
       <section className={styles.section}>
         <div className={styles.keyframe}>{hit.keyframe_id}</div>
@@ -41,9 +53,30 @@ export function KisScoreInspector({ hit, embedded = false }: KisScoreInspectorPr
         <section className={styles.section}>
           <div className={styles.sectionHeader}>
             <span>STAGE 1</span>
-            <strong>Candidate retrieval only</strong>
+            <strong>
+              {hit.stage1.local_retrieval_used
+                ? 'Candidate retrieval + local ranking'
+                : 'Candidate retrieval only'}
+            </strong>
           </div>
           <div className={styles.sourceList}>Source: {hit.stage1.source_modalities.join(' + ')}</div>
+          {hit.stage1.local_retrieval_used && (
+            <div className={styles.queryBlock}>
+              <div className={styles.queryTitle}>FG-CLIP Local Phrase-to-Patch</div>
+              <ScoreTextRow
+                label="Embedding"
+                value={hit.stage1.local_embedding_available ? 'available' : 'missing'}
+              />
+              <ScoreRow label="Local score" value={hit.stage1.local_score} />
+              {hit.stage1.local_query_scores?.map((score, index) => (
+                <ScoreRow
+                  key={`local-query-${index}`}
+                  label={`Local query ${index + 1}`}
+                  value={score}
+                />
+              ))}
+            </div>
+          )}
           {hit.stage1.fused_image_score !== undefined && (
             <div className={styles.queryBlock}>
               <div className={styles.queryTitle}>Fused Image Rank</div>
@@ -106,13 +139,6 @@ export function KisScoreInspector({ hit, embedded = false }: KisScoreInspectorPr
               )}
             </div>
           )}
-        </section>
-      )}
-      {hit.final_score === undefined && (
-        <section className={styles.section}>
-          <div className={styles.notice}>
-            Add at least one Stage 2 constraint to calculate the final reranking.
-          </div>
         </section>
       )}
       {hit.modalities?.text && (

@@ -20,6 +20,7 @@ import type {
   KisQueryType,
   SearchHit,
 } from '../api/types'
+import { cleanLocalPhraseGroup } from '../utils/localPhrases'
 
 export interface KisCandidatePoolState {
   candidateIds: string[]
@@ -37,6 +38,10 @@ export interface UseSearchResult {
   setTextQuery: (index: number, query: string) => void
   addTextQuery: () => void
   removeTextQuery: (index: number) => void
+  localPhrasesByQuery: string[][]
+  setLocalPhrase: (queryIndex: number, phraseIndex: number, value: string) => void
+  addLocalPhrase: (queryIndex: number) => void
+  removeLocalPhrase: (queryIndex: number, phraseIndex: number) => void
   globalTextQuery: string
   setGlobalTextQuery: (query: string) => void
   textCandidateK: number
@@ -151,6 +156,7 @@ function withAsrEvidence(
 
 export function useSearch({ asrReady = true }: UseSearchOptions = {}): UseSearchResult {
   const [textQueriesValue, setTextQueriesValue] = useState<string[]>([''])
+  const [localPhrasesByQueryValue, setLocalPhrasesByQueryValue] = useState<string[][]>([[]])
   const [textCandidateKValue, setTextCandidateKValue] = useState(DEFAULT_TEXT_CANDIDATE_K)
   const [ocrQueryValue, setOcrQueryValue] = useState('')
   const [ocrCandidateKValue, setOcrCandidateKValue] = useState(DEFAULT_OCR_CANDIDATE_K)
@@ -207,6 +213,7 @@ export function useSearch({ asrReady = true }: UseSearchOptions = {}): UseSearch
       next[0] = query
       return next
     })
+    setLocalPhrasesByQueryValue((prev) => (prev.length > 0 ? prev : [[]]))
     invalidateCandidatePool()
   }, [invalidateCandidatePool])
 
@@ -217,6 +224,7 @@ export function useSearch({ asrReady = true }: UseSearchOptions = {}): UseSearch
 
   const addTextQuery = useCallback(() => {
     setTextQueriesValue((prev) => [...prev, ''])
+    setLocalPhrasesByQueryValue((prev) => [...prev, []])
     invalidateCandidatePool()
   }, [invalidateCandidatePool])
 
@@ -225,6 +233,39 @@ export function useSearch({ asrReady = true }: UseSearchOptions = {}): UseSearch
       const next = prev.filter((_, i) => i !== index)
       return next.length > 0 ? next : ['']
     })
+    setLocalPhrasesByQueryValue((prev) => {
+      const next = prev.filter((_, i) => i !== index)
+      return next.length > 0 ? next : [[]]
+    })
+    invalidateCandidatePool()
+  }, [invalidateCandidatePool])
+
+  const setLocalPhrase = useCallback((queryIndex: number, phraseIndex: number, value: string) => {
+    setLocalPhrasesByQueryValue((prev) =>
+      prev.map((phrases, index) =>
+        index === queryIndex
+          ? phrases.map((phrase, innerIndex) => (innerIndex === phraseIndex ? value : phrase))
+          : phrases,
+      ),
+    )
+    invalidateCandidatePool()
+  }, [invalidateCandidatePool])
+
+  const addLocalPhrase = useCallback((queryIndex: number) => {
+    setLocalPhrasesByQueryValue((prev) =>
+      prev.map((phrases, index) => (index === queryIndex ? [...phrases, ''] : phrases)),
+    )
+    invalidateCandidatePool()
+  }, [invalidateCandidatePool])
+
+  const removeLocalPhrase = useCallback((queryIndex: number, phraseIndex: number) => {
+    setLocalPhrasesByQueryValue((prev) =>
+      prev.map((phrases, index) =>
+        index === queryIndex
+          ? phrases.filter((_, innerIndex) => innerIndex !== phraseIndex)
+          : phrases,
+      ),
+    )
     invalidateCandidatePool()
   }, [invalidateCandidatePool])
 
@@ -349,9 +390,15 @@ export function useSearch({ asrReady = true }: UseSearchOptions = {}): UseSearch
   }, [])
 
   const retrieveCandidates = useCallback((overrideQuery?: string) => {
-    const textQueries = overrideQuery
-      ? [overrideQuery.trim()].filter(Boolean)
-      : textQueriesValue.map((query) => query.trim()).filter(Boolean)
+    const textEntries = overrideQuery
+      ? [{ query: overrideQuery.trim(), phrases: [] }]
+      : textQueriesValue.map((query, index) => ({
+          query: query.trim(),
+          phrases: cleanLocalPhraseGroup(localPhrasesByQueryValue[index]),
+        }))
+    const activeTextEntries = textEntries.filter((entry) => entry.query.length > 0)
+    const textQueries = activeTextEntries.map((entry) => entry.query)
+    const localPhrasesByQuery = activeTextEntries.map((entry) => entry.phrases)
     const ocrQuery = ocrQueryValue.trim()
     const titleQuery = titleQueryValue.trim()
     const asrQueries = asrReady ? parseAsrQueries(asrQueryValue) : []
@@ -370,6 +417,7 @@ export function useSearch({ asrReady = true }: UseSearchOptions = {}): UseSearch
       {
         text_query: textQueries[0] ?? null,
         text_queries: textQueries,
+        local_phrases_by_query: localPhrasesByQuery,
         text_top_k: textCandidateKValue,
         ocr_query: ocrQuery || null,
         ocr_top_k: ocrCandidateKValue,
@@ -435,6 +483,7 @@ export function useSearch({ asrReady = true }: UseSearchOptions = {}): UseSearch
     ocrQueryValue,
     textCandidateKValue,
     textQueriesValue,
+    localPhrasesByQueryValue,
     titleCandidateKValue,
     titleQueryValue,
   ])
@@ -537,6 +586,10 @@ export function useSearch({ asrReady = true }: UseSearchOptions = {}): UseSearch
     setTextQuery,
     addTextQuery,
     removeTextQuery,
+    localPhrasesByQuery: localPhrasesByQueryValue,
+    setLocalPhrase,
+    addLocalPhrase,
+    removeLocalPhrase,
     globalTextQuery: primaryTextQuery,
     setGlobalTextQuery,
     textCandidateK: textCandidateKValue,

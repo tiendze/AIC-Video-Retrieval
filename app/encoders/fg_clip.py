@@ -113,6 +113,16 @@ class FGClipEncoder:
     def preprocess_id(self) -> str:
         return f"fgclip_resize{self._image_size}_processor_patch16_text{self._max_text_tokens}"
 
+    @property
+    def max_text_tokens(self) -> int:
+        """The tokenizer's `max_length` (77 for the short/`walk_short_pos`
+        path this encoder always uses -- see the model card's "Long
+        captions" note for the 248-token alternative, which this class does
+        not wire up). `_tokenize` always calls with `truncation=True`, so any
+        text over this length is silently cut; callers that need to warn
+        about that should compare against this, not hardcode 77."""
+        return self._max_text_tokens
+
     def encode_image(self, images: Sequence[Image.Image]) -> np.ndarray:
         if not images:
             return np.empty((0, self.embedding_dim), dtype=np.float32)
@@ -130,6 +140,22 @@ class FGClipEncoder:
             return np.empty((0, self.embedding_dim), dtype=np.float32)
         vectors = [self._encode_text_batch(batch) for batch in self._batched(texts)]
         return np.concatenate(vectors, axis=0).astype(np.float32)
+
+    def encode_local_phrases(self, phrases: Sequence[str]) -> np.ndarray:
+        """Encode phrase-level visual concepts for 8x8 patch MaxSim scoring."""
+        return self.encode_text(phrases)
+
+    def count_text_tokens(self, texts: Sequence[str]) -> list[int]:
+        """Real token count per text, WITHOUT the padding/truncation
+        `_tokenize` applies for the encode path -- `_tokenize` always pads to
+        `max_length` and truncates silently, so it cannot tell a caller
+        whether a text was actually cut. Used to warn (not fix) callers whose
+        text may exceed `max_text_tokens`, e.g. a long TRAKE event
+        description (`app/services/trake_service.py`)."""
+        if not texts:
+            return []
+        encoded = self._tokenizer(list(texts), truncation=False, padding=False)
+        return [len(ids) for ids in encoded["input_ids"]]
 
     def encode_text_tokens(self, texts: Sequence[str]) -> list[LocalTextEmbeddings]:
         if not texts:

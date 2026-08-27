@@ -93,3 +93,27 @@ def test_text_is_padded_to_fgclip_short_caption_length(encoder, sample_texts):
     token_ids = encoder.debug_tokenize(sample_texts)
 
     assert token_ids.shape[1] == 77
+
+
+def test_max_text_tokens_matches_short_caption_length(encoder):
+    assert encoder.max_text_tokens == 77
+
+
+def test_count_text_tokens_reports_real_length_not_padded_length(encoder, sample_texts):
+    counts = encoder.count_text_tokens(sample_texts)
+
+    assert len(counts) == len(sample_texts)
+    assert all(count > 0 for count in counts)
+    # Unlike debug_tokenize()/encode_text(), this must NOT be padded to 77 --
+    # short sample texts stay short, which is what lets
+    # app/services/trake_service.py:_encode_events compare a real length
+    # against max_text_tokens instead of always seeing 77.
+    assert all(count < 77 for count in counts)
+
+
+def test_count_text_tokens_flags_a_text_over_the_cap(encoder):
+    long_text = " ".join(["a distinct visual detail"] * 40)
+
+    counts = encoder.count_text_tokens([long_text])
+
+    assert counts[0] > encoder.max_text_tokens

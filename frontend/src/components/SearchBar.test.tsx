@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ComponentProps } from 'react'
 import { describe, expect, it, vi } from 'vitest'
-import type { AsrGate, KisQueryRow } from '../api/types'
+import type { AsrGate } from '../api/types'
 import { SearchBar } from './SearchBar'
 
 const ASR_GATE: AsrGate = {
@@ -65,6 +65,10 @@ describe('SearchBar', () => {
       onTextQueryChange: vi.fn(),
       onAddTextQuery: vi.fn(),
       onRemoveTextQuery: vi.fn(),
+      localPhrasesByQuery: [[]],
+      onLocalPhraseChange: vi.fn(),
+      onAddLocalPhrase: vi.fn(),
+      onRemoveLocalPhrase: vi.fn(),
       globalTextQuery: '',
       textCandidateK: 300,
       ocrQuery: '',
@@ -80,8 +84,6 @@ describe('SearchBar', () => {
       textCandidateCount: 0,
       ocrCandidateCount: 0,
       titleCandidateCount: 0,
-      stage2Queries: [],
-      finalTopK: 20,
       onGlobalTextQueryChange: vi.fn(),
       onTextCandidateKChange: vi.fn(),
       onOcrQueryChange: vi.fn(),
@@ -90,17 +92,7 @@ describe('SearchBar', () => {
       onTitleCandidateKChange: vi.fn(),
       onAsrQueryChange: vi.fn(),
       onAsrVideoCandidateKChange: vi.fn(),
-      onStage2QueryTextChange: vi.fn(),
-      onStage2QueryTypeChange: vi.fn(),
-      onAbePairAttributeChange: vi.fn(),
-      onAbePairObjectChange: vi.fn(),
-      onAddAbePair: vi.fn(),
-      onRemoveAbePair: vi.fn(),
-      onAddStage2Query: vi.fn(),
-      onRemoveStage2Query: vi.fn(),
-      onFinalTopKChange: vi.fn(),
       onRetrieveCandidates: vi.fn(),
-      onRerankCandidates: vi.fn(),
       onEnhance: vi.fn(),
       ...overrides,
     }
@@ -152,6 +144,14 @@ describe('SearchBar', () => {
     expect(props.onTitleCandidateKChange).toHaveBeenLastCalledWith(30)
   })
 
+  it('does not cap Text candidates while keeping OCR and Title capped', () => {
+    renderSearchBar()
+
+    expect(screen.getByLabelText('text candidates')).not.toHaveAttribute('max')
+    expect(screen.getByLabelText('ocr candidates')).toHaveAttribute('max', '1000')
+    expect(screen.getByLabelText('title candidates')).toHaveAttribute('max', '1000')
+  })
+
   it('adds and removes Stage 1 text query rows', async () => {
     const user = userEvent.setup()
     const props = renderSearchBar({ textQueries: ['dam', 'reservoir'] })
@@ -163,6 +163,23 @@ describe('SearchBar', () => {
     expect(props.onTextQueryChange).toHaveBeenCalledWith(1, 'reservoir!')
     expect(props.onAddTextQuery).toHaveBeenCalledTimes(1)
     expect(props.onRemoveTextQuery).toHaveBeenCalledWith(1)
+  })
+
+  it('edits local phrases for the matching text query row', async () => {
+    const user = userEvent.setup()
+    const props = renderSearchBar({
+      textQueries: ['man holding a packet', 'woman beside him'],
+      localPhrasesByQuery: [['man'], ['woman', 'red packet']],
+    })
+
+    await user.type(screen.getByLabelText('local phrase 2.2'), '!')
+    await user.click(screen.getAllByRole('button', { name: /\+ Add local phrase/i })[1])
+    await user.click(screen.getByRole('button', { name: /remove local phrase 1.1/i }))
+
+    expect(props.onLocalPhraseChange).toHaveBeenCalledWith(1, 1, 'red packet!')
+    expect(props.onAddLocalPhrase).toHaveBeenCalledWith(1)
+    expect(props.onRemoveLocalPhrase).toHaveBeenCalledWith(0, 0)
+    expect(screen.getByText(/Local phrases score visual regions/i)).toBeInTheDocument()
   })
 
   it('renders ASR controls and reports the active gated video count', () => {
@@ -234,74 +251,22 @@ describe('SearchBar', () => {
     expect(screen.getByRole('button', { name: /AI enhancer/i })).toBeDisabled()
   })
 
-  it('disables Stage 1 OCR input and Stage 2 OCR option when Elasticsearch is unavailable', () => {
-    const rows: KisQueryRow[] = [{ id: 'q1', type: 'text', text: '', pairs: [] }]
-    renderSearchBar({ ocrDisabled: true, candidatePoolSize: 3, stage2Queries: rows })
+  it('disables Stage 1 OCR input when Elasticsearch is unavailable', () => {
+    renderSearchBar({ ocrDisabled: true, candidatePoolSize: 3 })
 
     expect(screen.getByLabelText('stage 1 ocr')).toBeDisabled()
-    expect(screen.getByRole('option', { name: 'OCR' })).toBeDisabled()
+    expect(screen.queryByText(/Stage 2/i)).not.toBeInTheDocument()
   })
 
-  it('reveals Stage 2 after candidate retrieval and wires subquery controls', async () => {
-    const user = userEvent.setup()
-    const rows: KisQueryRow[] = [
-      { id: 'q1', type: 'text', text: 'night scene', pairs: [] },
-      { id: 'q2', type: 'ocr', text: 'SAIGON', pairs: [] },
-    ]
-    const props = renderSearchBar({
+  it('keeps the active KIS flow on Stage 1 after candidate retrieval', () => {
+    renderSearchBar({
       candidatePoolSize: 347,
       textCandidateCount: 300,
       ocrCandidateCount: 100,
-      stage2Queries: rows,
     })
 
-    expect(screen.getByText('Candidate Pool: 347')).toBeInTheDocument()
-    expect(screen.getByLabelText('stage 2 query 1')).toHaveValue('night scene')
-    expect(screen.getByLabelText('stage 2 query 2')).toHaveValue('SAIGON')
-
-    await user.selectOptions(screen.getByLabelText('stage 2 query type 1'), 'ocr')
-    await user.type(screen.getByLabelText('stage 2 query 1'), '!')
-    await user.click(screen.getByRole('button', { name: /\+ Add subquery/i }))
-    await user.click(screen.getByRole('button', { name: /remove stage 2 query 2/i }))
-
-    expect(props.onStage2QueryTypeChange).toHaveBeenCalledWith('q1', 'ocr')
-    expect(props.onStage2QueryTextChange).toHaveBeenCalledWith('q1', 'night scene!')
-    expect(props.onAddStage2Query).toHaveBeenCalledTimes(1)
-    expect(props.onRemoveStage2Query).toHaveBeenCalledWith('q2')
-  })
-
-  it('renders ABE pair controls and wires pair edits', async () => {
-    const user = userEvent.setup()
-    const rows: KisQueryRow[] = [
-      {
-        id: 'q1',
-        type: 'abe',
-        text: '',
-        pairs: [{ id: 'p1', attribute: 'red', object: 'packet' }],
-      },
-    ]
-    const props = renderSearchBar({
-      candidatePoolSize: 10,
-      stage2Queries: rows,
-    })
-
-    await user.type(screen.getByLabelText('abe attribute 1.1'), '!')
-    await user.type(screen.getByLabelText('abe object 1.1'), '!')
-    await user.click(screen.getByRole('button', { name: /\+ Add pair/i }))
-    await user.click(screen.getByRole('button', { name: /remove abe pair 1.1/i }))
-
-    expect(props.onAbePairAttributeChange).toHaveBeenCalledWith('q1', 'p1', 'red!')
-    expect(props.onAbePairObjectChange).toHaveBeenCalledWith('q1', 'p1', 'packet!')
-    expect(props.onAddAbePair).toHaveBeenCalledWith('q1')
-    expect(props.onRemoveAbePair).toHaveBeenCalledWith('q1', 'p1')
-  })
-
-  it('disables rerank and shows guidance when no Stage 2 subquery is active', () => {
-    renderSearchBar({ candidatePoolSize: 10, stage2Queries: [] })
-
-    expect(screen.getByRole('button', { name: 'Rerank Candidates' })).toBeDisabled()
-    expect(
-      screen.getByText('Add at least one Stage 2 constraint to calculate final reranking.'),
-    ).toBeInTheDocument()
+    expect(screen.getByText('Candidate Pool: 347 unique images')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Rerank Candidates' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /\+ Add subquery/i })).not.toBeInTheDocument()
   })
 })

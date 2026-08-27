@@ -38,6 +38,27 @@ kis_geomean_epsilon: 0.00000001
 # video-level sorting from original per-query Stage 1 Text rankings.
 rrf_k: 60
 
+# KIS FG-CLIP phrase-to-patch local retrieval. Global FG-CLIP/Milvus still
+# performs coarse retrieval; these disk-backed 8x8 features rerank the Stage 1
+# union pool only when the request supplies local phrases. Same store is now
+# also shared with TRAKE's B2b bucket rerank (app/main.py lifespan wiring:
+# SearchService.local_embedding_store passed into TrakeService), whose
+# local_rerank.max_videos (configs/search/trake.yaml) can be up to 50 --
+# mmap_cache_size must stay >= that or the LRU evicts and reopens the same
+# mmap handles across a single TRAKE request. The cache only holds an mmap
+# handle + a ~700-int frame_idx->row dict per video, so 512 is effectively
+# free RAM, not a real budget.
+kis:
+  local_retrieval:
+    enabled: true
+    dense_root: data/fgclip_dense_8x8
+    grid_size: 8
+    num_patches: 64
+    embedding_dim: 512
+    global_retrieval_k: 1000
+    local_score_batch_size: 256
+    mmap_cache_size: 512
+
 # Per-query OCR BM25 normalization. If fewer than this many positive BM25
 # scores are retrieved for a query, KIS uses max(score) instead of P95.
 kis_bm25_percentile: 95

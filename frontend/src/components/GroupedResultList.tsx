@@ -5,6 +5,7 @@ import styles from './GroupedResultList.module.css'
 
 export interface GroupedResultListProps {
   hits: SearchHit[]
+  rankSourceHits?: SearchHit[]
   sortMode: VideoGroupSortMode
   rrfK: number
   selectedKeyframeId?: string | null
@@ -19,6 +20,7 @@ export interface GroupedResultListProps {
 
 export function GroupedResultList({
   hits,
+  rankSourceHits = hits,
   sortMode,
   rrfK,
   selectedKeyframeId = null,
@@ -30,7 +32,7 @@ export function GroupedResultList({
   onOpenDetail,
   onExcludeVideo,
 }: GroupedResultListProps) {
-  const groups = buildVideoGroups(hits, sortMode, rrfK)
+  const groups = buildVideoGroups(hits, sortMode, rrfK, rankSourceHits)
   if (groups.length === 0) {
     return <div className={styles.empty}>No results yet -- try a search.</div>
   }
@@ -43,7 +45,15 @@ export function GroupedResultList({
             <strong>#{group.finalVideoRank} · {group.videoId}</strong>
             {group.ocrDetected && <span className={styles.badge}>OCR</span>}
             {group.titleOcrDetected && <span className={styles.badge}>TITLE OCR</span>}
-            <span>Best image rank #{group.bestImageRank}</span>
+            {group.bestLocalRank !== null && (
+              <span>
+                Best local #{group.bestLocalRank}
+                {group.bestLocalScore !== null ? ` · ${group.bestLocalScore.toFixed(3)}` : ''}
+              </span>
+            )}
+            <span>
+              Best global {group.bestGlobalRank !== null ? `#${group.bestGlobalRank}` : '-'}
+            </span>
             <span>{group.matchCount} matches</span>
             {sortMode === 'rrf' && <span>RRF {group.rrfScore.toFixed(4)}</span>}
             {onExcludeVideo && (
@@ -57,11 +67,13 @@ export function GroupedResultList({
             )}
           </header>
           <div className={styles.frames}>
-            {group.frames.map(({ hit, rank }) => (
+            {group.frames.map(({ hit, rank, localRank, globalRank }) => (
               <div className={styles.cell} key={hit.keyframe_id}>
                 <ResultCard
                   hit={hit}
                   rank={rank}
+                  localRank={localRank}
+                  globalRank={globalRank}
                   selected={hit.keyframe_id === selectedKeyframeId}
                   manuallySelected={manuallySelectedKeys?.has(`${hit.video_id}:${hit.frame_idx}`)}
                   manualSelectionLabel={manualSelectionLabel}

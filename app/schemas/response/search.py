@@ -136,6 +136,10 @@ class Stage1RetrievalResponse(BaseModel):
     text_queries: list[Stage1TextQueryScoreResponse] | None = None
     fused_image_score: float | None = None
     fused_image_rank: int | None = None
+    local_score: float | None = None
+    local_query_scores: list[float] | None = None
+    local_retrieval_used: bool | None = None
+    local_embedding_available: bool | None = None
 
 
 class SearchHitResponse(BaseModel):
@@ -157,12 +161,20 @@ class SearchResponse(BaseModel):
 
 
 class KisSearchHitResponse(SearchHitResponse):
+    local_score: float | None = None
+    local_query_scores: list[float] | None = None
+    local_retrieval_used: bool | None = None
+    local_embedding_available: bool | None = None
     final_score: float
     active_modalities: int
     modalities: SearchModalitiesResponse
 
 
 class KisCandidateHitResponse(SearchHitResponse):
+    local_score: float | None = None
+    local_query_scores: list[float] | None = None
+    local_retrieval_used: bool | None = None
+    local_embedding_available: bool | None = None
     stage1: Stage1RetrievalResponse
 
 

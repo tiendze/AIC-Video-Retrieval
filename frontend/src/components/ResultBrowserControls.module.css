@@ -24,6 +24,13 @@
   font-size: 12px;
 }
 
+.segment button:disabled {
+  cursor: not-allowed;
+  color: #6b7280;
+  border-color: #333;
+  background: #151515;
+}
+
 .segment .active {
   background: #2563eb;
   color: #fff;

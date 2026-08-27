@@ -68,4 +68,32 @@ describe('ResultGrid', () => {
 
     expect(screen.getByText(/no results/i)).toBeInTheDocument()
   })
+
+  it('shows local and global rank badges when local reranking is present', () => {
+    const restore = stubViewportSizeGlobally(600)
+    render(
+      <ResultGrid
+        hits={[
+          {
+            keyframe_id: 'L26_V035_f5056',
+            video_id: 'L26_V035',
+            score: 0.31,
+            fused_image_rank: 687,
+            local_score: 0.31,
+            local_retrieval_used: true,
+            frame_idx: 5056,
+            timestamp: 202.24,
+            thumbnail_path: '',
+            thumbnail_url: '/api/keyframes/L26_V035_f5056/thumbnail',
+            image_url: '/api/keyframes/L26_V035_f5056/image',
+          },
+        ]}
+        onSelect={vi.fn()}
+        onFindSimilar={vi.fn()}
+      />,
+    )
+    restore()
+
+    expect(screen.getByText('L#1 G#687')).toBeInTheDocument()
+  })
 })

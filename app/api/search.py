@@ -136,6 +136,10 @@ def _to_kis_response(hits: list[SearchHit]) -> KisSearchResponse:
                 score=hit.score,
                 fused_image_score=hit.fused_image_score,
                 fused_image_rank=hit.fused_image_rank,
+                local_score=hit.local_score,
+                local_query_scores=list(hit.local_query_scores) if hit.local_query_scores else None,
+                local_retrieval_used=hit.local_retrieval_used,
+                local_embedding_available=hit.local_embedding_available,
                 video_title=hit.video_title,
                 frame_idx=hit.frame_idx,
                 timestamp=hit.timestamp,
@@ -171,6 +175,10 @@ def _to_kis_candidate_response(pool: KisCandidatePool) -> KisCandidateResponse:
                 score=hit.score,
                 fused_image_score=hit.fused_image_score,
                 fused_image_rank=hit.fused_image_rank,
+                local_score=hit.local_score,
+                local_query_scores=list(hit.local_query_scores) if hit.local_query_scores else None,
+                local_retrieval_used=hit.local_retrieval_used,
+                local_embedding_available=hit.local_embedding_available,
                 video_title=hit.video_title,
                 frame_idx=hit.frame_idx,
                 timestamp=hit.timestamp,
@@ -240,6 +248,12 @@ def _to_stage1_response(stage1: Stage1RetrievalScore | None) -> Stage1RetrievalR
         source_modalities=stage1.source_modalities,
         fused_image_score=stage1.fused_image_score,
         fused_image_rank=stage1.fused_image_rank,
+        local_score=stage1.local_score,
+        local_query_scores=(
+            list(stage1.local_query_scores) if stage1.local_query_scores else None
+        ),
+        local_retrieval_used=stage1.local_retrieval_used,
+        local_embedding_available=stage1.local_embedding_available,
         text=(
             Stage1TextScoreResponse(
                 query=stage1.text.query,
@@ -444,6 +458,7 @@ async def retrieve_kis_candidates(
         pool = await service.retrieve_kis_candidates(
             text_query=body.text_query,
             text_queries=body.text_queries,
+            local_phrases_by_query=body.local_phrases_by_query,
             text_top_k=body.text_top_k,
             ocr_query=body.ocr_query,
             ocr_top_k=body.ocr_top_k,

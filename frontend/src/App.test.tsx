@@ -6,7 +6,6 @@ import {
   getHealth,
   getVideo,
   getVideoKeyframes,
-  rerankKisCandidates,
   rewriteQuery,
   retrieveKisCandidates,
   trakeSearch,
@@ -177,7 +176,7 @@ describe('App', () => {
 
     await user.click(screen.getByRole('radio', { name: /TRAKE/i }))
 
-    expect(screen.getByLabelText('event 1')).toBeInTheDocument()
+    expect(screen.getByLabelText('event 1 text')).toBeInTheDocument()
     expect(screen.getByLabelText('TRAKE selection export')).toBeInTheDocument()
     expect(screen.queryByLabelText('text q0')).not.toBeInTheDocument()
   })
@@ -258,8 +257,8 @@ describe('App', () => {
     })
     render(<App />)
     await user.click(screen.getByRole('radio', { name: /TRAKE/i }))
-    await user.type(screen.getByLabelText('event 1'), 'người đàn ông mở cửa')
-    await user.type(screen.getByLabelText('event 2'), 'xe máy chạy qua')
+    await user.type(screen.getByLabelText('event 1 text'), 'người đàn ông mở cửa')
+    await user.type(screen.getByLabelText('event 2 text'), 'xe máy chạy qua')
 
     await user.click(screen.getByRole('button', { name: /Search TRAKE/i }))
 
@@ -297,68 +296,36 @@ describe('App', () => {
           thumbnail_path: 't.jpg',
           thumbnail_url: '/api/keyframes/L21_V001_f10/thumbnail',
           image_url: '/api/keyframes/L21_V001_f10/image',
+          local_score: 0.77,
+          local_query_scores: [0.77],
+          local_retrieval_used: true,
+          local_embedding_available: true,
           stage1: {
             source_modalities: ['text'],
             text: { query: 'boat', raw_cosine: 0.9, rank: 1 },
-          },
-        },
-      ],
-    })
-    vi.mocked(rerankKisCandidates).mockResolvedValue({
-      candidate_pool_size: 1,
-      final_top_k: 1,
-      results: [
-        {
-          keyframe_id: 'L21_V001_f10',
-          video_id: 'L21_V001',
-          score: 1,
-          final_score: 1,
-          active_modalities: 1,
-          frame_idx: 10,
-          timestamp: 1.0,
-          thumbnail_path: 't.jpg',
-          thumbnail_url: '/api/keyframes/L21_V001_f10/thumbnail',
-          image_url: '/api/keyframes/L21_V001_f10/image',
-          modalities: {
-            ocr: {
-              geometric_mean: 1,
-              score: 1,
-              queries: [
-                {
-                  query_index: 0,
-                  query: 'VINAMILK',
-                  raw_bm25: 7.5,
-                  bm25_reference: 7.5,
-                  bm25_normalized: 1,
-                  coverage: 1,
-                  query_score: 1,
-                  rank: 1,
-                  rank_percentile: 1,
-                },
-              ],
-            },
+            local_score: 0.77,
+            local_query_scores: [0.77],
+            local_retrieval_used: true,
+            local_embedding_available: true,
           },
         },
       ],
     })
     render(<App />)
     await user.type(screen.getByLabelText('text q0'), 'boat')
+    await user.click(screen.getAllByRole('button', { name: /\+ Add local phrase/i })[0])
+    await user.type(screen.getByLabelText('local phrase 1.1'), 'red packet')
     await user.click(screen.getByRole('button', { name: 'Retrieve Candidates' }))
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: /\+ Add subquery/i })).toBeInTheDocument(),
-    )
-    await user.click(screen.getByRole('button', { name: /\+ Add subquery/i }))
-    await user.selectOptions(screen.getByLabelText('stage 2 query type 1'), 'ocr')
-    await user.type(screen.getByLabelText('stage 2 query 1'), 'VINAMILK')
-
-    await user.click(screen.getByRole('button', { name: 'Rerank Candidates' }))
 
     await waitFor(() => expect(screen.getByLabelText('KIS score details')).toBeInTheDocument())
-    expect(screen.getByText('Final Geometric Mean')).toBeInTheDocument()
-    expect(screen.getByText('Candidate retrieval only')).toBeInTheDocument()
-    expect(screen.getByText('BM25 raw')).toBeInTheDocument()
-    expect(screen.getByText('OCR query score')).toBeInTheDocument()
-    expect(screen.getByText('7.500')).toBeInTheDocument()
+    expect(retrieveKisCandidates).toHaveBeenCalledWith(
+      expect.objectContaining({ local_phrases_by_query: [['red packet']] }),
+      expect.any(AbortSignal),
+    )
+    expect(screen.getByText('Local Phrase Score')).toBeInTheDocument()
+    expect(screen.getByText('Candidate retrieval + local ranking')).toBeInTheDocument()
+    expect(screen.getByText('FG-CLIP Local Phrase-to-Patch')).toBeInTheDocument()
+    expect(screen.getAllByText('0.770').length).toBeGreaterThan(0)
   })
 
   it('closes the detail viewer with Escape while keeping the KIS score rail mounted', async () => {

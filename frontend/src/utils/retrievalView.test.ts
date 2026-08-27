@@ -2,8 +2,9 @@ import { describe, expect, it } from 'vitest'
 import type { SearchHit } from '../api/types'
 import {
   buildVideoGroups,
-  filterHitsByVideoIds,
-  parseVideoIdFilter,
+  filterHits,
+  parseFilterTokens,
+  sortHitsByImageRankMode,
 } from './retrievalView'
 
 function hit(videoId: string, frameIdx: number, rank: number): SearchHit {
@@ -20,30 +21,135 @@ function hit(videoId: string, frameIdx: number, rank: number): SearchHit {
   }
 }
 
+function localHit(videoId: string, frameIdx: number, globalRank: number, localScore: number): SearchHit {
+  return {
+    ...hit(videoId, frameIdx, globalRank),
+    score: localScore,
+    local_score: localScore,
+    local_retrieval_used: true,
+  }
+}
+
 describe('retrievalView utilities', () => {
   it('filters one or many video ids without changing the source hits', () => {
     const hits = [hit('L22_V002', 1, 1), hit('L25_V076', 2, 2), hit('L25_V087', 3, 3)]
 
-    expect(parseVideoIdFilter('L22_V002\nL25_V076, L25_V076')).toEqual([
+    expect(parseFilterTokens('L22_V002\nL25_V076, L25_V076')).toEqual([
       'L22_V002',
       'L25_V076',
     ])
-    expect(filterHitsByVideoIds(hits, 'L25_V076 L25_V087').map((item) => item.video_id)).toEqual([
+    expect(filterHits(hits, 'L25_V076 L25_V087').map((item) => item.video_id)).toEqual([
       'L25_V076',
       'L25_V087',
     ])
     expect(hits).toHaveLength(3)
   })
 
+  it('filters by batch/folder id, matching every video under it', () => {
+    const hits = [hit('L21_V001', 1, 1), hit('L21_V002', 2, 2), hit('L25_V076', 3, 3)]
+
+    expect(filterHits(hits, 'L21').map((item) => item.video_id)).toEqual([
+      'L21_V001',
+      'L21_V002',
+    ])
+  })
+
+  it('mixes a batch token and a full video id in the same box', () => {
+    const hits = [hit('L21_V001', 1, 1), hit('L21_V002', 2, 2), hit('L25_V076', 3, 3)]
+
+    expect(filterHits(hits, 'L21 L25_V076').map((item) => item.video_id)).toEqual([
+      'L21_V001',
+      'L21_V002',
+      'L25_V076',
+    ])
+  })
+
+  it('matches case-insensitively', () => {
+    const hits = [hit('L21_V001', 1, 1), hit('L25_V076', 2, 2)]
+
+    expect(filterHits(hits, 'l21').map((item) => item.video_id)).toEqual(['L21_V001'])
+  })
+
+  it('a batch token does not leak into a different batch', () => {
+    const hits = [hit('L21_V001', 1, 1), hit('L25_V076', 2, 2)]
+
+    expect(filterHits(hits, 'L25').map((item) => item.video_id)).toEqual(['L25_V076'])
+  })
+
   it('builds video groups by best global image rank', () => {
     const groups = buildVideoGroups(
       [hit('A', 10, 1), hit('B', 20, 2), hit('A', 30, 8), hit('A', 40, 31)],
-      'best',
+      'global',
       60,
     )
 
     expect(groups[0]).toMatchObject({ videoId: 'A', bestRank: 1, matchCount: 3 })
     expect(groups[1]).toMatchObject({ videoId: 'B', bestRank: 2, matchCount: 1 })
+  })
+
+  it('sorts flat image hits by local rank or global rank', () => {
+    const hits = [
+      localHit('A', 10, 1, 0.1),
+      localHit('B', 20, 687, 0.31),
+      localHit('C', 30, 59, 0.29),
+    ]
+
+    expect(sortHitsByImageRankMode(hits, 'local').map((item) => item.keyframe_id)).toEqual([
+      'B_20',
+      'C_30',
+      'A_10',
+    ])
+    expect(sortHitsByImageRankMode(hits, 'global').map((item) => item.keyframe_id)).toEqual([
+      'A_10',
+      'C_30',
+      'B_20',
+    ])
+  })
+
+  it('builds video groups by best local frame rank', () => {
+    const groups = buildVideoGroups(
+      [
+        localHit('A', 10, 1, 0.1),
+        localHit('B', 20, 687, 0.31),
+        localHit('B', 30, 59, 0.29),
+      ],
+      'local',
+      60,
+    )
+
+    expect(groups.map((group) => group.videoId)).toEqual(['B', 'A'])
+    expect(groups[0]).toMatchObject({
+      bestLocalRank: 1,
+      bestGlobalRank: 59,
+      bestLocalScore: 0.31,
+    })
+    expect(groups[0].frames.map(({ hit: frameHit }) => frameHit.keyframe_id)).toEqual([
+      'B_20',
+      'B_30',
+    ])
+  })
+
+  it('keeps original local ranks when building a filtered video group', () => {
+    const hits = [
+      localHit('A', 10, 1496, 0.4),
+      localHit('L26_V389', 6375, 1496, 0.352),
+      localHit('B', 20, 54, 0.34),
+      localHit('L26_V389', 6837, 1120, 0.313),
+    ]
+    const filteredHits = filterHits(hits, 'L26_V389')
+
+    const groups = buildVideoGroups(filteredHits, 'local', 60, hits)
+
+    expect(groups).toHaveLength(1)
+    expect(groups[0]).toMatchObject({
+      videoId: 'L26_V389',
+      bestLocalRank: 2,
+      bestGlobalRank: 1120,
+    })
+    expect(groups[0].frames.map(({ localRank, globalRank }) => [localRank, globalRank])).toEqual([
+      [2, 1496],
+      [4, 1120],
+    ])
   })
 
   it('applies OCR and Title OCR priority before best image rank', () => {
@@ -54,7 +160,7 @@ describe('retrievalView utilities', () => {
         withEvidence(hit('C', 30, 4), { title: true }),
         withEvidence(hit('D', 40, 10), { ocr: true }),
       ],
-      'best',
+      'global',
       60,
     )
 
@@ -106,7 +212,7 @@ describe('retrievalView utilities', () => {
 
   it('assigns final video ranks after the caller hides a video', () => {
     const visibleHits = [hit('B', 20, 2), hit('C', 30, 3)]
-    const groups = buildVideoGroups(visibleHits, 'best', 60)
+    const groups = buildVideoGroups(visibleHits, 'global', 60)
 
     expect(groups.map((group) => [group.videoId, group.finalVideoRank])).toEqual([
       ['B', 1],

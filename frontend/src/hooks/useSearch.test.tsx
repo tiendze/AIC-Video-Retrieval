@@ -107,6 +107,7 @@ describe('useSearch staged KIS flow', () => {
 
     expect(result.current.globalTextQuery).toBe('')
     expect(result.current.textQueries).toEqual([''])
+    expect(result.current.localPhrasesByQuery).toEqual([[]])
     expect(result.current.ocrQuery).toBe('')
     expect(result.current.titleQuery).toBe('')
     expect(result.current.textCandidateK).toBe(300)
@@ -140,6 +141,22 @@ describe('useSearch staged KIS flow', () => {
     expect(result.current.candidatePool).toBeNull()
   })
 
+  it('keeps local phrase groups aligned with their Stage 1 text queries', () => {
+    const { result } = renderHook(() => useSearch())
+
+    act(() => result.current.setGlobalTextQuery('man holding a packet'))
+    act(() => result.current.addLocalPhrase(0))
+    act(() => result.current.setLocalPhrase(0, 0, 'red packet'))
+    act(() => result.current.addTextQuery())
+    act(() => result.current.setTextQuery(1, 'woman beside him'))
+    act(() => result.current.addLocalPhrase(1))
+    act(() => result.current.setLocalPhrase(1, 0, 'woman'))
+    act(() => result.current.removeTextQuery(0))
+
+    expect(result.current.textQueries).toEqual(['woman beside him'])
+    expect(result.current.localPhrasesByQuery).toEqual([['woman']])
+  })
+
   it('sends Stage 1 Text Q0 and optional OCR with independent candidate counts', async () => {
     const { result } = renderHook(() => useSearch())
 
@@ -153,6 +170,7 @@ describe('useSearch staged KIS flow', () => {
       {
         text_query: 'people on a boat',
         text_queries: ['people on a boat'],
+        local_phrases_by_query: [[]],
         text_top_k: 300,
         ocr_query: 'SAIGON',
         ocr_top_k: 100,
@@ -168,6 +186,30 @@ describe('useSearch staged KIS flow', () => {
     await waitFor(() => expect(result.current.isLoading).toBe(false))
   })
 
+  it('sends per-query local phrase groups with active Stage 1 text queries', async () => {
+    const { result } = renderHook(() => useSearch())
+
+    act(() => result.current.setGlobalTextQuery('man holding a packet'))
+    act(() => result.current.addLocalPhrase(0))
+    act(() => result.current.setLocalPhrase(0, 0, ' red packet '))
+    act(() => result.current.addLocalPhrase(0))
+    act(() => result.current.setLocalPhrase(0, 1, 'red packet'))
+    act(() => result.current.addTextQuery())
+    act(() => result.current.setTextQuery(1, 'woman beside him'))
+    act(() => result.current.addLocalPhrase(1))
+    act(() => result.current.setLocalPhrase(1, 0, 'woman'))
+    act(() => result.current.retrieveCandidates())
+
+    expect(retrieveKisCandidates).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text_queries: ['man holding a packet', 'woman beside him'],
+        local_phrases_by_query: [['red packet'], ['woman']],
+      }),
+      expect.any(AbortSignal),
+    )
+    await waitFor(() => expect(result.current.isLoading).toBe(false))
+  })
+
   it('sends ASR-only Stage 1 retrieval when transcripts are ready', async () => {
     const { result } = renderHook(() => useSearch())
 
@@ -178,6 +220,7 @@ describe('useSearch staged KIS flow', () => {
       {
         text_query: null,
         text_queries: [],
+        local_phrases_by_query: [],
         text_top_k: 300,
         ocr_query: null,
         ocr_top_k: 100,

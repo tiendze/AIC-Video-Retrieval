@@ -4,6 +4,8 @@ import styles from './ResultCard.module.css'
 export interface ResultCardProps {
   hit: SearchHit
   rank?: number
+  localRank?: number | null
+  globalRank?: number | null
   selected?: boolean
   manuallySelected?: boolean
   manualSelectionLabel?: string
@@ -19,6 +21,8 @@ export interface ResultCardProps {
 export function ResultCard({
   hit,
   rank,
+  localRank = null,
+  globalRank,
   selected = false,
   manuallySelected = false,
   manualSelectionLabel = 'Select',
@@ -48,7 +52,13 @@ export function ResultCard({
         <span className={styles.videoId}>{hit.video_id}</span>
         <span>frame {hit.frame_idx}</span>
       </span>
-      {rank !== undefined && <span className={styles.rankBadge}>#{rank}</span>}
+      {localRank !== null ? (
+        <span className={styles.rankBadge} title="Local rank / Global rank">
+          L#{localRank} {globalRank !== null && globalRank !== undefined ? `G#${globalRank}` : 'G-'}
+        </span>
+      ) : rank !== undefined ? (
+        <span className={styles.rankBadge}>#{rank}</span>
+      ) : null}
       {hit.asr_evidence && (
         <span
           className={`${styles.asrBadge} ${onOpenDetail ? styles.asrBadgeBelowDetail : ''}`}
@@ -56,9 +66,11 @@ export function ResultCard({
           ASR detected
         </span>
       )}
-      {hit.final_score !== undefined && (
+      {hit.local_retrieval_used && hit.local_score !== undefined ? (
+        <span className={styles.scoreBadge}>Local {hit.local_score.toFixed(3)}</span>
+      ) : hit.final_score !== undefined ? (
         <span className={styles.scoreBadge}>Final {score.toFixed(3)}</span>
-      )}
+      ) : null}
       {onOpenDetail && (
         <span
           role="button"

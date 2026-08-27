@@ -64,6 +64,15 @@
   overflow: visible;
 }
 
+/* TRAKE: let the result list grow to its natural height so the whole left
+   column (query form + results) scrolls together via `.app-left overflow-y`.
+   Without this the grid stays `flex:1` and gets squeezed to nothing when the
+   event form grows, hiding the results with no way to scroll to them. */
+.app-trake .app-grid {
+  flex: 0 0 auto;
+  overflow: visible;
+}
+
 .app-kis .result-area {
   height: auto;
   overflow: visible;
