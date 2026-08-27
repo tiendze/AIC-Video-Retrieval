@@ -317,6 +317,7 @@ export interface TrakeEventPayload {
   text_query?: string | null
   text_queries?: string[]
   text_top_k?: number
+  local_phrases?: string[]
   ocr_query?: string | null
   ocr_top_k?: number
   title_query?: string | null
@@ -347,6 +348,10 @@ export interface TrakeKeyframe {
   score?: number | null
   semantic_z?: number | null
   kis_rank?: number | null
+  // Phrase-to-patch MaxSim diagnostics (only set when the event carried a
+  // local phrase and this frame's video was inside local_rerank.max_videos).
+  local_score?: number | null
+  local_z?: number | null
 }
 
 // app/schemas/response/trake.py: TrakeVideoResultResponse. Each item is one
@@ -374,6 +379,11 @@ export interface TrakeEventDiagnostics {
   kis_candidate_count: number
   kis_video_count: number
   has_text: boolean
+  // True when this event's text exceeded the encoder's 77-token cap and was
+  // silently truncated by the tokenizer -- FG-CLIP has no length-agnostic
+  // path wired in here (app/encoders/fg_clip.py), so this is a warning, not
+  // a fix.
+  text_truncated?: boolean
 }
 
 // app/schemas/response/trake.py: TrakeResponse. `results` arrives in
@@ -389,6 +399,9 @@ export interface TrakeResult {
   // submission cap), keyed by video_id. Not part of the submission; inspection
   // only. See app/schemas/response/trake.py: TrakeResponse.sequences_by_video.
   sequences_by_video?: Record<string, TrakeVideoResultItem[]>
+  // Local phrase-to-patch rerank diagnostics for the whole request (B2b).
+  local_rerank_video_count?: number
+  local_missing_frame_count?: number
 }
 
 // app/schemas/response/error.py: ErrorResponse -- every API error takes

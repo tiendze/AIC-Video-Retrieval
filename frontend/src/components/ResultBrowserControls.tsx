@@ -117,11 +117,12 @@ export function ResultBrowserControls({
         </div>
       )}
       <label className={styles.filter}>
-        <span>Video ID filter</span>
+        <span>Filter</span>
         <input
-          aria-label="video id filter"
+          aria-label="filter"
+          title="Gõ video id (L25_V076) hoặc batch (L25) để lọc kết quả đang thấy -- cách nhau bằng dấu cách."
           value={videoFilter}
-          placeholder="L25_V076 L22_V002"
+          placeholder="L21  L25_V076"
           onChange={(event) => onVideoFilterChange(event.currentTarget.value)}
         />
       </label>

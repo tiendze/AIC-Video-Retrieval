@@ -20,6 +20,7 @@ import type {
   KisQueryType,
   SearchHit,
 } from '../api/types'
+import { cleanLocalPhraseGroup } from '../utils/localPhrases'
 
 export interface KisCandidatePoolState {
   candidateIds: string[]
@@ -143,20 +144,6 @@ function parseAsrQueries(value: string): string[] {
     .split(',')
     .map((query) => query.trim())
     .filter(Boolean)
-}
-
-function cleanLocalPhraseGroup(phrases: string[] | undefined): string[] {
-  const cleaned: string[] = []
-  const seen = new Set<string>()
-  for (const phrase of phrases ?? []) {
-    const stripped = phrase.trim()
-    if (!stripped) continue
-    const key = stripped.toLocaleLowerCase()
-    if (seen.has(key)) continue
-    seen.add(key)
-    cleaned.push(stripped)
-  }
-  return cleaned
 }
 
 function withAsrEvidence(

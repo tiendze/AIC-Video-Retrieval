@@ -28,12 +28,13 @@ export const TRAKE_DEFAULT_TOP_K = 100
 // rather than the API silently hiding candidates by default.
 export const TRAKE_DEFAULT_THRESHOLD = -100
 
-// Mirrors configs/search/trake.yaml -- event_text_top_k. How many keyframes
-// Stage 1 pulls in for one event's Text channel before chaining; this is what
-// the per-event "N keyframes / M videos" diagnostic actually counts when only
-// Text is filled. Operator-editable per event (EventSequenceInput's Top K
-// box) instead of fixed, per TrakeEventRequest.text_top_k's ge=1,le=1000
-// bound (app/schemas/request/trake.py, MAX_CANDIDATE_K).
-export const TRAKE_DEFAULT_EVENT_TEXT_TOP_K = 1000
+// Mirrors configs/search/trake.yaml -- event_text_top_k (300 as of
+// 2026-08-28). How many keyframes Stage 1 pulls in for one event's Text
+// channel before chaining; this is what the per-event "N keyframes / M
+// videos" diagnostic actually counts when only Text is filled.
+// Operator-editable per event (EventSequenceInput's Top K box) instead of
+// fixed, per TrakeEventRequest.text_top_k's ge=1,le=1000 bound
+// (app/schemas/request/trake.py, MAX_CANDIDATE_K) -- the max stays 1000.
+export const TRAKE_DEFAULT_EVENT_TEXT_TOP_K = 300
 export const TRAKE_MIN_EVENT_TEXT_TOP_K = 1
 export const TRAKE_MAX_EVENT_TEXT_TOP_K = MAX_CANDIDATE_K

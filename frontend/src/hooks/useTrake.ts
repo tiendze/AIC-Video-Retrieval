@@ -11,6 +11,7 @@ import type {
   TrakeEventPayload,
   TrakeVideoResultItem,
 } from '../api/types'
+import { cleanLocalPhraseGroup } from '../utils/localPhrases'
 
 // One row of the operator's form. All four channels are per-event: OCR pins a
 // moment (a scoreboard that only appears at the last event), and Title/ASR,
@@ -18,19 +19,28 @@ import type {
 // commentary line tied to one moment does not constrain the others.
 // `textTopK` is a string like `threshold` (editable, may be blank) -- blank
 // means "use the backend default" (configs/search/trake.yaml event_text_top_k).
+// `localPhrases` is ONE list per event (not per text query): a phrase pins a
+// visual region of the event's moment, so it applies regardless of which of
+// the event's text boxes is being prompt-ensembled
+// (app/services/trake_service.py: TrakeService._retrieve_one_pool fans it out
+// to every text query when calling KIS).
 export interface TrakeEventDraft {
   text: string
   ocr: string
   title: string
   asr: string
   textTopK: string
+  localPhrases: string[]
 }
 
-export type TrakeEventField = keyof TrakeEventDraft
+export type TrakeEventField = keyof Omit<TrakeEventDraft, 'localPhrases'>
 
 export interface UseTrakeResult {
   events: TrakeEventDraft[]
   setEventField: (index: number, field: TrakeEventField, value: string) => void
+  setLocalPhrase: (eventIndex: number, phraseIndex: number, value: string) => void
+  addLocalPhrase: (eventIndex: number) => void
+  removeLocalPhrase: (eventIndex: number, phraseIndex: number) => void
   addEvent: () => void
   removeEvent: (index: number) => void
   threshold: string
@@ -40,6 +50,8 @@ export interface UseTrakeResult {
   eventDiagnostics: TrakeEventDiagnostics[]
   candidateVideoCount: number | null
   droppedVideoCount: number | null
+  localRerankVideoCount: number | null
+  localMissingFrameCount: number | null
   isLoading: boolean
   error: string | null
   latencyMs: number | null
@@ -52,6 +64,7 @@ export const EMPTY_TRAKE_EVENT: TrakeEventDraft = {
   title: '',
   asr: '',
   textTopK: '',
+  localPhrases: [],
 }
 
 const INITIAL_EVENTS: TrakeEventDraft[] = [{ ...EMPTY_TRAKE_EVENT }, { ...EMPTY_TRAKE_EVENT }]
@@ -86,6 +99,13 @@ function toPayload(event: TrakeEventDraft): TrakeEventPayload {
   if (ocr) payload.ocr_query = ocr
   if (title) payload.title_query = title
   if (asr) payload.asr_query = asr
+  // A phrase without a text query has no KIS Stage 1 text call to attach to
+  // -- omit it rather than send a phrase list the backend would just drop
+  // (app/schemas/request/trake.py: TrakeEventRequest.at_least_one_channel).
+  if (text) {
+    const localPhrases = cleanLocalPhraseGroup(event.localPhrases)
+    if (localPhrases.length > 0) payload.local_phrases = localPhrases
+  }
   // A blank/invalid Top K also omits the field -- the backend then falls back
   // to its own default (event_text_top_k), same "absent means default" rule
   // as the other channels above.
@@ -116,6 +136,8 @@ export function useTrake(topK: number): UseTrakeResult {
   const [eventDiagnostics, setEventDiagnostics] = useState<TrakeEventDiagnostics[]>([])
   const [candidateVideoCount, setCandidateVideoCount] = useState<number | null>(null)
   const [droppedVideoCount, setDroppedVideoCount] = useState<number | null>(null)
+  const [localRerankVideoCount, setLocalRerankVideoCount] = useState<number | null>(null)
+  const [localMissingFrameCount, setLocalMissingFrameCount] = useState<number | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [latencyMs, setLatencyMs] = useState<number | null>(null)
@@ -129,6 +151,42 @@ export function useTrake(topK: number): UseTrakeResult {
     },
     [],
   )
+
+  const setLocalPhrase = useCallback(
+    (eventIndex: number, phraseIndex: number, value: string) => {
+      setEvents((prev) =>
+        prev.map((event, i) =>
+          i === eventIndex
+            ? {
+                ...event,
+                localPhrases: event.localPhrases.map((phrase, j) =>
+                  j === phraseIndex ? value : phrase,
+                ),
+              }
+            : event,
+        ),
+      )
+    },
+    [],
+  )
+
+  const addLocalPhrase = useCallback((eventIndex: number) => {
+    setEvents((prev) =>
+      prev.map((event, i) =>
+        i === eventIndex ? { ...event, localPhrases: [...event.localPhrases, ''] } : event,
+      ),
+    )
+  }, [])
+
+  const removeLocalPhrase = useCallback((eventIndex: number, phraseIndex: number) => {
+    setEvents((prev) =>
+      prev.map((event, i) =>
+        i === eventIndex
+          ? { ...event, localPhrases: event.localPhrases.filter((_, j) => j !== phraseIndex) }
+          : event,
+      ),
+    )
+  }, [])
 
   const addEvent = useCallback(() => {
     setEvents((prev) => [...prev, { ...EMPTY_TRAKE_EVENT }])
@@ -164,6 +222,8 @@ export function useTrake(topK: number): UseTrakeResult {
         setEventDiagnostics(response.events ?? [])
         setCandidateVideoCount(response.candidate_video_count ?? null)
         setDroppedVideoCount(response.dropped_video_count ?? null)
+        setLocalRerankVideoCount(response.local_rerank_video_count ?? null)
+        setLocalMissingFrameCount(response.local_missing_frame_count ?? null)
         setLatencyMs(performance.now() - start)
       })
       .catch((err: unknown) => {
@@ -178,6 +238,9 @@ export function useTrake(topK: number): UseTrakeResult {
   return {
     events,
     setEventField,
+    setLocalPhrase,
+    addLocalPhrase,
+    removeLocalPhrase,
     addEvent,
     removeEvent,
     threshold,
@@ -187,6 +250,8 @@ export function useTrake(topK: number): UseTrakeResult {
     eventDiagnostics,
     candidateVideoCount,
     droppedVideoCount,
+    localRerankVideoCount,
+    localMissingFrameCount,
     isLoading,
     error,
     latencyMs,

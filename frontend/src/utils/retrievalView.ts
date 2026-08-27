@@ -30,7 +30,7 @@ export interface VideoGroup {
   frames: RankedHit[]
 }
 
-export function parseVideoIdFilter(input: string): string[] {
+export function parseFilterTokens(input: string): string[] {
   return Array.from(
     new Set(
       input
@@ -41,11 +41,25 @@ export function parseVideoIdFilter(input: string): string[] {
   )
 }
 
-export function filterHitsByVideoIds(hits: SearchHit[], input: string): SearchHit[] {
-  const ids = parseVideoIdFilter(input)
-  if (ids.length === 0) return hits
-  const allowed = new Set(ids)
-  return hits.filter((hit) => allowed.has(hit.video_id))
+// video_id "L21_V001" -> batch "L21", same convention as
+// app/services/kis_local_retrieval.py: _inferred_video_dir (dataset batch
+// prefix, one per data/keyframe/<batch>/ directory).
+function videoBatch(videoId: string): string {
+  return videoId.split('_')[0]
+}
+
+// A token matches a hit when it equals the video's full id OR its batch
+// (folder) id -- lets an operator type "L21" to see every video in that
+// batch, or a full "L21_V001" to pin one video, in the same box. Matching is
+// case-insensitive since the operator is being timed.
+export function filterHits(hits: SearchHit[], input: string): SearchHit[] {
+  const tokens = parseFilterTokens(input)
+  if (tokens.length === 0) return hits
+  const allowed = new Set(tokens.map((token) => token.toLocaleLowerCase()))
+  return hits.filter((hit) => {
+    const videoId = hit.video_id.toLocaleLowerCase()
+    return allowed.has(videoId) || allowed.has(videoBatch(videoId))
+  })
 }
 
 export function rankedHits(hits: SearchHit[], rankSourceHits: SearchHit[] = hits): RankedHit[] {

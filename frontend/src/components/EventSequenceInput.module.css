@@ -83,6 +83,11 @@
   padding: 0 2px;
 }
 
+.truncatedBadge {
+  color: #fbbf24;
+  font-weight: 600;
+}
+
 /* Text: full-width row, label on the left, compact per-event Top K box on the
    right -- this is the control for "how many keyframes to pull for this
    event's Text channel" (configs/search/trake.yaml event_text_top_k),

@@ -16,6 +16,9 @@ describe('EventSequenceInput', () => {
       <EventSequenceInput
         events={TWO_BLANK}
         onEventFieldChange={vi.fn()}
+        onLocalPhraseChange={vi.fn()}
+        onAddLocalPhrase={vi.fn()}
+        onRemoveLocalPhrase={vi.fn()}
         onAddEvent={vi.fn()}
         onRemoveEvent={vi.fn()}
         threshold="0"
@@ -54,7 +57,14 @@ describe('EventSequenceInput', () => {
   it('shows each channel s current value independently', () => {
     renderInput({
       events: [
-        { text: 'chay len', ocr: 'ty so 0-0', title: 'chung ket', asr: 'mo man', textTopK: '250' },
+        {
+          text: 'chay len',
+          ocr: 'ty so 0-0',
+          title: 'chung ket',
+          asr: 'mo man',
+          textTopK: '250',
+          localPhrases: [],
+        },
       ],
     })
 
@@ -79,7 +89,7 @@ describe('EventSequenceInput', () => {
     renderInput()
 
     expect(screen.getByLabelText('event 1 text top k')).toHaveValue(null)
-    expect(screen.getByLabelText('event 1 text top k')).toHaveAttribute('placeholder', '1000')
+    expect(screen.getByLabelText('event 1 text top k')).toHaveAttribute('placeholder', '300')
   })
 
   it('reports the row index and the channel when typing', async () => {
@@ -157,6 +167,9 @@ describe('EventSequenceInput', () => {
         <EventSequenceInput
           events={TWO_BLANK}
           onEventFieldChange={vi.fn()}
+          onLocalPhraseChange={vi.fn()}
+          onAddLocalPhrase={vi.fn()}
+          onRemoveLocalPhrase={vi.fn()}
           onAddEvent={vi.fn()}
           onRemoveEvent={vi.fn()}
           threshold={threshold}

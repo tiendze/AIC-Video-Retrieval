@@ -167,6 +167,23 @@ export function TrakeResultList({
                           Event {keyframeIndex + 1} - {formatTrakeTimestamp(keyframe.timestamp)}
                         </span>
                         <span className={styles.frameIdx}>frame {keyframe.frame_idx}</span>
+                        {(keyframe.semantic_z != null ||
+                          keyframe.local_score != null ||
+                          keyframe.kis_rank != null) && (
+                          <span
+                            className={styles.diagnostics}
+                            title="z: điểm ngữ nghĩa (semantic_z) · local: khớp phrase-to-patch (local_z, chỉ hiện khi video này được B2b rerank) · kis: hạng KIS trả về cho frame này"
+                          >
+                            {keyframe.semantic_z != null && `z ${keyframe.semantic_z.toFixed(2)}`}
+                            {/* local_z is always a number from the backend (0.0 default) --
+                                gate the display on local_score, which is null unless B2b
+                                actually reranked this frame's video. */}
+                            {keyframe.local_score != null &&
+                              keyframe.local_z != null &&
+                              ` · local ${keyframe.local_z.toFixed(2)}`}
+                            {keyframe.kis_rank != null && ` · kis #${keyframe.kis_rank + 1}`}
+                          </span>
+                        )}
                       </button>
                     ))}
                   </div>

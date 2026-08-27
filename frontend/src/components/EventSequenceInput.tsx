@@ -12,6 +12,9 @@ import searchStyles from './SearchBar.module.css'
 export interface EventSequenceInputProps {
   events: TrakeEventDraft[]
   onEventFieldChange: (index: number, field: TrakeEventField, value: string) => void
+  onLocalPhraseChange: (eventIndex: number, phraseIndex: number, value: string) => void
+  onAddLocalPhrase: (eventIndex: number) => void
+  onRemoveLocalPhrase: (eventIndex: number, phraseIndex: number) => void
   onAddEvent: () => void
   onRemoveEvent: (index: number) => void
   threshold: string
@@ -23,6 +26,8 @@ export interface EventSequenceInputProps {
   eventDiagnostics?: TrakeEventDiagnostics[]
   candidateVideoCount?: number | null
   droppedVideoCount?: number | null
+  localRerankVideoCount?: number | null
+  localMissingFrameCount?: number | null
 }
 
 interface ChannelSpec {
@@ -76,6 +81,9 @@ const SECONDARY_CHANNELS: ChannelSpec[] = CHANNELS.slice(1)
 export function EventSequenceInput({
   events,
   onEventFieldChange,
+  onLocalPhraseChange,
+  onAddLocalPhrase,
+  onRemoveLocalPhrase,
   onAddEvent,
   onRemoveEvent,
   threshold,
@@ -87,6 +95,8 @@ export function EventSequenceInput({
   eventDiagnostics = [],
   candidateVideoCount = null,
   droppedVideoCount = null,
+  localRerankVideoCount = null,
+  localMissingFrameCount = null,
 }: EventSequenceInputProps) {
   return (
     <form
@@ -152,6 +162,50 @@ export function EventSequenceInput({
                     />
                   </label>
                 </div>
+                <div className={searchStyles.localPhraseGroup}>
+                  <div className={searchStyles.localPhraseHeader}>
+                    <span>Local phrases</span>
+                    <button
+                      type="button"
+                      className={searchStyles.addInlineButton}
+                      disabled={event.text.trim().length === 0}
+                      onClick={() => onAddLocalPhrase(index)}
+                    >
+                      + Add local phrase
+                    </button>
+                  </div>
+                  {event.text.trim().length === 0 ? (
+                    <p className={searchStyles.localPhraseHint}>
+                      Cần điền Text ở trên trước khi thêm local phrase cho event này.
+                    </p>
+                  ) : (
+                    (event.localPhrases ?? []).map((phrase, phraseIndex) => (
+                      <div
+                        className={searchStyles.localPhraseRow}
+                        key={`event-${index}-local-phrase-${phraseIndex}`}
+                      >
+                        <QueryInput
+                          aria-label={`event ${index + 1} local phrase ${phraseIndex + 1}`}
+                          type="text"
+                          placeholder="red seasoning packet"
+                          value={phrase}
+                          onValueChange={(value) =>
+                            onLocalPhraseChange(index, phraseIndex, value)
+                          }
+                        />
+                        <button
+                          type="button"
+                          className={searchStyles.removeMini}
+                          aria-label={`remove event ${index + 1} local phrase ${phraseIndex + 1}`}
+                          title="Remove local phrase"
+                          onClick={() => onRemoveLocalPhrase(index, phraseIndex)}
+                        >
+                          x
+                        </button>
+                      </div>
+                    ))
+                  )}
+                </div>
                 <div className={styles.secondaryRow}>
                   {SECONDARY_CHANNELS.map((channel) => {
                     const disabled = channel.field === 'asr' && asrDisabled
@@ -177,6 +231,15 @@ export function EventSequenceInput({
                   <div className={styles.eventStats}>
                     {diagnostics.kis_candidate_count} keyframes /{' '}
                     {diagnostics.kis_video_count} videos
+                    {diagnostics.text_truncated && (
+                      <span
+                        className={styles.truncatedBadge}
+                        title="Text của event này vượt quá 77 token và đã bị cắt bớt khi encode (app/encoders/fg_clip.py). Rút ngắn câu hoặc tách thành nhiều ô Text."
+                      >
+                        {' '}
+                        ⚠ text bị cắt (&gt;77 token)
+                      </span>
+                    )}
                   </div>
                 )}
               </fieldset>
@@ -190,6 +253,16 @@ export function EventSequenceInput({
           <p className={searchStyles.poolBreakdown}>
             {candidateVideoCount} video ứng viên
             {droppedVideoCount !== null && ` · ${droppedVideoCount} bị loại (không nối được chuỗi)`}
+            {!!localRerankVideoCount && ` · ${localRerankVideoCount} video được rerank local phrase`}
+            {!!localMissingFrameCount && (
+              <span
+                className={styles.truncatedBadge}
+                title="Số frame không có đặc trưng dense (fgclip_dense_8x8) để chấm local phrase -- các frame này vẫn được xét, chỉ không có điểm local (local_z=0)."
+              >
+                {' '}
+                ⚠ {localMissingFrameCount} frame thiếu dense feature
+              </span>
+            )}
           </p>
         )}
         <div className={searchStyles.actions}>

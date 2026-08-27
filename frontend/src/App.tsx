@@ -34,7 +34,7 @@ import { useQueryRewrite } from './hooks/useQueryRewrite'
 import { useSearch } from './hooks/useSearch'
 import { countFilledTrakeEvents, useTrake, type TrakeEventDraft } from './hooks/useTrake'
 import {
-  filterHitsByVideoIds,
+  filterHits,
   hasLocalRanking,
   sortHitsByImageRankMode,
   type ImageRankSortMode,
@@ -141,7 +141,7 @@ function App() {
   const activeGroupSortMode: VideoGroupSortMode =
     hasLocalResultRanking || groupSortMode !== 'local' ? groupSortMode : 'global'
   const visibleResults = useMemo(() => {
-    const filtered = filterHitsByVideoIds(results, videoFilter)
+    const filtered = filterHits(results, videoFilter)
     const visible =
       excludedVideoIds.size === 0
         ? filtered
@@ -349,6 +349,9 @@ function App() {
             <EventSequenceInput
               events={trake.events}
               onEventFieldChange={trake.setEventField}
+              onLocalPhraseChange={trake.setLocalPhrase}
+              onAddLocalPhrase={trake.addLocalPhrase}
+              onRemoveLocalPhrase={trake.removeLocalPhrase}
               onAddEvent={trake.addEvent}
               onRemoveEvent={trake.removeEvent}
               threshold={trake.threshold}
@@ -360,6 +363,8 @@ function App() {
               eventDiagnostics={trake.eventDiagnostics}
               candidateVideoCount={trake.candidateVideoCount}
               droppedVideoCount={trake.droppedVideoCount}
+              localRerankVideoCount={trake.localRerankVideoCount}
+              localMissingFrameCount={trake.localMissingFrameCount}
             />
           ) : (
             <>

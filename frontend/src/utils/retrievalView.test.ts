@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest'
 import type { SearchHit } from '../api/types'
 import {
   buildVideoGroups,
-  filterHitsByVideoIds,
-  parseVideoIdFilter,
+  filterHits,
+  parseFilterTokens,
   sortHitsByImageRankMode,
 } from './retrievalView'
 
@@ -34,15 +34,46 @@ describe('retrievalView utilities', () => {
   it('filters one or many video ids without changing the source hits', () => {
     const hits = [hit('L22_V002', 1, 1), hit('L25_V076', 2, 2), hit('L25_V087', 3, 3)]
 
-    expect(parseVideoIdFilter('L22_V002\nL25_V076, L25_V076')).toEqual([
+    expect(parseFilterTokens('L22_V002\nL25_V076, L25_V076')).toEqual([
       'L22_V002',
       'L25_V076',
     ])
-    expect(filterHitsByVideoIds(hits, 'L25_V076 L25_V087').map((item) => item.video_id)).toEqual([
+    expect(filterHits(hits, 'L25_V076 L25_V087').map((item) => item.video_id)).toEqual([
       'L25_V076',
       'L25_V087',
     ])
     expect(hits).toHaveLength(3)
+  })
+
+  it('filters by batch/folder id, matching every video under it', () => {
+    const hits = [hit('L21_V001', 1, 1), hit('L21_V002', 2, 2), hit('L25_V076', 3, 3)]
+
+    expect(filterHits(hits, 'L21').map((item) => item.video_id)).toEqual([
+      'L21_V001',
+      'L21_V002',
+    ])
+  })
+
+  it('mixes a batch token and a full video id in the same box', () => {
+    const hits = [hit('L21_V001', 1, 1), hit('L21_V002', 2, 2), hit('L25_V076', 3, 3)]
+
+    expect(filterHits(hits, 'L21 L25_V076').map((item) => item.video_id)).toEqual([
+      'L21_V001',
+      'L21_V002',
+      'L25_V076',
+    ])
+  })
+
+  it('matches case-insensitively', () => {
+    const hits = [hit('L21_V001', 1, 1), hit('L25_V076', 2, 2)]
+
+    expect(filterHits(hits, 'l21').map((item) => item.video_id)).toEqual(['L21_V001'])
+  })
+
+  it('a batch token does not leak into a different batch', () => {
+    const hits = [hit('L21_V001', 1, 1), hit('L25_V076', 2, 2)]
+
+    expect(filterHits(hits, 'L25').map((item) => item.video_id)).toEqual(['L25_V076'])
   })
 
   it('builds video groups by best global image rank', () => {
@@ -105,7 +136,7 @@ describe('retrievalView utilities', () => {
       localHit('B', 20, 54, 0.34),
       localHit('L26_V389', 6837, 1120, 0.313),
     ]
-    const filteredHits = filterHitsByVideoIds(hits, 'L26_V389')
+    const filteredHits = filterHits(hits, 'L26_V389')
 
     const groups = buildVideoGroups(filteredHits, 'local', 60, hits)
 
