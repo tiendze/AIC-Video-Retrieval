@@ -25,7 +25,7 @@ from app.config import CorsSettings, Settings
 from app.encoders.base import MultimodalEncoder
 from app.encoders.factory import build_encoder
 from app.services.asr_retrieval_service import AsrRetrievalConfig, AsrRetrievalService
-from app.services.query_translator import LocalNmtTranslator
+from app.services.query_translator import QueryTranslator, build_query_translator
 from app.services.quest_service import GeminiQueryRewriter, QueryRewriteService, QuestService
 from app.services.search_service import SearchService
 from app.services.thumbnail_service import ThumbnailService
@@ -173,14 +173,13 @@ def _build_qa_service(
     )
 
 
-def _build_query_translator() -> LocalNmtTranslator:
-    config = _load_yaml(_QUERY_TRANSLATOR_CONFIG_PATH)
-    return LocalNmtTranslator(
-        model_id=config["model_id"],
-        device=config["device"],
-        source_prefix=config["source_prefix"],
-        target_prefix=config["target_prefix"],
-        max_new_tokens=config["max_new_tokens"],
+def _build_query_translator(settings: Settings) -> QueryTranslator:
+    """`kind` in the config picks the implementation. Production keeps the
+    fallback wrapper so losing the Gemini quota mid-contest degrades to EnViT5
+    instead of breaking semantic search (CLAUDE.md §4)."""
+    return build_query_translator(
+        _load_yaml(_QUERY_TRANSLATOR_CONFIG_PATH),
+        api_key=settings.gemini_api_key.get_secret_value(),
     )
 
 
@@ -194,7 +193,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.asr_es_store = _build_asr_es_store(settings)
     app.state.asr_retrieval_service = _build_asr_retrieval_service(app.state.asr_es_store)
     app.state.mongo_store = _build_mongo_store(settings)
-    app.state.query_translator = _build_query_translator()
+    app.state.query_translator = _build_query_translator(settings)
     app.state.thumbnail_service = _build_thumbnail_service(app.state.mongo_store)
     app.state.trake_embedding_cache = _build_trake_embedding_cache(
         app.state.milvus_store, app.state.mongo_store, app.state.encoder

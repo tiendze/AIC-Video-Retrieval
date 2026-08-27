@@ -97,6 +97,7 @@ from app.services.kis_scoring import (
     ocr_coverage,
     rank_percentiles,
 )
+from app.services.query_decomposition import split_into_sentences
 from app.services.query_translator import QueryTranslator
 from app.stores.es_client import EsStore
 from app.stores.milvus_client import MilvusStore
@@ -273,7 +274,29 @@ class SearchService:
         asr_video_top_k: int = 20,
     ) -> KisCandidatePool:
         request_start = time.perf_counter()
-        text_queries = _normalize_stage1_text_queries(text_query, text_queries)
+        # A single Text Q0 box with multiple sentences is treated as if the
+        # operator had typed each sentence into its own query box: split
+        # first, then feed the pieces through the SAME multi-query union +
+        # fused-score pipeline the explicit `text_queries` boxes use, so a
+        # query with no sentence boundary still normalizes to exactly
+        # [text_query] and single-query behaviour is unchanged.
+        #
+        # local_phrases_by_query[0] belongs to the Q0 BOX's meaning, not to
+        # one particular sentence inside it -- KisCandidateRequest's validator
+        # (app/schemas/request/search.py) guarantees text_query ==
+        # text_queries[0] and local_phrases_by_query is index-aligned to
+        # text_queries by the time it reaches here, so Q0's phrases are
+        # duplicated across every sentence split out of Q0 rather than
+        # silently sticking to only the first one.
+        text_query_sentences = split_into_sentences(text_query) if text_query else []
+        q0_local_phrases = list(local_phrases_by_query[0]) if local_phrases_by_query else []
+        text_queries = _normalize_stage1_text_queries(
+            None, [*text_query_sentences, *(text_queries or ())]
+        )
+        local_phrases_by_query = [
+            *([q0_local_phrases] * len(text_query_sentences)),
+            *(local_phrases_by_query[1:] if local_phrases_by_query else ()),
+        ]
         local_phrase_groups = (
             normalize_local_phrase_groups(text_queries, local_phrases_by_query)
             if self._kis_config.local_retrieval_enabled
@@ -347,9 +370,7 @@ class SearchService:
                 text_metadata_by_id,
                 text_original_ranks_by_query,
                 text_original_scores_by_query,
-            ) = (
-                _stage1_text_candidate_union(text_searches)
-            )
+            ) = _stage1_text_candidate_union(text_searches)
             text_source_ids = set(text_candidate_ids)
 
         ocr_stage1_by_id: dict[str, Stage1OcrScore] = {}
@@ -414,15 +435,13 @@ class SearchService:
             vector_rows_by_id = await asyncio.to_thread(
                 self._milvus_store.get_vectors_by_ids, candidate_ids
             )
-            text_query_scores_by_id, fused_text_scores_by_id, _ = (
-                _stage1_text_scores_for_union(
-                    candidate_ids=candidate_ids,
-                    text_queries=text_queries,
-                    text_vectors=np.asarray(text_vectors, dtype=np.float32),
-                    vector_rows_by_id=vector_rows_by_id,
-                    original_ranks_by_query=text_original_ranks_by_query,
-                    original_scores_by_query=text_original_scores_by_query,
-                )
+            text_query_scores_by_id, fused_text_scores_by_id, _ = _stage1_text_scores_for_union(
+                candidate_ids=candidate_ids,
+                text_queries=text_queries,
+                text_vectors=np.asarray(text_vectors, dtype=np.float32),
+                vector_rows_by_id=vector_rows_by_id,
+                original_ranks_by_query=text_original_ranks_by_query,
+                original_scores_by_query=text_original_scores_by_query,
             )
             text_stage1_by_id = {
                 keyframe_id: Stage1TextScore(
