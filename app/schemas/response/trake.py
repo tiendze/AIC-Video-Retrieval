@@ -27,10 +27,15 @@ class TrakeKeyframeResponse(BaseModel):
     thumbnail_url: str
     image_url: str
     # Per-event diagnostics. `score` is what the chain optimized:
-    # semantic_z + kis_evidence_weight * kis_evidence.
+    # semantic_z + local_rerank.weight * local_z + kis_evidence_weight * kis_evidence.
     score: float | None = None
     semantic_z: float | None = None
     kis_rank: int | None = None
+    # B2b phrase-to-patch MaxSim diagnostics -- set only when the event
+    # carried a local phrase and this frame's video was within
+    # local_rerank.max_videos (configs/search/trake.yaml).
+    local_score: float | None = None
+    local_z: float | None = None
 
 
 class TrakeVideoResultResponse(BaseModel):
@@ -53,6 +58,9 @@ class TrakeEventDiagnosticsResponse(BaseModel):
     kis_candidate_count: int
     kis_video_count: int
     has_text: bool
+    # True when this event's text exceeded the encoder's token cap (77 for
+    # FG-CLIP) and was silently truncated -- a warning, not a fix.
+    text_truncated: bool = False
 
 
 class TrakeResponse(BaseModel):
@@ -70,3 +78,6 @@ class TrakeResponse(BaseModel):
     chained_video_count: int = 0
     dropped_video_count: int = 0
     sequences_by_video: dict[str, list[TrakeVideoResultResponse]] = {}
+    # B2b diagnostics for the whole request.
+    local_rerank_video_count: int = 0
+    local_missing_frame_count: int = 0

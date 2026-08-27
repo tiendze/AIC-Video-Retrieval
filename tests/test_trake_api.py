@@ -124,6 +124,8 @@ def test_trake_returns_200_and_maps_the_sequence_onto_the_response_schema():
                     "score": 1.5,
                     "semantic_z": 1.2,
                     "kis_rank": 3,
+                    "local_score": None,
+                    "local_z": 0.0,
                 },
                 {
                     "keyframe_id": "L21_V001_f20",
@@ -134,6 +136,8 @@ def test_trake_returns_200_and_maps_the_sequence_onto_the_response_schema():
                     "score": 1.5,
                     "semantic_z": 1.2,
                     "kis_rank": 3,
+                    "local_score": None,
+                    "local_z": 0.0,
                 },
             ],
         }
@@ -149,6 +153,46 @@ def test_trake_reports_pipeline_diagnostics_alongside_the_results():
     assert payload["chained_video_count"] == 3
     assert payload["dropped_video_count"] == 4
     assert [event["kis_candidate_count"] for event in payload["events"]] == [12, 9]
+    # Defaults for a result that never ran B2b (plan §T3).
+    assert payload["local_rerank_video_count"] == 0
+    assert payload["local_missing_frame_count"] == 0
+    assert [event["text_truncated"] for event in payload["events"]] == [False, False]
+
+
+def test_trake_maps_b2b_local_rerank_diagnostics_onto_the_response():
+    result = TrakeSearchResult(
+        candidates=(),
+        video_scores={},
+        events=(TrakeEventDiagnostics(0, 1, 1, True, text_truncated=True),),
+        local_rerank_video_count=5,
+        local_missing_frame_count=2,
+    )
+    client = _client(_FakeTrakeService(result=result))
+
+    payload = client.post("/api/trake", json=_body()).json()
+
+    assert payload["local_rerank_video_count"] == 5
+    assert payload["local_missing_frame_count"] == 2
+    assert payload["events"][0]["text_truncated"] is True
+
+
+def test_trake_passes_local_phrases_through_to_the_service():
+    service = _FakeTrakeService()
+    client = _client(service)
+
+    client.post(
+        "/api/trake",
+        json={
+            "events": [
+                {"text_query": "cau thu chay len", "local_phrases": ["ao do", "ao do"]},
+                {"text_query": "sut bong"},
+            ],
+        },
+    )
+
+    events, _, _ = service.search_calls[0]
+    assert events[0].local_phrases == ("ao do",)
+    assert events[1].local_phrases == ()
 
 
 def test_trake_passes_per_event_channels_through_to_the_service():

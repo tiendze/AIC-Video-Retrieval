@@ -63,7 +63,7 @@ class LocalRerankOutput:
 
 
 @dataclass
-class _VideoLocalFiles:
+class VideoLocalFiles:
     embeddings: np.ndarray
     row_by_frame_idx: dict[int, int]
 
@@ -88,7 +88,7 @@ class KISLocalEmbeddingStore:
         self._mmap_cache_size = mmap_cache_size
         self._video_dirs = self._read_manifest()
         self._metadata = self._read_metadata()
-        self._cache: OrderedDict[str, _VideoLocalFiles] = OrderedDict()
+        self._cache: OrderedDict[str, VideoLocalFiles] = OrderedDict()
         self._warned_missing_videos: set[str] = set()
         self._warned_bad_videos: set[str] = set()
 
@@ -118,6 +118,20 @@ class KISLocalEmbeddingStore:
         if row is None:
             return None
         return np.asarray(files.embeddings[row], dtype=np.float32)
+
+    def load_video(self, video_id: str) -> VideoLocalFiles | None:
+        """The whole video's dense array (mmap) + its frame_idx->row map.
+
+        For TRAKE's B2 bucket rerank (`app/services/trake_service.py`), which
+        scores every candidate frame of a video against every event at once --
+        reading `N_frames` rows sequentially out of one open mmap is both
+        cheaper and simpler than KIS's per-keyframe random-access `load_many`,
+        and the video is going to be read almost in full either way (measured
+        2026-08-27: MaxSim's winning frame lands as deep as rank 273-308 in
+        the video's own global-cosine order, so a pre-filtered pool would
+        just miss it).
+        """
+        return self._open_video(video_id)
 
     def load_many(self, refs: Sequence[LocalEmbeddingRef]) -> LocalEmbeddingBatch:
         if not refs:
@@ -203,7 +217,7 @@ class KISLocalEmbeddingStore:
         batch = (row.get("batch") or row.get("collection") or "").strip()
         return self._root / batch / video_id if batch else self._inferred_video_dir(video_id)
 
-    def _open_video(self, video_id: str) -> _VideoLocalFiles | None:
+    def _open_video(self, video_id: str) -> VideoLocalFiles | None:
         cached = self._cache.get(video_id)
         if cached is not None:
             self._cache.move_to_end(video_id)
@@ -236,7 +250,7 @@ class KISLocalEmbeddingStore:
                 self._warned_bad_videos.add(video_id)
             return None
 
-        files = _VideoLocalFiles(
+        files = VideoLocalFiles(
             embeddings=embeddings,
             row_by_frame_idx={int(frame_idx): row for row, frame_idx in enumerate(frame_indices)},
         )

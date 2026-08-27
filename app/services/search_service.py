@@ -222,6 +222,18 @@ class SearchService:
             self._kis_config
         )
 
+    @property
+    def local_embedding_store(self) -> KISLocalEmbeddingStore:
+        """Shared with `TrakeService` (app/main.py lifespan) so both KIS's
+        Stage 1 phrase rerank and TRAKE's B2 bucket rerank read the same
+        LRU-mmap cache instead of each parsing `manifest.csv` (221,904 rows)
+        and opening its own set of memory maps."""
+        return self._local_embedding_store
+
+    @property
+    def kis_config(self) -> KisConfig:
+        return self._kis_config
+
     async def search(self, query: str, mode: SearchMode, top_k: int) -> list[SearchHit]:
         if mode == "semantic":
             return await self._search_semantic(query, top_k)

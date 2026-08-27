@@ -245,6 +245,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         search_service=search_service,
         query_translator=app.state.query_translator,
         config=load_trake_config(),
+        # Same LRU-mmap cache KIS's Stage 1 phrase rerank uses (plan §T2 step
+        # 1) -- one manifest.csv parse, one set of open memory maps, shared by
+        # both B2b (TRAKE) and KIS's Stage 1 rerank.
+        local_embedding_store=search_service.local_embedding_store,
     )
     yield
     await app.state.quest_http_client.aclose()

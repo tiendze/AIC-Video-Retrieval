@@ -244,6 +244,10 @@ class TestScoreVideos:
             coverage_weight=0.0,
             rank_evidence_weight=0.0,
             length_penalty=0.0,
+            # Large enough to be a no-op for tests that aren't about this
+            # mechanism -- see TestScoreVideos.test_several_good_sequences_*
+            # and test_capped_bonus_* below for tests that set a realistic cap.
+            smooth_max_bonus_cap=100.0,
         )
         kwargs.update(overrides)
         return score_videos(candidates, **kwargs)
@@ -258,14 +262,39 @@ class TestScoreVideos:
         assert with_penalty["SHORT"].score > with_penalty["LONG"].score
 
     def test_several_good_sequences_outrank_one_lucky_one(self) -> None:
+        # Same fixture as the fix's regression test below, but here the extra
+        # sequences are close enough in quality to the best one that even a
+        # realistic cap (configs/search/trake.yaml: video_smooth_max_bonus_cap)
+        # leaves them ahead -- capping bounds the bonus, it doesn't zero it.
         candidates = [
             chain("MANY", 1.0, (10, 20)),
             chain("MANY", 0.99, (200, 400)),
             chain("MANY", 0.98, (900, 1100)),
             chain("ONE", 1.0, (10, 20)),
         ]
-        scores = self._score(candidates, {"MANY": 100, "ONE": 100})
+        scores = self._score(candidates, {"MANY": 100, "ONE": 100}, smooth_max_bonus_cap=0.3)
         assert scores["MANY"].score > scores["ONE"].score
+
+    def test_capped_bonus_stops_many_mediocre_sequences_beating_one_good_one(self) -> None:
+        # 5 mediocre-but-distinct sequences in one video vs. one clean, better
+        # sequence in another -- measured 2026-08-28 from a real report of the
+        # correct video ranking low. Uncapped, logsumexp of 5 tied scores adds
+        # log(5) ~= 1.61 for free, enough to let MEDIOCRE win outright; capped
+        # at a realistic value it can't.
+        candidates = [
+            chain("MEDIOCRE", 1.0, (0, 10)),
+            chain("MEDIOCRE", 1.0, (100, 110)),
+            chain("MEDIOCRE", 1.0, (300, 310)),
+            chain("MEDIOCRE", 1.0, (500, 510)),
+            chain("MEDIOCRE", 1.0, (700, 710)),
+            chain("GOOD", 2.0, (10, 20)),
+        ]
+        counts = {"MEDIOCRE": 100, "GOOD": 100}
+        uncapped = self._score(candidates, counts)
+        assert uncapped["MEDIOCRE"].score > uncapped["GOOD"].score
+
+        capped = self._score(candidates, counts, smooth_max_bonus_cap=0.3)
+        assert capped["GOOD"].score > capped["MEDIOCRE"].score
 
     def test_rank_evidence_is_carried_through(self) -> None:
         candidates = [chain("A", 1.0, (10, 20)), chain("B", 1.0, (10, 20))]
@@ -293,6 +322,7 @@ class TestAllocateSubmissionSlots:
             coverage_weight=0.0,
             rank_evidence_weight=0.0,
             length_penalty=0.0,
+            smooth_max_bonus_cap=100.0,
         )
         kwargs.update(overrides)
         return score_videos(candidates, **kwargs)

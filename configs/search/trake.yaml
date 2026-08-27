@@ -19,7 +19,12 @@ default_score_threshold: -100.0
 # Each event runs its own SearchService.retrieve_kis_candidates() call, so each
 # event carries its own Text / OCR / Title / ASR boxes. These are per-event
 # defaults; the request may override them.
-event_text_top_k: 1000
+# event_text_top_k lowered 1000 -> 300 (2026-08-28): a tighter per-event pool.
+# When the event carries a local phrase, this does NOT shrink what B2b scores
+# -- SearchService still pulls kis.local_retrieval.global_retrieval_k (1000)
+# candidates from Milvus, MaxSim-reranks them, and only THEN cuts to 300
+# (app/services/search_service.py: _local_rerank_stage1_results).
+event_text_top_k: 300
 event_ocr_top_k: 500
 event_title_top_k: 500
 event_asr_video_top_k: 50
@@ -48,6 +53,37 @@ score_normalization: zscore
 # scorer without mixing two incompatible score scales.
 kis_evidence_weight: 0.5
 kis_evidence_rrf_k: 60
+
+# --- B2b: local phrase-to-patch rerank inside the bucket -----------------
+# Only runs for an event that carries a local phrase AND whose video is
+# inside the top `max_videos` of `candidates_by_video` (already ranked by KIS
+# coverage/evidence -- app/services/trake_service.py: _select_candidate_videos).
+# `local_z` is z-scored WITHIN each (video, event) pair before it is added to
+# `CandidateFrame.score`, so its mean is 0 per video -- a video outside
+# `max_videos` scores exactly as if local rerank were off, which is what lets
+# this cap exist without corrupting the B8 cross-video comparison (plan
+# §"Nguyên tắc bất biến của thiết kế").
+#
+# Reads the WHOLE video's dense array per candidate video, not a pre-filtered
+# pool: measured 2026-08-27 on data/fgclip_dense_8x8, the frame MaxSim would
+# pick lands as deep as rank 273-308 in the video's own global-cosine order
+# (50-55% of the time MaxSim's argmax differs from global's argmax at all), so
+# pre-filtering to a small pool would routinely miss the winning frame. The
+# full-video read is not more expensive than a filtered one either -- one
+# video's buckets overlap heavily across its events -- and it is sequential
+# I/O instead of scattered per-keyframe reads.
+local_rerank:
+  enabled: true
+  # Videos beyond this rank (by KIS coverage/evidence) are chained with
+  # local_z=0, i.e. today's global-cosine-only behaviour. ~50 videos x ~254
+  # keyframes/video (corpus average) x 64KB/keyframe (fp16, 64x512) ~= 810MB
+  # of sequential disk I/O per TRAKE request -- a random-access equivalent at
+  # this depth would cost the same bytes but far more request latency.
+  max_videos: 50
+  # frame.score += weight * local_z, added on top of semantic_z and the KIS
+  # evidence bonus (kis_evidence_weight above). [Can do] -- not measured
+  # against eval/, same caveat as abe_global_weight in search.yaml.
+  weight: 0.5
 
 # --- B4: temporal NMS inside one bucket ----------------------------------
 # Measured on data/keyframe/L21/L21_V001 (670 keyframes over 21 min, 30fps):
@@ -99,8 +135,30 @@ sequence_nms_frames: 10
 video_top_chains: 3
 video_logsumexp_weight: 1.0
 video_coverage_weight: 1.0
+# rank_evidence (TrakeService._rank_evidence) is normalized to [0, 1] by
+# dividing by the number of events BEFORE this weight is applied, same scale
+# as video_coverage_weight -- 0.5 reads as "KIS's own opinion is worth up to
+# half of coverage". Before 2026-08-28 this was un-normalized (a sum with
+# ceiling = num_events, not 1), so at 5-7 events it silently outweighed
+# coverage 2.5-3.5x and video ranking degenerated into "how many events did
+# KIS surface this video for" regardless of chain quality. The scale bug is
+# fixed and measured; 0.5 on the new [0,1] scale is not -- tune with an
+# eval number in hand, same caveat as abe_concept_top_p above.
 video_rank_evidence_weight: 0.5
 video_length_penalty: 0.15
+# `smooth_max`'s bonus for a video having MULTIPLE good sequences, capped at
+# this many raw score-units above the best sequence's own score (before
+# logsumexp_weight is applied). Un-capped, log(3) ~= 1.10 for three
+# equal-scoring sequences -- bigger than rank_evidence_weight's whole [0,1]
+# range and close to coverage_weight's -- so a video that merely matches an
+# ambiguous query loosely in several DIFFERENT spots (sequence_nms only
+# merges near-duplicates, within sequence_nms_frames) could outrank a video
+# with exactly one clean, correct sequence. Measured 2026-08-28 from a real
+# report of the correct video ranking low. [Cần đo] -- 0.3 keeps some credit
+# for genuine multi-sequence confirmation (tests/test_trake_chain.py:
+# test_several_good_sequences_outrank_one_lucky_one) without letting it
+# dominate; not tuned against eval/.
+video_smooth_max_bonus_cap: 0.3
 
 # --- B9: submission slot allocation --------------------------------------
 # Score = mean of R@k over k in {1,5,20,50,100}. A wrong video makes every one

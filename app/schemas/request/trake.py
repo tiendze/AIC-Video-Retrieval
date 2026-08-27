@@ -17,7 +17,11 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from app.schemas.request.search import MAX_ASR_QUERY_LENGTH, MAX_CANDIDATE_K
+from app.schemas.request.search import (
+    MAX_ASR_QUERY_LENGTH,
+    MAX_CANDIDATE_K,
+    _normalize_local_phrase_group,
+)
 
 _CONFIG_PATH = (
     Path(__file__).resolve().parent.parent.parent.parent / "configs" / "search" / "trake.yaml"
@@ -53,11 +57,17 @@ class TrakeEventRequest(BaseModel):
     `KisCandidateRequest` keeps both: a single box is the common case, several
     boxes are prompt-ensembling (encoded and averaged, see
     `TrakeService._encode_events`). Same for `asr_query` / `asr_queries`.
+
+    `local_phrases` is ONE list per event, not per text query: a phrase
+    describes the visual region of the moment, not a wording of it, so
+    `TrakeService._retrieve_one_pool` fans it out to every text query of the
+    event when it calls KIS (`SearchService.retrieve_kis_candidates`).
     """
 
     text_query: str | None = None
     text_queries: list[str] = Field(default_factory=list)
     text_top_k: int = Field(default=DEFAULT_EVENT_TEXT_TOP_K, ge=1, le=MAX_CANDIDATE_K)
+    local_phrases: list[str] = Field(default_factory=list)
     ocr_query: str | None = None
     ocr_top_k: int = Field(default=DEFAULT_EVENT_OCR_TOP_K, ge=1, le=MAX_CANDIDATE_K)
     title_query: str | None = None
@@ -72,7 +82,7 @@ class TrakeEventRequest(BaseModel):
     def empty_strings_are_absent(cls, value: str | None) -> str | None:
         return _blank_to_none(value)
 
-    @field_validator("text_queries", "asr_queries", mode="before")
+    @field_validator("text_queries", "asr_queries", "local_phrases", mode="before")
     @classmethod
     def accepts_single_string(cls, value: object) -> list[str]:
         if value is None:
@@ -85,6 +95,13 @@ class TrakeEventRequest(BaseModel):
     def at_least_one_channel(self) -> TrakeEventRequest:
         self.text_queries = _merge_queries(self.text_query, self.text_queries)
         self.text_query = self.text_queries[0] if self.text_queries else None
+        # A phrase pins a visual region of the event's moment; without a text
+        # query there is no KIS Stage 1 text call for it to attach to, so an
+        # operator typing into a disabled-looking box does not silently do
+        # nothing on the server too -- it is dropped here, deterministically.
+        self.local_phrases = (
+            _normalize_local_phrase_group(self.local_phrases) if self.text_queries else []
+        )
         self.asr_queries = _merge_queries(self.asr_query, self.asr_queries)
         for query in self.asr_queries:
             if len(query) > MAX_ASR_QUERY_LENGTH:

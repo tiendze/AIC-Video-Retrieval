@@ -53,6 +53,11 @@ import numpy as np
 import yaml
 
 from app.encoders.base import MultimodalEncoder
+from app.services.kis_local_retrieval import (
+    KISLocalEmbeddingStore,
+    VideoLocalFiles,
+    maxsim_query_scores,
+)
 from app.services.query_translator import QueryTranslator
 from app.services.search_service import KisCandidatePool, SearchService, SearchServiceError
 from app.services.trake_chain import (
@@ -108,6 +113,7 @@ class TrakeEventQuery:
 
     text_queries: tuple[str, ...] = ()
     text_top_k: int | None = None
+    local_phrases: tuple[str, ...] = ()
     ocr_query: str | None = None
     ocr_top_k: int | None = None
     title_query: str | None = None
@@ -131,6 +137,10 @@ class TrakeEventDiagnostics:
     kis_candidate_count: int
     kis_video_count: int
     has_text: bool
+    # True when this event's (translated) text exceeded the encoder's
+    # max_text_tokens cap and was silently truncated -- see
+    # TrakeService._encode_events. A warning, not a fix (plan §T3).
+    text_truncated: bool = False
 
 
 @dataclass(frozen=True)
@@ -151,6 +161,11 @@ class TrakeSearchResult:
     chained_video_count: int = 0
     dropped_video_count: int = 0
     sequences_by_video: dict[str, tuple[ChainCandidate, ...]] = field(default_factory=dict)
+    # B2b diagnostics (plan §T3): how many candidate videos actually got the
+    # phrase-to-patch rerank, and how many of their frames had no dense
+    # embedding to score against (missing data or dense/keyframe mismatch).
+    local_rerank_video_count: int = 0
+    local_missing_frame_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -164,6 +179,29 @@ class _CandidateScores:
 
     matrix: np.ndarray
     col_of: dict[int, int]
+
+
+@dataclass(frozen=True)
+class _LocalFrameScore:
+    """One (event, corpus_index) MaxSim result from B2b. `raw` is the mean
+    MaxSim value (unbounded roughly [-1, 1], same definition as KIS's
+    `LocalCandidateScore.local_score`); `z` is `raw` z-scored across the
+    video's own frames for this event (mean 0 per video -- see
+    TrakeService._score_local_rerank)."""
+
+    raw: float
+    z: float
+
+
+@dataclass
+class _LocalRerankStats:
+    """Accumulated across every candidate video's B2b pass, for the
+    `[TRAKE TIMING]` log line and `TrakeSearchResult`'s diagnostics fields."""
+
+    videos_reranked: int = 0
+    missing_frame_count: int = 0
+    io_ms: float = 0.0
+    scoring_ms: float = 0.0
 
 
 @dataclass
@@ -187,6 +225,7 @@ class TrakeService:
         search_service: SearchService,
         query_translator: QueryTranslator | None = None,
         config: dict | None = None,
+        local_embedding_store: KISLocalEmbeddingStore | None = None,
     ) -> None:
         self._encoder = encoder
         self._trake_cache = trake_cache
@@ -195,6 +234,11 @@ class TrakeService:
         self._config = config or load_trake_config()
         self._corpus_index_by_keyframe: dict[str, int] | None = None
         self._corpus_index_load_count = -1
+        # Shared with SearchService's KIS Stage 1 phrase rerank (app/main.py
+        # lifespan wiring) so both read the same LRU-mmap cache instead of
+        # each parsing manifest.csv and opening their own memory maps.
+        self._local_embedding_store = local_embedding_store or search_service.local_embedding_store
+        self._local_score_batch_size = search_service.kis_config.local_score_batch_size
 
     async def search(
         self,
@@ -210,7 +254,8 @@ class TrakeService:
         # the candidate videos are known, so the normalization baseline is the
         # candidate pool, never the whole corpus.
         encode_start = time.perf_counter()
-        event_vectors = await self._encode_events(events)
+        event_vectors, truncated_events = await self._encode_events(events)
+        phrase_vectors_by_event = await self._encode_local_phrases(events)
         encode_ms = (time.perf_counter() - encode_start) * 1000
 
         # B1 -- per-event KIS candidates. Every event's own pool, run
@@ -222,6 +267,17 @@ class TrakeService:
         evidence = self._collect_video_evidence(pools)
         candidates_by_video = self._select_candidate_videos(evidence)
 
+        # B2b -- which of those candidate videos actually get the phrase-to-
+        # patch rerank. Capped independently of max_candidate_videos: reading
+        # a whole video's dense array is far more expensive than a KIS hit,
+        # so this is a SUBSET, ranked by the same coverage/evidence order
+        # (configs/search/trake.yaml: local_rerank.max_videos).
+        local_rerank_cfg = self._config.get("local_rerank", {})
+        local_rerank_video_ids: frozenset[str] = frozenset()
+        if phrase_vectors_by_event and bool(local_rerank_cfg.get("enabled", True)):
+            local_max_videos = int(local_rerank_cfg.get("max_videos", 50))
+            local_rerank_video_ids = frozenset(list(candidates_by_video.keys())[:local_max_videos])
+
         # B3 -- semantic scores z-scored over ONLY the candidate frames. KIS has
         # already narrowed the corpus to `candidates_by_video`, so scoring the
         # full ~221K-frame matrix here would be wasted work.
@@ -231,10 +287,16 @@ class TrakeService:
         )
         score_ms = (time.perf_counter() - score_start) * 1000
 
-        # B2/B4/B5/B7 -- buckets, chaining, sequence NMS.
+        # B2/B2b/B4/B5/B7 -- buckets (with local rerank folded in), chaining,
+        # sequence NMS.
         chain_start = time.perf_counter()
-        chains, dropped = await asyncio.to_thread(
-            self._chain_candidate_videos, candidates_by_video, candidate_scores, events
+        chains, dropped, local_stats = await asyncio.to_thread(
+            self._chain_candidate_videos,
+            candidates_by_video,
+            candidate_scores,
+            events,
+            phrase_vectors_by_event,
+            local_rerank_video_ids,
         )
         chain_ms = (time.perf_counter() - chain_start) * 1000
 
@@ -248,12 +310,13 @@ class TrakeService:
             keyframe_counts={
                 video_id: item.slice.length for video_id, item in candidates_by_video.items()
             },
-            rank_evidence=self._rank_evidence(candidates_by_video),
+            rank_evidence=self._rank_evidence(candidates_by_video, len(events)),
             top_chains=int(self._config["video_top_chains"]),
             logsumexp_weight=float(self._config["video_logsumexp_weight"]),
             coverage_weight=float(self._config["video_coverage_weight"]),
             rank_evidence_weight=float(self._config["video_rank_evidence_weight"]),
             length_penalty=float(self._config["video_length_penalty"]),
+            smooth_max_bonus_cap=float(self._config["video_smooth_max_bonus_cap"]),
         )
         allocated = allocate_submission_slots(
             chains,
@@ -266,7 +329,8 @@ class TrakeService:
         logger.info(
             "[TRAKE TIMING] encode_ms=%.1f kis_ms=%.1f score_ms=%.1f chain_ms=%.1f "
             "total_ms=%.1f events=%d candidate_videos=%d chained_videos=%d dropped_videos=%d "
-            "sequences=%d returned=%d",
+            "sequences=%d returned=%d local_videos=%d local_missing=%d local_io_ms=%.1f "
+            "local_scoring_ms=%.1f",
             encode_ms,
             kis_ms,
             score_ms,
@@ -278,6 +342,10 @@ class TrakeService:
             dropped,
             len(chains),
             len(allocated),
+            local_stats.videos_reranked,
+            local_stats.missing_frame_count,
+            local_stats.io_ms,
+            local_stats.scoring_ms,
         )
         return TrakeSearchResult(
             candidates=tuple(allocated),
@@ -288,6 +356,7 @@ class TrakeService:
                     kis_candidate_count=len(pool.results),
                     kis_video_count=len({hit.video_id for hit in pool.results}),
                     has_text=event.has_text,
+                    text_truncated=index in truncated_events,
                 )
                 for index, (event, pool) in enumerate(zip(events, pools))
             ),
@@ -295,6 +364,8 @@ class TrakeService:
             chained_video_count=len({chain.video_id for chain in chains}),
             dropped_video_count=dropped,
             sequences_by_video=sequences_by_video,
+            local_rerank_video_count=local_stats.videos_reranked,
+            local_missing_frame_count=local_stats.missing_frame_count,
         )
 
     def _top_sequences_by_video(
@@ -332,8 +403,11 @@ class TrakeService:
                     status_code=400,
                 )
 
-    async def _encode_events(self, events: Sequence[TrakeEventQuery]) -> np.ndarray:
-        """One L2-normalized vector per event.
+    async def _encode_events(
+        self, events: Sequence[TrakeEventQuery]
+    ) -> tuple[np.ndarray, set[int]]:
+        """One L2-normalized vector per event, plus the set of event indices
+        whose (translated) text exceeded the encoder's token cap.
 
         Multiple text boxes on one event are prompt-ensembled: encode each,
         average the already-normalized vectors, renormalize. Averaging
@@ -343,22 +417,80 @@ class TrakeService:
         An event with no text gets a zero row. Callers must treat a zero row as
         "no semantic axis for this event" rather than as a real query vector --
         `_build_buckets` does, falling back to that event's KIS hits.
+
+        Truncation detection (plan §T3): `encode_text` always pads/truncates
+        silently (app/encoders/fg_clip.py: `_tokenize`), so it can never tell
+        the caller a text was cut. `count_text_tokens`/`max_text_tokens` are
+        optional (duck-typed, same `hasattr` pattern as `encode_local_phrases`
+        below) -- an encoder without them just never flags truncation.
         """
         dim = self._encoder.embedding_dim
         vectors = np.zeros((len(events), dim), dtype=np.float32)
+        truncated: set[int] = set()
+        count_tokens = getattr(self._encoder, "count_text_tokens", None)
+        max_tokens = getattr(self._encoder, "max_text_tokens", None)
         for index, event in enumerate(events):
             if not event.has_text:
                 continue
             texts = list(event.text_queries)
             if self._query_translator is not None:
                 texts = await asyncio.to_thread(self._translate, texts)
+            if count_tokens is not None and max_tokens is not None:
+                token_counts = await asyncio.to_thread(count_tokens, texts)
+                if any(count > max_tokens for count in token_counts):
+                    truncated.add(index)
+                    logger.warning(
+                        "trake: event %d text exceeds the %d-token encoder cap and "
+                        "will be silently truncated (token counts=%s)",
+                        index + 1,
+                        max_tokens,
+                        token_counts,
+                    )
             encoded = await asyncio.to_thread(self._encoder.encode_text, texts)
             pooled = np.asarray(encoded, dtype=np.float32).mean(axis=0)
             norm = float(np.linalg.norm(pooled))
             if norm > 0:
                 pooled = pooled / norm
             vectors[index] = pooled
-        return vectors
+        return vectors, truncated
+
+    async def _encode_local_phrases(
+        self, events: Sequence[TrakeEventQuery]
+    ) -> dict[int, np.ndarray]:
+        """One `[num_phrases, dim]` L2-normalized matrix per event that
+        carries local phrases (plan §T2 step 3). Unlike KIS's Stage 1 phrase
+        rerank, phrases here go through the SAME `QueryTranslator` as event
+        text: the TRAKE operator UI is Vietnamese and event text is already
+        translated before encoding, so leaving a Vietnamese phrase untranslated
+        would score it against an English-trained text tower in silence.
+        """
+        unique_phrases: dict[str, None] = {}
+        for event in events:
+            for phrase in event.local_phrases:
+                unique_phrases.setdefault(phrase, None)
+        if not unique_phrases:
+            return {}
+
+        phrases = list(unique_phrases)
+        translated = phrases
+        if self._query_translator is not None:
+            translated = await asyncio.to_thread(self._translate, phrases)
+            for original, result in zip(phrases, translated):
+                if result != original:
+                    logger.info("trake: local phrase translated %r -> %r", original, result)
+
+        encode = getattr(self._encoder, "encode_local_phrases", None) or self._encoder.encode_text
+        encoded = await asyncio.to_thread(encode, translated)
+        vectors = np.asarray(encoded, dtype=np.float32)
+        norms = np.linalg.norm(vectors, axis=-1, keepdims=True)
+        vectors = vectors / np.maximum(norms, 1e-12)
+        vector_by_phrase = dict(zip(phrases, vectors))
+
+        return {
+            index: np.stack([vector_by_phrase[phrase] for phrase in event.local_phrases])
+            for index, event in enumerate(events)
+            if event.local_phrases
+        }
 
     def _translate(self, texts: Sequence[str]) -> list[str]:
         assert self._query_translator is not None
@@ -411,10 +543,18 @@ class TrakeService:
         return list(pools)
 
     async def _retrieve_one_pool(self, index: int, event: TrakeEventQuery) -> KisCandidatePool:
+        # A local phrase pins a visual region of the event's moment, not a
+        # wording of it -- KIS aligns phrase groups by text-query index, so
+        # the same phrase group is fanned out to every text query of this
+        # event (plan §T1) rather than sent once.
+        local_phrases_by_query = (
+            [list(event.local_phrases)] * len(event.text_queries) if event.local_phrases else []
+        )
         try:
             return await self._search_service.retrieve_kis_candidates(
                 text_query=None,
                 text_queries=list(event.text_queries),
+                local_phrases_by_query=local_phrases_by_query,
                 text_top_k=int(event.text_top_k or self._config["event_text_top_k"]),
                 ocr_query=event.ocr_query,
                 ocr_top_k=int(event.ocr_top_k or self._config["event_ocr_top_k"]),
@@ -491,8 +631,28 @@ class TrakeService:
         rrf_k = int(self._config["kis_evidence_rrf_k"])
         return sum(kis_evidence_score(rank, rrf_k) for rank in item.best_rank_by_event.values())
 
-    def _rank_evidence(self, videos: dict[str, _VideoEvidence]) -> dict[str, float]:
-        return {video_id: self._video_rank_evidence(item) for video_id, item in videos.items()}
+    def _rank_evidence(
+        self, videos: dict[str, _VideoEvidence], num_events: int
+    ) -> dict[str, float]:
+        """B8 input, normalized to [0, 1] like `coverage` -- `_video_rank_evidence`
+        itself is a SUM over covered events, so its ceiling is `num_events`, not
+        1. Left un-normalized, `score_videos`'s `rank_evidence_weight` would mean
+        a different thing for a 2-event query than a 7-event one: at N=7 the raw
+        sum can reach 3.5x `coverage`'s ceiling, so video ranking degenerates
+        into "how many events did KIS surface this video for" and stops caring
+        how good the chained sequence actually is (measured 2026-08-28; see
+        configs/search/trake.yaml: video_rank_evidence_weight).
+
+        Dividing by `num_events` (not by how many of them this video covers)
+        is deliberate: dividing by covered-count would erase the breadth signal
+        entirely -- a video hit in 1 of 5 events at rank 0 would tie a video hit
+        in 5 of 5 events at rank 0. Dividing by `num_events` keeps that
+        distinction (0.2 vs 1.0) while landing on the same scale as `coverage`.
+        """
+        return {
+            video_id: self._video_rank_evidence(item) / max(num_events, 1)
+            for video_id, item in videos.items()
+        }
 
     def _keyframe_index(self) -> dict[str, int]:
         """`keyframe_id -> row in the cache matrix`, built once per cache load.
@@ -518,11 +678,34 @@ class TrakeService:
         videos: dict[str, _VideoEvidence],
         candidate_scores: _CandidateScores,
         events: Sequence[TrakeEventQuery],
-    ) -> tuple[list[ChainCandidate], int]:
+        phrase_vectors_by_event: dict[int, np.ndarray],
+        local_rerank_video_ids: frozenset[str],
+    ) -> tuple[list[ChainCandidate], int, _LocalRerankStats]:
         chains: list[ChainCandidate] = []
         dropped = 0
+        stats = _LocalRerankStats()
         for video_id, item in videos.items():
-            buckets = self._build_buckets(item, candidate_scores, events)
+            local_by_event: dict[int, dict[int, _LocalFrameScore]] = {}
+            if phrase_vectors_by_event and video_id in local_rerank_video_ids:
+                io_start = time.perf_counter()
+                files = self._local_embedding_store.load_video(video_id)
+                stats.io_ms += (time.perf_counter() - io_start) * 1000
+                if files is None:
+                    # Missing dense features (plan §"Trạng thái dữ liệu": 20%
+                    # of the corpus today). Already logged once by the store
+                    # itself; count every frame this video would have offered
+                    # so the diagnostics badge reflects it.
+                    stats.missing_frame_count += item.slice.length
+                else:
+                    scoring_start = time.perf_counter()
+                    local_by_event, missing = self._score_local_rerank(
+                        files, item.slice, phrase_vectors_by_event
+                    )
+                    stats.scoring_ms += (time.perf_counter() - scoring_start) * 1000
+                    stats.missing_frame_count += missing
+                    stats.videos_reranked += 1
+
+            buckets = self._build_buckets(item, candidate_scores, events, local_by_event)
             if buckets is None:
                 dropped += 1
                 continue
@@ -531,25 +714,77 @@ class TrakeService:
                 dropped += 1
                 continue
             chains.extend(video_chains)
-        return chains, dropped
+        return chains, dropped, stats
+
+    def _score_local_rerank(
+        self,
+        files: VideoLocalFiles,
+        video_slice: TrakeVideoSlice,
+        phrase_vectors_by_event: dict[int, np.ndarray],
+    ) -> tuple[dict[int, dict[int, _LocalFrameScore]], int]:
+        """B2b: MaxSim-score one candidate video's FULL dense array against
+        every event that carries a local phrase, then z-score each event's
+        row across the video's own frames (mean 0 per video -- the invariant
+        that lets `local_rerank.max_videos` cap this step without corrupting
+        the B8 cross-video comparison; see configs/search/trake.yaml).
+
+        Reads the whole video, not a pre-filtered pool: measured 2026-08-27
+        on data/fgclip_dense_8x8, the frame MaxSim ends up preferring can
+        land as deep as rank 273-308 in the video's own global-cosine order,
+        so a small pre-filtered pool would routinely miss it -- and one
+        video's per-event buckets overlap enough that a full read costs
+        about the same I/O as a filtered one anyway.
+        """
+        row_by_corpus: dict[int, int] = {}
+        missing = 0
+        for corpus_index in range(video_slice.start, video_slice.stop):
+            frame_idx = self._trake_cache.metadata[corpus_index].frame_idx
+            row = files.row_by_frame_idx.get(frame_idx)
+            if row is None:
+                missing += 1
+                continue
+            row_by_corpus[corpus_index] = row
+        if not row_by_corpus:
+            return {}, missing
+
+        features = np.asarray(files.embeddings, dtype=np.float32)
+        local_by_event: dict[int, dict[int, _LocalFrameScore]] = {}
+        for event_index, phrase_vectors in phrase_vectors_by_event.items():
+            raw_scores = np.empty(features.shape[0], dtype=np.float32)
+            for start in range(0, features.shape[0], self._local_score_batch_size):
+                chunk = features[start : start + self._local_score_batch_size]
+                raw_scores[start : start + self._local_score_batch_size] = maxsim_query_scores(
+                    chunk, phrase_vectors
+                )
+            z_row = zscore_rows(raw_scores.reshape(1, -1))[0]
+            local_by_event[event_index] = {
+                corpus_index: _LocalFrameScore(raw=float(raw_scores[row]), z=float(z_row[row]))
+                for corpus_index, row in row_by_corpus.items()
+            }
+        return local_by_event, missing
 
     def _build_buckets(
         self,
         item: _VideoEvidence,
         candidate_scores: _CandidateScores,
         events: Sequence[TrakeEventQuery],
+        local_by_event: dict[int, dict[int, _LocalFrameScore]],
     ) -> list[list[CandidateFrame]] | None:
         """B2 + B4: candidates for each event inside one video.
 
         Union of (a) the frames KIS returned for this event in this video and
         (b) a local top-k backfill against this video's whole slice. (b) is
         what stops a weak event from emptying the bucket; (a) is what carries
-        the OCR / Title / ASR evidence in.
+        the OCR / Title / ASR evidence in. When B2b ran for this video,
+        `local_by_event[event_index]`'s z-scores also steer which frames (b)
+        picks -- otherwise a frame MaxSim prefers but global cosine ranks low
+        (measured: as low as rank 273-308) never reaches the bucket at all.
         """
         bucket_top_k = int(self._config["bucket_top_k"])
         nms_seconds = float(self._config["bucket_nms_seconds"])
         rrf_k = int(self._config["kis_evidence_rrf_k"])
         evidence_weight = float(self._config["kis_evidence_weight"])
+        local_weight = float(self._config.get("local_rerank", {}).get("weight", 0.0))
         video_slice = item.slice
 
         buckets: list[list[CandidateFrame]] = []
@@ -560,10 +795,17 @@ class TrakeService:
                 if previous is None or rank < previous:
                     ranks[corpus_index] = rank
 
+            local_for_event = local_by_event.get(event_index, {})
+
             corpus_indices: set[int] = set(ranks)
             if event.has_text:
                 corpus_indices |= self._local_top_indices(
-                    candidate_scores, event_index, video_slice, bucket_top_k
+                    candidate_scores,
+                    event_index,
+                    video_slice,
+                    bucket_top_k,
+                    local_for_event,
+                    local_weight,
                 )
             if not corpus_indices:
                 logger.info(
@@ -582,9 +824,11 @@ class TrakeService:
                         if event.has_text
                         else 0.0
                     ),
+                    local=local_for_event.get(corpus_index),
                     rank=ranks.get(corpus_index),
                     rrf_k=rrf_k,
                     evidence_weight=evidence_weight,
+                    local_weight=local_weight,
                 )
                 for corpus_index in corpus_indices
             ]
@@ -600,40 +844,54 @@ class TrakeService:
         event_index: int,
         video_slice: TrakeVideoSlice,
         top_k: int,
+        local_for_event: dict[int, _LocalFrameScore],
+        local_weight: float,
     ) -> set[int]:
         # Every corpus row of a candidate video has a column in `scores` (the
         # matrix was built from exactly these slices), so `col_of` never misses.
         columns = [scores.col_of[index] for index in range(video_slice.start, video_slice.stop)]
         if not columns:
             return set()
+        # Fancy indexing on both axes already returns a copy, so this window
+        # is safe to mutate in place without touching `scores.matrix`.
         window = scores.matrix[event_index, columns]
+        if local_for_event:
+            for offset, corpus_index in enumerate(range(video_slice.start, video_slice.stop)):
+                local_score = local_for_event.get(corpus_index)
+                if local_score is not None:
+                    window[offset] += local_weight * local_score.z
         take = min(top_k, window.size)
-        local = np.argpartition(window, -take)[-take:]
+        top_positions = np.argpartition(window, -take)[-take:]
         # `columns` is in ascending corpus-index order, so local column i maps
         # back to corpus index `video_slice.start + i`.
-        return {video_slice.start + int(index) for index in local}
+        return {video_slice.start + int(index) for index in top_positions}
 
     def _to_candidate_frame(
         self,
         corpus_index: int,
         *,
         semantic_z: float,
+        local: _LocalFrameScore | None,
         rank: int | None,
         rrf_k: int,
         evidence_weight: float,
+        local_weight: float,
     ) -> CandidateFrame:
         cached = self._trake_cache.metadata[corpus_index]
         evidence = kis_evidence_score(rank, rrf_k)
+        local_z = local.z if local is not None else 0.0
         return CandidateFrame(
             corpus_index=corpus_index,
             keyframe_id=cached.keyframe_id,
             video_id=cached.video_id,
             frame_idx=cached.frame_idx,
             timestamp=cached.timestamp,
-            score=semantic_z + evidence_weight * evidence,
+            score=semantic_z + local_weight * local_z + evidence_weight * evidence,
             semantic_z=semantic_z,
             kis_evidence=evidence,
             kis_rank=rank,
+            local_score=local.raw if local is not None else None,
+            local_z=local_z,
         )
 
     def _chain_with_relax(

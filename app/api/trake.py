@@ -38,6 +38,7 @@ def _to_event_query(event: TrakeEventRequest) -> TrakeEventQuery:
     return TrakeEventQuery(
         text_queries=tuple(event.text_queries),
         text_top_k=event.text_top_k,
+        local_phrases=tuple(event.local_phrases),
         ocr_query=event.ocr_query,
         ocr_top_k=event.ocr_top_k,
         title_query=event.title_query,
@@ -68,6 +69,8 @@ def _to_result_response(
                 score=frame.score,
                 semantic_z=frame.semantic_z,
                 kis_rank=frame.kis_rank,
+                local_score=frame.local_score,
+                local_z=frame.local_z,
             )
             for frame in candidate.frames
         ],
@@ -93,12 +96,15 @@ def _to_response(result: TrakeSearchResult) -> TrakeResponse:
                 kis_candidate_count=event.kis_candidate_count,
                 kis_video_count=event.kis_video_count,
                 has_text=event.has_text,
+                text_truncated=event.text_truncated,
             )
             for event in result.events
         ],
         candidate_video_count=result.candidate_video_count,
         chained_video_count=result.chained_video_count,
         dropped_video_count=result.dropped_video_count,
+        local_rerank_video_count=result.local_rerank_video_count,
+        local_missing_frame_count=result.local_missing_frame_count,
         sequences_by_video={
             video_id: [
                 _to_result_response(

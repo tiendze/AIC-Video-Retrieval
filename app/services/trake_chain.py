@@ -75,6 +75,14 @@ class CandidateFrame:
     semantic_z: float = 0.0
     kis_evidence: float = 0.0
     kis_rank: int | None = None
+    # B2b: phrase-to-patch MaxSim diagnostics. `local_score` is the raw mean
+    # MaxSim value; `local_z` is that score z-scored WITHIN this (video,
+    # event) pair before being folded into `score` -- see
+    # app/services/trake_service.py: TrakeService._score_local_rerank.
+    # Both default to "no local rerank ran for this frame" (event had no
+    # local phrase, or its video was outside local_rerank.max_videos).
+    local_score: float | None = None
+    local_z: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -365,6 +373,7 @@ def score_videos(
     coverage_weight: float,
     rank_evidence_weight: float,
     length_penalty: float,
+    smooth_max_bonus_cap: float,
 ) -> dict[str, VideoScore]:
     """Rank videos, not sequences.
 
@@ -372,17 +381,32 @@ def score_videos(
     top matters more than which sequence inside it is. Three signals, plus one
     correction:
 
-    * `logsumexp` of the video's best few sequence scores -- several good
-      sequences is stronger evidence than one lucky one, and logsumexp is a
-      smooth max so one outstanding sequence still wins over three mediocre.
+    * the best sequence's own score, plus a CAPPED bonus for extra sequences
+      that back it up -- see `smooth_max_bonus_cap` below.
     * the best sequence's coverage -- how many events actually cleared the bar.
     * KIS rank evidence -- how highly KIS itself ranked this video's frames,
-      summed across events as `rrf_k / (rrf_k + rank)`.
+      averaged across events as `rrf_k / (rrf_k + rank)` (TrakeService._rank_evidence).
 
     The correction is `length_penalty * log(num_keyframes)`. Every one of those
     signals is a max or a sum over the video's frames, and a max over more
     frames is larger for free: without this term, "rerank videos" degenerates
     into "sort videos by duration".
+
+    `smooth_max_bonus_cap` (measured 2026-08-28, changed from the uncapped
+    original): `logsumexp` of the top `top_chains` sequence scores is a smooth
+    max, so several good sequences pull the score up over one equally-good
+    sequence -- log(3) ~= 1.10 for three tied scores, which is bigger than
+    `rank_evidence`'s entire [0,1] range and close to `coverage`'s. That is
+    fine when the extra sequences are genuinely different confirmations of the
+    same answer, but `sequence_nms` only merges near-duplicates (within
+    `sequence_nms_frames`, a few frames); several genuinely DIFFERENT moments
+    in one video that all score decently is just as often a sign the query is
+    ambiguous and matches that video loosely everywhere, not that the video is
+    more likely correct. Uncapped, that made "how many plausible sequences can
+    this video produce" compete with (and sometimes beat) "how good is the
+    best one" -- capping the logsumexp bonus at a fixed amount above the best
+    sequence's own score keeps some credit for genuine multi-sequence
+    confirmation without letting quantity outrank quality.
     """
     grouped: dict[str, list[ChainCandidate]] = {}
     for candidate in candidates:
@@ -392,8 +416,12 @@ def score_videos(
     for video_id, video_candidates in grouped.items():
         ordered = sorted(video_candidates, key=lambda item: -item.score)
         head = [candidate.score for candidate in ordered[: max(top_chains, 1)]]
-        smooth_max = _logsumexp(head)
         best = ordered[0]
+        # _logsumexp(head) >= best.score always (logsumexp is a smooth max),
+        # so this bonus is never negative; capping it stops extra sequences
+        # from outweighing the best one's actual score.
+        bonus = min(_logsumexp(head) - best.score, smooth_max_bonus_cap)
+        smooth_max = best.score + bonus
         num_keyframes = max(keyframe_counts.get(video_id, 1), 1)
         evidence = rank_evidence.get(video_id, 0.0)
         score = (
