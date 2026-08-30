@@ -1,0 +1,238 @@
+.sidebar {
+  position: relative;
+  display: flex;
+  width: 224px;
+  min-width: 0;
+  height: 100vh;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px 10px;
+  background: #080f1d;
+  border-right: 1px solid #1f2937;
+  box-sizing: border-box;
+  color: #dbeafe;
+  transition:
+    width 180ms ease-out,
+    padding 180ms ease-out;
+}
+
+.collapsed {
+  width: 68px;
+  padding-right: 12px;
+  padding-left: 12px;
+}
+
+.brand {
+  display: flex;
+  min-height: 38px;
+  align-items: center;
+  gap: 9px;
+  padding: 2px 5px;
+  overflow: hidden;
+}
+
+.brandMark,
+.iconBadge {
+  display: inline-grid;
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  place-items: center;
+  color: #f8fafc;
+}
+
+.brandMark svg,
+.iconBadge svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.9;
+}
+
+.brandMark {
+  color: #f8fafc;
+}
+
+.iconBadge {
+  border-radius: 8px;
+  background: rgba(37, 99, 235, 0.18);
+  color: #cfe4ff;
+  transition:
+    background 160ms ease,
+    color 160ms ease,
+    transform 160ms ease;
+}
+
+.brandText,
+.navText {
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition:
+    opacity 160ms ease,
+    transform 160ms ease;
+}
+
+.brandText {
+  color: #eff6ff;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.nav {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.navButton,
+.collapseButton {
+  position: relative;
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 40px;
+  align-items: center;
+  gap: 10px;
+  padding: 4px;
+  background: transparent;
+  color: #b6c6e3;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+}
+
+.navButton:hover,
+.collapseButton:hover {
+  background: rgba(148, 163, 184, 0.1);
+  color: #eff6ff;
+}
+
+.active {
+  background: rgba(37, 99, 235, 0.22);
+  color: #fff;
+  border-color: rgba(96, 165, 250, 0.36);
+}
+
+.active .iconBadge {
+  background: rgba(37, 99, 235, 0.72);
+  color: #fff;
+}
+
+.collapseButton {
+  flex-shrink: 0;
+  color: #93a7ca;
+}
+
+.collapseButton span:first-child {
+  display: inline-grid;
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  place-items: center;
+  font-family: ui-monospace, Consolas, monospace;
+  font-weight: 800;
+}
+
+.collapsed .brandText,
+.collapsed .navText {
+  opacity: 0;
+  transform: translateX(-4px);
+}
+
+.collapsed .brand {
+  justify-content: center;
+  padding-right: 0;
+  padding-left: 0;
+}
+
+.collapsed .navButton,
+.collapsed .collapseButton {
+  justify-content: center;
+  min-height: 40px;
+  padding: 4px 0;
+  background: transparent;
+  border-color: transparent;
+  border-radius: 8px;
+  box-shadow: none;
+}
+
+.collapsed .iconBadge,
+.collapsed .brandMark {
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  background: transparent;
+  color: #f8fafc;
+}
+
+.collapsed .navButton:hover,
+.collapsed .collapseButton:hover {
+  background: rgba(148, 163, 184, 0.1);
+}
+
+.collapsed .active {
+  background: transparent;
+}
+
+.collapsed .active::before {
+  position: absolute;
+  left: -12px;
+  width: 3px;
+  height: 22px;
+  background: #38bdf8;
+  border-radius: 999px;
+  content: '';
+}
+
+.collapsed .active .iconBadge {
+  background: transparent;
+  color: #fff;
+  transform: translateX(1px);
+}
+
+.collapsed [data-tooltip]:hover::after,
+.collapsed [data-tooltip]:focus-visible::after {
+  position: absolute;
+  top: 50%;
+  left: calc(100% + 10px);
+  z-index: 10;
+  padding: 5px 8px;
+  background: #0f172a;
+  color: #eff6ff;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.28);
+  content: attr(data-tooltip);
+  font-size: 12px;
+  line-height: 1;
+  pointer-events: none;
+  transform: translateY(-50%);
+  white-space: nowrap;
+}
+
+@media (max-width: 780px) {
+  .sidebar {
+    width: 68px;
+    padding-right: 12px;
+    padding-left: 12px;
+  }
+
+  .brandText,
+  .navText {
+    opacity: 0;
+    transform: translateX(-4px);
+  }
+
+  .iconBadge,
+  .brandMark {
+    background: transparent;
+  }
+}

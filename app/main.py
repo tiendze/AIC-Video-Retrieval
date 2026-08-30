@@ -20,6 +20,7 @@ from app.api.quest import router as quest_router
 from app.api.search import register_upload_guard
 from app.api.search import router as search_router
 from app.api.trake import router as trake_router
+from app.api.view_file import router as view_file_router
 from app.api.videos import router as videos_router
 from app.config import CorsSettings, Settings
 from app.encoders.base import MultimodalEncoder
@@ -31,6 +32,7 @@ from app.services.search_service import SearchService
 from app.services.thumbnail_service import ThumbnailService
 from app.services.trake_embedding_cache import TrakeEmbeddingCache
 from app.services.trake_service import TrakeService, load_trake_config
+from app.services.view_file_service import ViewFileService
 from app.services.vqa_service import (
     GeminiVqaClient,
     QaService,
@@ -173,6 +175,10 @@ def _build_qa_service(
     )
 
 
+def _build_view_file_service(mongo_store: MongoStore) -> ViewFileService:
+    return ViewFileService(mongo_store=mongo_store)
+
+
 def _build_query_translator(settings: Settings) -> QueryTranslator:
     """`kind` in the config picks the implementation. Production keeps the
     fallback wrapper so losing the Gemini quota mid-contest degrades to EnViT5
@@ -195,6 +201,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.mongo_store = _build_mongo_store(settings)
     app.state.query_translator = _build_query_translator(settings)
     app.state.thumbnail_service = _build_thumbnail_service(app.state.mongo_store)
+    app.state.view_file_service = _build_view_file_service(app.state.mongo_store)
     app.state.trake_embedding_cache = _build_trake_embedding_cache(
         app.state.milvus_store, app.state.mongo_store, app.state.encoder
     )
@@ -277,6 +284,7 @@ def create_app() -> FastAPI:
     app.include_router(trake_router)
     app.include_router(keyframes_router)
     app.include_router(videos_router)
+    app.include_router(view_file_router)
     app.include_router(quest_router)
     app.include_router(qa_router)
     return app

@@ -3,13 +3,18 @@ import type { SearchHit, TrakeVideoResultItem } from '../api/types'
 import {
   buildKisFinalRanking,
   buildKisSubmissionRows,
+  buildDirectionalFrameSweep,
   buildRawFrameSweep,
   buildTrakeFinalRanking,
-  buildTrakePerEventSweep,
   buildTrakeSubmissionPlan,
+  buildTrakeSynchronizedSteps,
   buildVqaFinalRows,
   createManualKisSelection,
+  createManualTrakeSelection,
+  createManualVqaSelection,
   createVisualKisSelection,
+  createVisualTrakeSelection,
+  kisSweepReachWarning,
   normalizeCsvFilename,
   searchHitKey,
   serializeKisCsv,
@@ -50,11 +55,15 @@ function sequence(videoId: string, frames: number[]): TrakeVideoResultItem {
   }
 }
 
+function vqa(frame: number, answer: string, videoId = 'L30_V006'): SelectedVqaItem {
+  return createManualVqaSelection(videoId, frame, answer)
+}
+
 describe('submissionExport', () => {
   it('builds KIS final ranking as manual order followed by remaining retrieval order', () => {
     const results = [1, 2, 3, 4, 5].map((frame) => hit(frame))
     const selected: SelectedKisItem[] = [results[1], results[3]].map((item, index) =>
-      createVisualKisSelection(item, index, 10, 0),
+      createVisualKisSelection(item, index),
     )
 
     const finalRanking = buildKisFinalRanking(results, selected)
@@ -91,9 +100,43 @@ describe('submissionExport', () => {
     expect(buildRawFrameSweep(15, { step: 10, margin: 30 })).toEqual([15, 5, 25, 35, 45])
   })
 
+  it('allows directional sweeps to overshoot the target by one step frame', () => {
+    expect(
+      buildDirectionalFrameSweep(90, {
+        direction: 'left',
+        step: 10,
+        targetFrameIdx: 75,
+      }),
+    ).toEqual([90, 80, 70])
+    expect(
+      buildDirectionalFrameSweep(90, {
+        direction: 'right',
+        step: 10,
+        targetFrameIdx: 115,
+      }),
+    ).toEqual([90, 100, 110, 120])
+  })
+
+  it('does not overshoot when a directional sweep lands exactly on the target', () => {
+    expect(
+      buildDirectionalFrameSweep(90, {
+        direction: 'left',
+        step: 10,
+        targetFrameIdx: 70,
+      }),
+    ).toEqual([90, 80, 70])
+    expect(kisSweepReachWarning(90, 'right', 10, 120)).toBeNull()
+    expect(kisSweepReachWarning(90, 'right', 10, 115)).toBeNull()
+  })
+
+  it('warns only when a directional sweep exceeds the 100-row CSV budget', () => {
+    expect(kisSweepReachWarning(1000, 'left', 10, 20)).toBeNull()
+    expect(kisSweepReachWarning(1000, 'left', 10, 0)).toContain('first 100')
+  })
+
   it('builds manual-only KIS submission as primary first, then ranking fallback', () => {
     const rows = buildKisSubmissionRows(
-      [createManualKisSelection('L30_V046', 3255, 10, 0)],
+      [createManualKisSelection('L30_V046', 3255)],
       [hit(10), hit(20), hit(30)],
       4,
     )
@@ -106,19 +149,18 @@ describe('submissionExport', () => {
     ])
   })
 
-  it('exports each selected primary before that selection margin and ranking fallback', () => {
+  it('exports each selected primary before that selection sweep and ranking fallback', () => {
     const rows = buildKisSubmissionRows(
-      [createManualKisSelection('L30_V006', 90, 10, 20)],
+      [createManualKisSelection('L30_V006', 90, 'right', 10, 120)],
       [hit(100), hit(200, 'L30_V007')],
       6,
     )
 
     expect(rows.map((row) => `${row.video_id}:${row.frame_idx}`)).toEqual([
       'L30_V006:90',
-      'L30_V006:80',
       'L30_V006:100',
-      'L30_V006:70',
       'L30_V006:110',
+      'L30_V006:120',
       'L30_V007:200',
     ])
   })
@@ -127,9 +169,9 @@ describe('submissionExport', () => {
     const visual = hit(30025, 'L25_V041')
     const rows = buildKisSubmissionRows(
       [
-        createManualKisSelection('L30_V046', 3255, 10, 20),
-        createVisualKisSelection(visual, 0, 10, 0),
-        createManualKisSelection('L28_V003', 9210, 10, 20),
+        createManualKisSelection('L30_V046', 3255, 'left', 10, 3235),
+        createVisualKisSelection(visual, 0),
+        createManualKisSelection('L28_V003', 9210, 'left', 10, 9190),
       ],
       [visual, hit(777, 'L31_V001')],
       8,
@@ -138,18 +180,18 @@ describe('submissionExport', () => {
     expect(rows.map((row) => `${row.video_id}:${row.frame_idx}`)).toEqual([
       'L30_V046:3255',
       'L30_V046:3245',
-      'L30_V046:3265',
       'L30_V046:3235',
-      'L30_V046:3275',
       'L25_V041:30025',
       'L28_V003:9210',
       'L28_V003:9200',
+      'L28_V003:9190',
+      'L31_V001:777',
     ])
   })
 
   it('deduplicates selected and margin frames before image-ranking fallback', () => {
     const rows = buildKisSubmissionRows(
-      [createManualKisSelection('L30_V006', 90, 10, 10)],
+      [createManualKisSelection('L30_V006', 90, 'left', 10, 80)],
       [hit(90), hit(80), hit(100), hit(200, 'L30_V007')],
       4,
     )
@@ -162,8 +204,8 @@ describe('submissionExport', () => {
   it('keeps a later primary group visible while deduplicating an overlapping margin row', () => {
     const rows = buildKisSubmissionRows(
       [
-        createManualKisSelection('L30_V006', 90, 10, 10),
-        createManualKisSelection('L30_V006', 80, 10, 0),
+        createManualKisSelection('L30_V006', 90, 'left', 10, 80),
+        createManualKisSelection('L30_V006', 80),
       ],
       [hit(200, 'L30_V007')],
       4,
@@ -172,7 +214,6 @@ describe('submissionExport', () => {
     expect(rows.map((row) => `${row.video_id}:${row.frame_idx}`)).toEqual([
       'L30_V006:90',
       'L30_V006:80',
-      'L30_V006:100',
       'L30_V007:200',
     ])
   })
@@ -186,8 +227,8 @@ describe('submissionExport', () => {
   it('honors the submission limit with earlier selection groups taking priority', () => {
     const rows = buildKisSubmissionRows(
       [
-        createManualKisSelection('L30_V006', 90, 10, 20),
-        createManualKisSelection('L30_V007', 200, 10, 20),
+        createManualKisSelection('L30_V006', 90, 'right', 10, 120),
+        createManualKisSelection('L30_V007', 200, 'right', 10, 230),
       ],
       [hit(300)],
       3,
@@ -195,16 +236,16 @@ describe('submissionExport', () => {
 
     expect(rows.map((row) => `${row.video_id}:${row.frame_idx}`)).toEqual([
       'L30_V006:90',
-      'L30_V006:80',
       'L30_V006:100',
+      'L30_V006:110',
     ])
   })
 
   it('exports only selected and answered VQA rows', () => {
     const selected: SelectedVqaItem[] = [
-      { key: searchHitKey(hit(2)), hit: hit(2), originalRank: 1, answer: '5' },
-      { key: searchHitKey(hit(5)), hit: hit(5), originalRank: 4, answer: 'Năm người' },
-      { key: searchHitKey(hit(3)), hit: hit(3), originalRank: 2, answer: '' },
+      vqa(2, '5'),
+      vqa(5, 'Năm người'),
+      vqa(3, ''),
     ]
 
     const rows = buildVqaFinalRows(selected)
@@ -214,23 +255,26 @@ describe('submissionExport', () => {
 
   it('keeps VQA answers independent and quotes comma answers', () => {
     const rows: SelectedVqaItem[] = [
-      {
-        key: searchHitKey(hit(530, 'L30_V001')),
-        hit: hit(530, 'L30_V001'),
-        originalRank: 0,
-        answer: 'Có 3 người, bao gồm nam và nữ',
-      },
-      {
-        key: searchHitKey(hit(894)),
-        hit: hit(894),
-        originalRank: 1,
-        answer: 'Anh ấy nói "Xin chào"',
-      },
+      vqa(530, 'Có 3 người, bao gồm nam và nữ', 'L30_V001'),
+      vqa(894, 'Anh ấy nói "Xin chào"'),
     ]
 
     expect(serializeVqaCsv(rows)).toBe(
       'L30_V001,530,"Có 3 người, bao gồm nam và nữ"\n' +
         'L30_V006,894,"Anh ấy nói ""Xin chào"""',
+    )
+  })
+
+  it('expands VQA sweep rows with the same answer before CSV export', () => {
+    const rows = buildVqaFinalRows([
+      createManualVqaSelection('L30_V001', 90, 'hai người', 'right', 10, 115),
+    ])
+
+    expect(serializeVqaCsv(rows)).toBe(
+      'L30_V001,90,"hai người"\n' +
+        'L30_V001,100,"hai người"\n' +
+        'L30_V001,110,"hai người"\n' +
+        'L30_V001,120,"hai người"',
     )
   })
 
@@ -241,11 +285,9 @@ describe('submissionExport', () => {
       sequence('C', [5, 6]),
       sequence('D', [7, 8]),
     ]
-    const selected: SelectedTrakeSequence[] = [results[0], results[2]].map((result, index) => ({
-      key: trakeSequenceKey(result),
-      result,
-      originalRank: index,
-    }))
+    const selected: SelectedTrakeSequence[] = [results[0], results[2]].map((result, index) =>
+      createVisualTrakeSelection(result, index),
+    )
 
     const finalRanking = buildTrakeFinalRanking(results, selected)
 
@@ -258,45 +300,66 @@ describe('submissionExport', () => {
     expect(validateTrakeEventCount([sequence('L30_V006', [894])], 2)).toMatch(/2 event frames/)
   })
 
-  it('per-event sweep keeps N strictly-ordered frames, drops center and ordering violations', () => {
-    const variants = buildTrakePerEventSweep(sequence('A', [100, 101]), { step: 1, margin: 2 })
-    for (const variant of variants) {
-      expect(variant.keyframes).toHaveLength(2)
-      expect(variant.keyframes[0].frame_idx).toBeLessThan(variant.keyframes[1].frame_idx)
-    }
-    const frameLists = variants.map((variant) => variant.keyframes.map((k) => k.frame_idx))
-    expect(frameLists).not.toContainEqual([100, 101]) // center excluded
-    expect(frameLists).toEqual(
-      expect.arrayContaining([
-        [99, 101],
-        [98, 101],
-        [100, 102],
-        [100, 103],
-      ]),
-    )
-    expect(frameLists).not.toContainEqual([101, 101]) // ordering violation dropped
-    expect(frameLists).not.toContainEqual([102, 101])
+  it('keys TRAKE sequences by video id and event frames', () => {
+    expect(trakeSequenceKey(sequence('A', [100, 200, 300]))).toBe('A::100|200|300')
+    expect(trakeSequenceKey(sequence('B', [100, 200, 300]))).toBe('B::100|200|300')
   })
 
-  it('per-event sweep is empty when margin is zero', () => {
-    expect(buildTrakePerEventSweep(sequence('A', [100, 200]), { step: 5, margin: 0 })).toEqual([])
+  it('builds synchronized TRAKE target-step variants without Cartesian combinations', () => {
+    const variants = buildTrakeSynchronizedSteps(sequence('A', [100, 200, 300]), {
+      targetFrames: [150, 280, 260],
+      stepCount: 5,
+    })
+
+    expect(variants.map((variant) => variant.keyframes.map((keyframe) => keyframe.frame_idx))).toEqual([
+      [110, 216, 292],
+      [120, 232, 284],
+      [130, 248, 276],
+      [140, 264, 268],
+      [150, 280, 260],
+    ])
   })
 
-  it('builds TRAKE submission: centers first, then variants, deduped', () => {
+  it('does not create synchronized TRAKE variants when every target equals its start', () => {
+    expect(
+      buildTrakeSynchronizedSteps(sequence('A', [100, 200]), {
+        targetFrames: [100, 200],
+        stepCount: 5,
+      }),
+    ).toEqual([])
+  })
+
+  it('drops duplicate synchronized TRAKE sequences created by rounding', () => {
+    const variants = buildTrakeSynchronizedSteps(sequence('A', [100, 200]), {
+      targetFrames: [101, 201],
+      stepCount: 5,
+    })
+
+    expect(variants.map((variant) => variant.keyframes.map((keyframe) => keyframe.frame_idx))).toEqual([
+      [101, 201],
+    ])
+  })
+
+  it('builds TRAKE submission: original and synchronized steps stay grouped', () => {
     const results = [sequence('A', [100, 200]), sequence('B', [10, 20])]
     const selected: SelectedTrakeSequence[] = results.map((result, index) => ({
-      key: trakeSequenceKey(result),
-      result,
-      originalRank: index,
+      ...createVisualTrakeSelection(result, index),
+      stepTargetFrames:
+        result.video_id === 'A'
+          ? [105, 205]
+          : [15, 25],
+      stepCount: 1,
     }))
-    const plan = buildTrakeSubmissionPlan(selected, results, { step: 5, margin: 5 })
+    const plan = buildTrakeSubmissionPlan(selected, results)
 
-    expect(plan.rows.slice(0, 2).map((row) => trakeSequenceKey(row))).toEqual([
+    expect(plan.rows.slice(0, 4).map((row) => trakeSequenceKey(row))).toEqual([
       trakeSequenceKey(results[0]),
+      trakeSequenceKey(sequence('A', [105, 205])),
       trakeSequenceKey(results[1]),
+      trakeSequenceKey(sequence('B', [15, 25])),
     ])
     expect(plan.centerCount).toBe(2)
-    expect(plan.variantCount).toBeGreaterThan(0)
+    expect(plan.variantCount).toBe(2)
     const keys = plan.rows.map((row) => trakeSequenceKey(row))
     expect(new Set(keys).size).toBe(keys.length)
     // Every emitted row is still a full N-frame sequence.
@@ -306,10 +369,24 @@ describe('submissionExport', () => {
   it('TRAKE submission plan respects maxRows', () => {
     const results = [sequence('A', [100, 200])]
     const selected: SelectedTrakeSequence[] = [
-      { key: trakeSequenceKey(results[0]), result: results[0], originalRank: 0 },
+      {
+        ...createVisualTrakeSelection(results[0], 0),
+        stepTargetFrames: [120, 220],
+        stepCount: 20,
+      },
     ]
-    const plan = buildTrakeSubmissionPlan(selected, results, { step: 1, margin: 20, maxRows: 5 })
+    const plan = buildTrakeSubmissionPlan(selected, results, { maxRows: 5 })
     expect(plan.rows.length).toBe(5)
+  })
+
+  it('creates manual TRAKE rows and exports selected rows before ranking fallback', () => {
+    const manual = createManualTrakeSelection('L30_V046', [894, 969])
+    const ranking = [sequence('L30_V001', [10, 20])]
+
+    const plan = buildTrakeSubmissionPlan([manual], ranking)
+
+    expect(manual.source).toBe('manual')
+    expect(serializeTrakeCsv(plan.rows)).toBe('L30_V046,894,969\nL30_V001,10,20')
   })
 
   it('normalizes filenames without appending csv twice and validates task suffixes', () => {

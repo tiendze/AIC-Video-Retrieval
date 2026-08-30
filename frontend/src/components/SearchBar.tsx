@@ -26,6 +26,8 @@ export interface SearchBarProps {
   asrQuery: string
   asrVideoCandidateK: number
   asrGate: AsrGate | null
+  disabled?: boolean
+  disabledReason?: string
   asrDisabled: boolean
   asrReadinessMessage: string | null
   candidatePoolSize: number | null
@@ -65,6 +67,8 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
     asrQuery,
     asrVideoCandidateK,
     asrGate,
+    disabled = false,
+    disabledReason,
     asrDisabled,
     asrReadinessMessage,
     candidatePoolSize,
@@ -89,7 +93,8 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
   const hasTextInput = textQueries.some((query) => query.trim().length > 0)
   const hasAsrInput = !asrDisabled && asrQuery.trim().length > 0
   const hasStage1Input =
-    hasTextInput || ocrQuery.trim().length > 0 || titleQuery.trim().length > 0 || hasAsrInput
+    !disabled &&
+    (hasTextInput || ocrQuery.trim().length > 0 || titleQuery.trim().length > 0 || hasAsrInput)
 
   return (
     <div className={styles.flow}>
@@ -110,7 +115,12 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
           <div className={styles.fieldWide}>
             <div className={styles.queryListHeader}>
               <span>Text queries (FG-CLIP)</span>
-              <button type="button" className={styles.addInlineButton} onClick={onAddTextQuery}>
+              <button
+                type="button"
+                className={styles.addInlineButton}
+                disabled={disabled}
+                onClick={onAddTextQuery}
+              >
                 + Add query
               </button>
             </div>
@@ -129,6 +139,7 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
                           : 'Concrete dam under heavy rain...'
                       }
                       value={query}
+                      disabled={disabled}
                       onValueChange={(value) => {
                         if (index === 0) onGlobalTextQueryChange(value)
                         else onTextQueryChange(index, value)
@@ -137,7 +148,7 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
                     <button
                       type="button"
                       className={styles.removeMini}
-                      disabled={textQueries.length === 1}
+                      disabled={disabled || textQueries.length === 1}
                       aria-label={`remove text query ${index + 1}`}
                       title="Remove query"
                       onClick={() => onRemoveTextQuery(index)}
@@ -151,6 +162,7 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
                       <button
                         type="button"
                         className={styles.addInlineButton}
+                        disabled={disabled}
                         onClick={() => onAddLocalPhrase(index)}
                       >
                         + Add local phrase
@@ -166,6 +178,7 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
                           type="text"
                           placeholder="red seasoning packet"
                           value={phrase}
+                          disabled={disabled}
                           onValueChange={(value) =>
                             onLocalPhraseChange(index, phraseIndex, value)
                           }
@@ -173,6 +186,7 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
                         <button
                           type="button"
                           className={styles.removeMini}
+                          disabled={disabled}
                           aria-label={`remove local phrase ${index + 1}.${phraseIndex + 1}`}
                           title="Remove local phrase"
                           onClick={() => onRemoveLocalPhrase(index, phraseIndex)}
@@ -195,6 +209,7 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
             ariaLabel="text candidates"
             value={textCandidateK}
             min={1}
+            disabled={disabled}
             onChange={onTextCandidateKChange}
           />
           <label className={styles.fieldWide}>
@@ -204,7 +219,7 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
               type="text"
               placeholder="SAIGON"
               value={ocrQuery}
-              disabled={ocrDisabled}
+              disabled={disabled || ocrDisabled}
               onValueChange={onOcrQueryChange}
             />
           </label>
@@ -214,7 +229,7 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
             value={ocrCandidateK}
             min={1}
             max={MAX_CANDIDATE_K}
-            disabled={ocrDisabled}
+            disabled={disabled || ocrDisabled}
             onChange={onOcrCandidateKChange}
           />
           <label className={styles.fieldWide}>
@@ -224,6 +239,7 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
               type="text"
               placeholder="chicken, football, rain..."
               value={titleQuery}
+              disabled={disabled}
               onValueChange={onTitleQueryChange}
             />
           </label>
@@ -233,6 +249,7 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
             value={titleCandidateK}
             min={1}
             max={MAX_CANDIDATE_K}
+            disabled={disabled}
             onChange={onTitleCandidateKChange}
           />
           <label className={styles.fieldWide}>
@@ -243,7 +260,7 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
               maxLength={MAX_ASR_QUERY_LENGTH}
               placeholder="con cá, cân, bao nhiêu ký"
               value={asrQuery}
-              disabled={asrDisabled}
+              disabled={disabled || asrDisabled}
               onValueChange={onAsrQueryChange}
             />
           </label>
@@ -253,10 +270,11 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
             value={asrVideoCandidateK}
             min={1}
             max={MAX_ASR_VIDEO_CANDIDATE_K}
-            disabled={asrDisabled}
+            disabled={disabled || asrDisabled}
             onChange={onAsrVideoCandidateKChange}
           />
         </div>
+        {disabled && disabledReason && <span className={styles.asrReadiness}>{disabledReason}</span>}
         {asrReadinessMessage && (
           <span className={styles.asrReadiness}>{asrReadinessMessage}</span>
         )}
@@ -267,7 +285,7 @@ export const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function S
           <button
             type="button"
             className={styles.enhancer}
-            disabled={!globalTextQuery.trim() || enhanceLoading}
+            disabled={disabled || !globalTextQuery.trim() || enhanceLoading}
             title="Viet lai Text Q0 bang AI (QUEST nhanh 1)"
             onClick={() => onEnhance(globalTextQuery)}
           >

@@ -2,7 +2,9 @@ import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import type { TrakeVideoResultItem } from '../api/types'
-import { formatTrakeTimestamp, TrakeResultList } from './TrakeResultList'
+import { trakeVisualSelectionKey } from '../utils/submissionExport'
+import { formatTrakeTimestamp } from '../utils/trakeFormat'
+import { TrakeResultList } from './TrakeResultList'
 
 // RED reproducer for DANTE/TRAKE's results UI (plan §P2.2, PRD §F6/US-4 +
 // F9(C): "Trả về top-k video, mỗi video kèm đúng N keyframe, thứ tự thời
@@ -128,7 +130,114 @@ describe('TrakeResultList', () => {
 
     await user.click(screen.getByRole('button', { name: 'Select' }))
 
-    expect(onToggleSequence).toHaveBeenCalledWith(RESULTS[0], 0)
+    expect(onToggleSequence).toHaveBeenCalledWith(
+      RESULTS[0],
+      0,
+      trakeVisualSelectionKey(RESULTS[0] as TrakeVideoResultItem, 0, 'L21_V001:0'),
+    )
+  })
+
+  it('keeps TRAKE selections independent when two videos share the same event frame indices', async () => {
+    const user = userEvent.setup()
+    const videoA = {
+      ...RESULTS[0],
+      video_id: 'L30_V072',
+      keyframes: RESULTS[0].keyframes.map((keyframe, index) => ({
+        ...keyframe,
+        keyframe_id: `L30_V072_f${[100, 200, 300][index]}`,
+        frame_idx: [100, 200, 300][index],
+      })),
+    }
+    const videoB = {
+      ...videoA,
+      video_id: 'L31_V005',
+      keyframes: videoA.keyframes.map((keyframe) => ({
+        ...keyframe,
+        keyframe_id: keyframe.keyframe_id.replace('L30_V072', 'L31_V005'),
+      })),
+    }
+    const results = [videoA, videoB]
+    const onToggleSequence = vi.fn()
+    const { rerender } = render(
+      <TrakeResultList
+        results={results}
+        selectedSequenceKeys={new Set([trakeVisualSelectionKey(videoA, 0, 'L30_V072:0')])}
+        onToggleSequence={onToggleSequence}
+      />,
+    )
+
+    const selectButtons = screen.getAllByRole('button', { name: /select/i })
+    expect(selectButtons[0]).toHaveTextContent('✓ Selected')
+    expect(selectButtons[1]).toHaveTextContent('Select')
+
+    rerender(
+      <TrakeResultList
+        results={results}
+        selectedSequenceKeys={
+          new Set([
+            trakeVisualSelectionKey(videoA, 0, 'L30_V072:0'),
+            trakeVisualSelectionKey(videoB, 1, 'L31_V005:0'),
+          ])
+        }
+        onToggleSequence={onToggleSequence}
+      />,
+    )
+    expect(screen.getAllByRole('button', { name: /selected/i })).toHaveLength(2)
+
+    rerender(
+      <TrakeResultList
+        results={results}
+        selectedSequenceKeys={new Set([trakeVisualSelectionKey(videoB, 1, 'L31_V005:0')])}
+        onToggleSequence={onToggleSequence}
+      />,
+    )
+    const afterDeselectButtons = screen.getAllByRole('button', { name: /select/i })
+    expect(afterDeselectButtons[0]).toHaveTextContent('Select')
+    expect(afterDeselectButtons[1]).toHaveTextContent('✓ Selected')
+    await user.click(afterDeselectButtons[1])
+  })
+
+  it('selects only the clicked TRAKE candidate when duplicate frame sequences are displayed', async () => {
+    const user = userEvent.setup()
+    const duplicateA = RESULTS[0] as TrakeVideoResultItem
+    const duplicateB: TrakeVideoResultItem = {
+      ...duplicateA,
+      score: 0.7,
+      keyframes: duplicateA.keyframes.map((keyframe) => ({
+        ...keyframe,
+        keyframe_id: `${keyframe.keyframe_id}_duplicate`,
+      })),
+    }
+    const onToggleSequence = vi.fn()
+    const { rerender } = render(
+      <TrakeResultList
+        results={[duplicateA, duplicateB]}
+        selectedSequenceKeys={new Set([trakeVisualSelectionKey(duplicateA, 0, 'L21_V001:0')])}
+        onToggleSequence={onToggleSequence}
+      />,
+    )
+
+    let selectButtons = screen.getAllByRole('button', { name: /select/i })
+    expect(selectButtons[0]).toHaveTextContent('✓ Selected')
+    expect(selectButtons[1]).toHaveTextContent('Select')
+
+    await user.click(selectButtons[1])
+    expect(onToggleSequence).toHaveBeenCalledWith(
+      duplicateB,
+      1,
+      trakeVisualSelectionKey(duplicateB, 1, 'L21_V001:1'),
+    )
+
+    rerender(
+      <TrakeResultList
+        results={[duplicateA, duplicateB]}
+        selectedSequenceKeys={new Set([trakeVisualSelectionKey(duplicateB, 1, 'L21_V001:1')])}
+        onToggleSequence={onToggleSequence}
+      />,
+    )
+    selectButtons = screen.getAllByRole('button', { name: /select/i })
+    expect(selectButtons[0]).toHaveTextContent('Select')
+    expect(selectButtons[1]).toHaveTextContent('✓ Selected')
   })
 
   it('groups duplicate video ids and separates their sequences', () => {

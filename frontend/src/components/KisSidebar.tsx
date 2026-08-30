@@ -19,19 +19,20 @@ export interface KisSidebarProps {
   vqaExportName: string
   onKisExportNameChange: (value: string) => void
   onVqaExportNameChange: (value: string) => void
-  onMoveKisSelection: (index: number, direction: -1 | 1) => void
-  onMoveVqaSelection: (index: number, direction: -1 | 1) => void
+  onReorderKisSelection: (fromIndex: number, toIndex: number) => void
+  onReorderVqaSelection: (fromIndex: number, toIndex: number) => void
   onRemoveKisSelection: (key: string) => void
   onAddManualKisSelection: (item: SelectedKisItem) => void
+  onUpdateKisSelection: (key: string, patch: Partial<SelectedKisItem>) => void
+  onAddManualVqaSelection: (item: SelectedVqaItem) => void
+  onUpdateVqaSelection: (key: string, patch: Partial<SelectedVqaItem>) => void
   onRemoveVqaSelection: (key: string) => void
   onClearKisSelection: () => void
   onClearVqaSelection: () => void
   onClearVqaAnswers: () => void
   onVqaAnswerChange: (key: string, answer: string) => void
   kisFrameSweepStep: number
-  kisFrameSweepMargin: number
   onKisFrameSweepStepChange: (value: number) => void
-  onKisFrameSweepMarginChange: (value: number) => void
   onExportKis: () => void
   onExportVqa: () => void
 }
@@ -49,19 +50,20 @@ export function KisSidebar({
   vqaExportName,
   onKisExportNameChange,
   onVqaExportNameChange,
-  onMoveKisSelection,
-  onMoveVqaSelection,
+  onReorderKisSelection,
+  onReorderVqaSelection,
   onRemoveKisSelection,
   onAddManualKisSelection,
+  onUpdateKisSelection,
+  onAddManualVqaSelection,
+  onUpdateVqaSelection,
   onRemoveVqaSelection,
   onClearKisSelection,
   onClearVqaSelection,
   onClearVqaAnswers,
   onVqaAnswerChange,
   kisFrameSweepStep,
-  kisFrameSweepMargin,
   onKisFrameSweepStepChange,
-  onKisFrameSweepMarginChange,
   onExportKis,
   onExportVqa,
 }: KisSidebarProps) {
@@ -105,19 +107,20 @@ export function KisSidebar({
           vqaExportName={vqaExportName}
           onKisExportNameChange={onKisExportNameChange}
           onVqaExportNameChange={onVqaExportNameChange}
-          onMoveKisSelection={onMoveKisSelection}
-          onMoveVqaSelection={onMoveVqaSelection}
+          onReorderKisSelection={onReorderKisSelection}
+          onReorderVqaSelection={onReorderVqaSelection}
           onRemoveKisSelection={onRemoveKisSelection}
           onAddManualKisSelection={onAddManualKisSelection}
+          onUpdateKisSelection={onUpdateKisSelection}
+          onAddManualVqaSelection={onAddManualVqaSelection}
+          onUpdateVqaSelection={onUpdateVqaSelection}
           onRemoveVqaSelection={onRemoveVqaSelection}
           onClearKisSelection={onClearKisSelection}
           onClearVqaSelection={onClearVqaSelection}
           onClearVqaAnswers={onClearVqaAnswers}
           onVqaAnswerChange={onVqaAnswerChange}
           kisFrameSweepStep={kisFrameSweepStep}
-          kisFrameSweepMargin={kisFrameSweepMargin}
           onKisFrameSweepStepChange={onKisFrameSweepStepChange}
-          onKisFrameSweepMarginChange={onKisFrameSweepMarginChange}
           onExportKis={onExportKis}
           onExportVqa={onExportVqa}
         />

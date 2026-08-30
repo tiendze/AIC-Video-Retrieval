@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import type { TrakeVideoResultItem } from '../api/types'
-import { trakeSequenceKey } from '../utils/submissionExport'
+import { trakeSequenceKey, trakeVisualSelectionKey } from '../utils/submissionExport'
+import { formatTrakeTimestamp } from '../utils/trakeFormat'
 import styles from './TrakeResultList.module.css'
 
 export interface TrakeResultListProps {
@@ -9,7 +10,11 @@ export interface TrakeResultListProps {
   // The "Details" button expands a video's card into these.
   sequencesByVideo?: Record<string, TrakeVideoResultItem[]>
   selectedSequenceKeys?: Set<string>
-  onToggleSequence?: (result: TrakeVideoResultItem, originalRank: number) => void
+  onToggleSequence?: (
+    result: TrakeVideoResultItem,
+    originalRank: number,
+    selectionKey: string,
+  ) => void
   onOpenDetail?: (result: TrakeVideoResultItem, keyframeIndex: number) => void
 }
 
@@ -37,18 +42,6 @@ function groupByVideo(results: TrakeVideoResultItem[]): TrakeVideoGroup[] {
   return Array.from(byVideo, ([videoId, sequences]) => ({ videoId, sequences }))
 }
 
-export function formatTrakeTimestamp(seconds: number): string {
-  const safeSeconds = Number.isFinite(seconds) ? Math.max(0, seconds) : 0
-  const hours = Math.floor(safeSeconds / 3600)
-  const minutes = Math.floor((safeSeconds % 3600) / 60)
-  const remainingSeconds = safeSeconds - hours * 3600 - minutes * 60
-  const secondsText = remainingSeconds.toFixed(1).padStart(4, '0')
-  if (hours > 0) {
-    return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${secondsText}`
-  }
-  return `${String(minutes).padStart(2, '0')}:${secondsText}`
-}
-
 // DANTE/TRAKE results UI (plan §P2.2, PRD §F6/US-4 + F9(C)). Each result
 // is one ordered keyframe sequence -- rendered as its own strip, never
 // flattened into the regular per-keyframe grid, and never re-sorted
@@ -64,8 +57,13 @@ export function TrakeResultList({
   const [expandedVideos, setExpandedVideos] = useState<Set<string>>(() => new Set())
 
   const rankByKey = useMemo(() => {
-    const map = new Map<string, number>()
-    results.forEach((result, index) => map.set(trakeSequenceKey(result), index))
+    const map = new Map<string, number[]>()
+    results.forEach((result, index) => {
+      const key = trakeSequenceKey(result)
+      const ranks = map.get(key)
+      if (ranks) ranks.push(index)
+      else map.set(key, [index])
+    })
     return map
   }, [results])
 
@@ -93,13 +91,19 @@ export function TrakeResultList({
         // Expanded view shows the video's full top-k; collapsed shows only the
         // sequence(s) that made the submission list. Detail rows reuse their
         // rank from `results` when present, else -1 (display only).
-        const rendered: RankedTrakeResult[] =
-          expanded && detailSequences.length > 0
-            ? detailSequences.map((result) => ({
-                result,
-                originalRank: rankByKey.get(trakeSequenceKey(result)) ?? -1,
-              }))
-            : group.sequences
+        const rendered: RankedTrakeResult[] = (() => {
+          if (!expanded || detailSequences.length === 0) return group.sequences
+          const seenBySequenceKey = new Map<string, number>()
+          return detailSequences.map((result) => {
+            const key = trakeSequenceKey(result)
+            const occurrence = seenBySequenceKey.get(key) ?? 0
+            seenBySequenceKey.set(key, occurrence + 1)
+            return {
+              result,
+              originalRank: rankByKey.get(key)?.[occurrence] ?? -1,
+            }
+          })
+        })()
         return (
           <div key={group.videoId} className={styles.card}>
             <div className={styles.header}>
@@ -122,11 +126,12 @@ export function TrakeResultList({
             </div>
             <div className={styles.sequences}>
               {rendered.map(({ result, originalRank }, index) => {
-              const sequenceKey = trakeSequenceKey(result)
+              const sequenceKey = trakeVisualSelectionKey(result, originalRank, `${group.videoId}:${index}`)
+              const renderKey = sequenceKey
               const sequenceSelected = selectedSequenceKeys?.has(sequenceKey) ?? false
               return (
                 <div
-                  key={sequenceKey}
+                  key={renderKey}
                   className={sequenceSelected ? styles.sequenceSelected : ''}
                 >
                   {index > 0 && <div className={styles.separator} role="separator" />}
@@ -139,7 +144,7 @@ export function TrakeResultList({
                           className={`${styles.selectSequence} ${
                             sequenceSelected ? styles.selectSequenceActive : ''
                           }`}
-                          onClick={() => onToggleSequence(result, originalRank)}
+                          onClick={() => onToggleSequence(result, originalRank, sequenceKey)}
                         >
                           {sequenceSelected ? '✓ Selected' : 'Select'}
                         </button>

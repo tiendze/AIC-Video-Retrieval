@@ -1,12 +1,15 @@
-import { useState, type ReactNode } from 'react'
+import { useState, type DragEvent, type ReactNode } from 'react'
 import type { SearchHit } from '../api/types'
 import {
   buildKisSubmissionPlan,
   buildVqaFinalRows,
   createManualKisSelection,
+  createManualVqaSelection,
+  kisSweepReachWarning,
   suggestedFilename,
   validateCsvFilename,
   type KisSubmissionPlan,
+  type KisSweepDirection,
   type SelectedKisItem,
   type SelectedSearchItem,
   type SelectedVqaItem,
@@ -25,19 +28,20 @@ export interface KisSelectionPanelProps {
   vqaExportName: string
   onKisExportNameChange: (value: string) => void
   onVqaExportNameChange: (value: string) => void
-  onMoveKisSelection: (index: number, direction: -1 | 1) => void
-  onMoveVqaSelection: (index: number, direction: -1 | 1) => void
+  onReorderKisSelection: (fromIndex: number, toIndex: number) => void
+  onReorderVqaSelection: (fromIndex: number, toIndex: number) => void
   onRemoveKisSelection: (key: string) => void
   onAddManualKisSelection: (item: SelectedKisItem) => void
+  onUpdateKisSelection: (key: string, patch: Partial<SelectedKisItem>) => void
+  onAddManualVqaSelection: (item: SelectedVqaItem) => void
+  onUpdateVqaSelection: (key: string, patch: Partial<SelectedVqaItem>) => void
   onRemoveVqaSelection: (key: string) => void
   onClearKisSelection: () => void
   onClearVqaSelection: () => void
   onClearVqaAnswers: () => void
   onVqaAnswerChange: (key: string, answer: string) => void
   kisFrameSweepStep: number
-  kisFrameSweepMargin: number
   onKisFrameSweepStepChange: (value: number) => void
-  onKisFrameSweepMarginChange: (value: number) => void
   onExportKis: () => void
   onExportVqa: () => void
 }
@@ -52,19 +56,20 @@ export function KisSelectionPanel({
   vqaExportName,
   onKisExportNameChange,
   onVqaExportNameChange,
-  onMoveKisSelection,
-  onMoveVqaSelection,
+  onReorderKisSelection,
+  onReorderVqaSelection,
   onRemoveKisSelection,
   onAddManualKisSelection,
+  onUpdateKisSelection,
+  onAddManualVqaSelection,
+  onUpdateVqaSelection,
   onRemoveVqaSelection,
   onClearKisSelection,
   onClearVqaSelection,
   onClearVqaAnswers,
   onVqaAnswerChange,
   kisFrameSweepStep,
-  kisFrameSweepMargin,
   onKisFrameSweepStepChange,
-  onKisFrameSweepMarginChange,
   onExportKis,
   onExportVqa,
 }: KisSelectionPanelProps) {
@@ -74,15 +79,23 @@ export function KisSelectionPanel({
   const finalVqaRows = buildVqaFinalRows(vqaSelection)
   const missingAnswers = vqaSelection.filter((item) => item.answer.length === 0)
   const overLimitAnswers = vqaSelection.filter((item) => item.answer.length > 100)
+  const invalidKisSweeps = countInvalidSweepConfigs(kisSelection)
+  const invalidVqaSweeps = countInvalidSweepConfigs(vqaSelection)
   const disableReason =
     mode === 'kis'
-      ? kisDisableReason(validation.isValid, kisSelection.length, finalKisPlan.rows.length)
+      ? kisDisableReason(
+          validation.isValid,
+          kisSelection.length,
+          finalKisPlan.rows.length,
+          invalidKisSweeps,
+        )
       : vqaDisableReason(
           validation.isValid,
           vqaSelection.length,
           finalVqaRows.length,
           missingAnswers.length,
           overLimitAnswers.length,
+          invalidVqaSweeps,
         )
 
   return (
@@ -141,7 +154,11 @@ export function KisSelectionPanel({
             </button>
           </div>
         )}
-        <div className={styles.filename}>Will export: {validation.filename}</div>
+        {activeName.trim().length > 0 ? (
+          <div className={styles.filename}>Will export: {validation.filename}</div>
+        ) : (
+          <div className={styles.hint}>Enter this first to unlock retrieval inputs.</div>
+        )}
       </section>
 
       {mode === 'kis' ? (
@@ -150,18 +167,22 @@ export function KisSelectionPanel({
           finalCount={results.length}
           submissionPlan={finalKisPlan}
           frameSweepStep={kisFrameSweepStep}
-          frameSweepMargin={kisFrameSweepMargin}
           onFrameSweepStepChange={onKisFrameSweepStepChange}
-          onFrameSweepMarginChange={onKisFrameSweepMarginChange}
           onAddManualSelection={onAddManualKisSelection}
-          onMove={onMoveKisSelection}
+          onUpdateSelection={onUpdateKisSelection}
+          onReorder={onReorderKisSelection}
           onRemove={onRemoveKisSelection}
           onClear={onClearKisSelection}
         />
       ) : (
         <VqaSelectedList
           selection={vqaSelection}
-          onMove={onMoveVqaSelection}
+          finalRows={finalVqaRows.length}
+          frameSweepStep={kisFrameSweepStep}
+          onFrameSweepStepChange={onKisFrameSweepStepChange}
+          onAddManualSelection={onAddManualVqaSelection}
+          onUpdateSelection={onUpdateVqaSelection}
+          onReorder={onReorderVqaSelection}
           onRemove={onRemoveVqaSelection}
           onClear={onClearVqaSelection}
           onClearAnswers={onClearVqaAnswers}
@@ -189,11 +210,10 @@ function KisSelectedList({
   finalCount,
   submissionPlan,
   frameSweepStep,
-  frameSweepMargin,
   onFrameSweepStepChange,
-  onFrameSweepMarginChange,
   onAddManualSelection,
-  onMove,
+  onUpdateSelection,
+  onReorder,
   onRemove,
   onClear,
 }: {
@@ -201,24 +221,40 @@ function KisSelectedList({
   finalCount: number
   submissionPlan: KisSubmissionPlan
   frameSweepStep: number
-  frameSweepMargin: number
   onFrameSweepStepChange: (value: number) => void
-  onFrameSweepMarginChange: (value: number) => void
   onAddManualSelection: (item: SelectedKisItem) => void
-  onMove: (index: number, direction: -1 | 1) => void
+  onUpdateSelection: (key: string, patch: Partial<SelectedKisItem>) => void
+  onReorder: (fromIndex: number, toIndex: number) => void
   onRemove: (key: string) => void
   onClear: () => void
 }) {
   const [manualVideoId, setManualVideoId] = useState('')
   const [manualFrameIdx, setManualFrameIdx] = useState('')
+  const [manualSweepDirection, setManualSweepDirection] = useState<KisSweepDirection>('none')
+  const [manualTargetFrameIdx, setManualTargetFrameIdx] = useState('')
   const [manualError, setManualError] = useState<string | null>(null)
+  const manualCenter = /^\d+$/.test(manualFrameIdx.trim()) ? Number(manualFrameIdx) : null
+  const manualTarget =
+    /^\d+$/.test(manualTargetFrameIdx.trim()) && manualSweepDirection !== 'none'
+      ? Number(manualTargetFrameIdx)
+      : null
+  const manualWarning =
+    manualCenter === null
+      ? null
+      : kisSweepReachWarning(
+          manualCenter,
+          manualSweepDirection,
+          frameSweepStep,
+          manualTarget,
+        )
 
   function addManualFrame(): void {
     const validation = validateManualFrameInput(
       manualVideoId,
       manualFrameIdx,
+      manualSweepDirection,
+      manualTargetFrameIdx,
       frameSweepStep,
-      frameSweepMargin,
     )
     if (validation) {
       setManualError(validation)
@@ -228,18 +264,23 @@ function KisSelectedList({
       createManualKisSelection(
         manualVideoId,
         Number(manualFrameIdx),
+        manualSweepDirection,
         frameSweepStep,
-        frameSweepMargin,
+        manualTarget,
       ),
     )
     setManualVideoId('')
     setManualFrameIdx('')
+    setManualSweepDirection('none')
+    setManualTargetFrameIdx('')
     setManualError(null)
   }
 
   function skipManualFrame(): void {
     setManualVideoId('')
     setManualFrameIdx('')
+    setManualSweepDirection('none')
+    setManualTargetFrameIdx('')
     setManualError(null)
   }
 
@@ -251,6 +292,16 @@ function KisSelectedList({
       </div>
       <div className={styles.hint}>
         Final image ranking has {finalCount} frame(s); CSV writes {submissionPlan.rows.length} row(s).
+      </div>
+      <div className={styles.choiceGrid}>
+        <div className={styles.choiceBlock}>
+          <strong>Retrieval frame</strong>
+          <span>Chọn frame bằng nút Select KIS ở kết quả retrieval.</span>
+        </div>
+        <div className={styles.choiceBlock}>
+          <strong>Manual frame</strong>
+          <span>Nhập video và keyframe nếu muốn chọn trực tiếp.</span>
+        </div>
       </div>
       <div className={styles.manualGrid}>
         <label className={styles.label}>
@@ -274,29 +325,19 @@ function KisSelectedList({
           />
         </label>
       </div>
-      <div className={styles.sweepGrid}>
-        <label className={styles.label}>
-          Raw step
-          <input
-            className={styles.input}
-            type="number"
-            min={1}
-            value={frameSweepStep}
-            onChange={(event) => onFrameSweepStepChange(Number(event.currentTarget.value))}
-          />
-        </label>
-        <label className={styles.label}>
-          Margin
-          <input
-            className={styles.input}
-            type="number"
-            min={0}
-            value={frameSweepMargin}
-            onChange={(event) => onFrameSweepMarginChange(Number(event.currentTarget.value))}
-          />
-        </label>
-      </div>
+      <SweepEditor
+        direction={manualSweepDirection}
+        targetFrameIdx={manualTargetFrameIdx}
+        step={frameSweepStep}
+        onDirectionChange={(direction) => {
+          setManualSweepDirection(direction)
+          if (direction === 'none') setManualTargetFrameIdx('')
+        }}
+        onTargetFrameIdxChange={setManualTargetFrameIdx}
+        onStepChange={onFrameSweepStepChange}
+      />
       {manualError && <div className={styles.warning}>{manualError}</div>}
+      {!manualError && manualWarning && <div className={styles.warning}>{manualWarning}</div>}
       <div className={styles.actions}>
         <button type="button" className={styles.compactButton} onClick={addManualFrame}>
           Add Frame
@@ -321,7 +362,8 @@ function KisSelectedList({
                 item={item}
                 index={index}
                 total={selection.length}
-                onMove={onMove}
+                onUpdateKisSelection={onUpdateSelection}
+                onReorder={onReorder}
                 onRemove={onRemove}
               />
             ))}
@@ -335,24 +377,173 @@ function KisSelectedList({
 
 function VqaSelectedList({
   selection,
-  onMove,
+  finalRows,
+  frameSweepStep,
+  onFrameSweepStepChange,
+  onAddManualSelection,
+  onUpdateSelection,
+  onReorder,
   onRemove,
   onClear,
   onClearAnswers,
   onAnswerChange,
 }: {
   selection: SelectedVqaItem[]
-  onMove: (index: number, direction: -1 | 1) => void
+  finalRows: number
+  frameSweepStep: number
+  onFrameSweepStepChange: (value: number) => void
+  onAddManualSelection: (item: SelectedVqaItem) => void
+  onUpdateSelection: (key: string, patch: Partial<SelectedVqaItem>) => void
+  onReorder: (fromIndex: number, toIndex: number) => void
   onRemove: (key: string) => void
   onClear: () => void
   onClearAnswers: () => void
   onAnswerChange: (key: string, answer: string) => void
 }) {
+  const [manualVideoId, setManualVideoId] = useState('')
+  const [manualFrameIdx, setManualFrameIdx] = useState('')
+  const [manualAnswer, setManualAnswer] = useState('')
+  const [manualSweepDirection, setManualSweepDirection] = useState<KisSweepDirection>('none')
+  const [manualTargetFrameIdx, setManualTargetFrameIdx] = useState('')
+  const [manualError, setManualError] = useState<string | null>(null)
+  const manualAnswerValid = manualAnswer.length > 0 && manualAnswer.length <= 100
+  const manualFrameValid = /^\d+$/.test(manualFrameIdx.trim())
+  const manualTarget =
+    /^\d+$/.test(manualTargetFrameIdx.trim()) && manualSweepDirection !== 'none'
+      ? Number(manualTargetFrameIdx)
+      : null
+  const manualWarning =
+    manualFrameValid && manualAnswerValid
+      ? kisSweepReachWarning(
+          Number(manualFrameIdx),
+          manualSweepDirection,
+          frameSweepStep,
+          manualTarget,
+        )
+      : null
+
+  function addManualFrame(): void {
+    const validation = validateManualVqaFrameInput(
+      manualVideoId,
+      manualFrameIdx,
+      manualAnswer,
+      manualSweepDirection,
+      manualTargetFrameIdx,
+      frameSweepStep,
+    )
+    if (validation) {
+      setManualError(validation)
+      return
+    }
+    onAddManualSelection(
+      createManualVqaSelection(
+        manualVideoId,
+        Number(manualFrameIdx),
+        manualAnswer,
+        manualSweepDirection,
+        frameSweepStep,
+        manualTarget,
+      ),
+    )
+    setManualVideoId('')
+    setManualFrameIdx('')
+    setManualAnswer('')
+    setManualSweepDirection('none')
+    setManualTargetFrameIdx('')
+    setManualError(null)
+  }
+
+  function clearManualFrame(): void {
+    setManualVideoId('')
+    setManualFrameIdx('')
+    setManualAnswer('')
+    setManualSweepDirection('none')
+    setManualTargetFrameIdx('')
+    setManualError(null)
+  }
+
   return (
     <section className={styles.section}>
       <div className={styles.sectionHeader}>
         <span>Selected VQA Results</span>
         <span>{selection.length}</span>
+      </div>
+      <div className={styles.hint}>CSV writes {finalRows} answered row(s).</div>
+      <div className={styles.choiceGrid}>
+        <div className={styles.choiceBlock}>
+          <strong>Retrieval frame</strong>
+          <span>Chọn frame bằng nút Select VQA rồi nhập answer trên item.</span>
+        </div>
+        <div className={styles.choiceBlock}>
+          <strong>Manual frame</strong>
+          <span>Nhập video, frame_idx và answer trước khi chọn khoảng.</span>
+        </div>
+      </div>
+      <div className={styles.manualGrid}>
+        <label className={styles.label}>
+          Video ID
+          <input
+            className={styles.input}
+            value={manualVideoId}
+            placeholder="L30_V046"
+            onChange={(event) => setManualVideoId(event.target.value)}
+          />
+        </label>
+        <label className={styles.label}>
+          Frame Index
+          <input
+            className={styles.input}
+            type="number"
+            min={0}
+            value={manualFrameIdx}
+            placeholder="3255"
+            onChange={(event) => setManualFrameIdx(event.target.value)}
+          />
+        </label>
+      </div>
+      <div className={styles.answerBlock}>
+        <label className={styles.label} htmlFor="manual-vqa-answer">
+          Answer
+        </label>
+        <input
+          id="manual-vqa-answer"
+          className={`${styles.answerInput} ${
+            manualAnswer.length > 100 ? styles.inputInvalid : ''
+          }`}
+          value={manualAnswer}
+          onChange={(event) => setManualAnswer(event.target.value)}
+        />
+        <div className={styles.answerMeta}>
+          <span>{manualAnswer.length === 0 ? 'Required before range' : 'Manual answer'}</span>
+          <span className={manualAnswer.length > 100 ? styles.answerOver : ''}>
+            {manualAnswer.length}/100
+          </span>
+        </div>
+      </div>
+      {manualFrameValid && manualAnswerValid ? (
+        <SweepEditor
+          direction={manualSweepDirection}
+          targetFrameIdx={manualTargetFrameIdx}
+          step={frameSweepStep}
+          onDirectionChange={(direction) => {
+            setManualSweepDirection(direction)
+            if (direction === 'none') setManualTargetFrameIdx('')
+          }}
+          onTargetFrameIdxChange={setManualTargetFrameIdx}
+          onStepChange={onFrameSweepStepChange}
+        />
+      ) : (
+        <div className={styles.hint}>Fill frame_idx and answer before choosing a range.</div>
+      )}
+      {manualError && <div className={styles.warning}>{manualError}</div>}
+      {!manualError && manualWarning && <div className={styles.warning}>{manualWarning}</div>}
+      <div className={styles.actions}>
+        <button type="button" className={styles.compactButton} onClick={addManualFrame}>
+          Add Frame
+        </button>
+        <button type="button" className={styles.compactButton} onClick={clearManualFrame}>
+          Clear manual
+        </button>
       </div>
       {selection.length === 0 ? (
         <div className={styles.empty}>Selected VQA frames appear here.</div>
@@ -373,7 +564,8 @@ function VqaSelectedList({
                 item={item}
                 index={index}
                 total={selection.length}
-                onMove={onMove}
+                onUpdateVqaSelection={onUpdateSelection}
+                onReorder={onReorder}
                 onRemove={onRemove}
               >
                 <div className={styles.answerBlock}>
@@ -392,7 +584,7 @@ function VqaSelectedList({
                     aria-invalid={item.answer.length === 0 || item.answer.length > 100}
                   />
                   <div className={styles.answerMeta}>
-                    <span>{item.answer.length === 0 ? 'Required' : 'Independent answer'}</span>
+                    <span>{item.answer.length === 0 ? 'Required before range' : 'Independent answer'}</span>
                     <span className={item.answer.length > 100 ? styles.answerOver : ''}>
                       {item.answer.length}/100
                     </span>
@@ -411,22 +603,74 @@ function FrameItem({
   item,
   index,
   total,
-  onMove,
+  onUpdateKisSelection,
+  onUpdateVqaSelection,
+  onReorder,
   onRemove,
   children,
 }: {
   item: SelectedSearchItem
   index: number
   total: number
-  onMove: (index: number, direction: -1 | 1) => void
+  onUpdateKisSelection?: (key: string, patch: Partial<SelectedKisItem>) => void
+  onUpdateVqaSelection?: (key: string, patch: Partial<SelectedVqaItem>) => void
+  onReorder: (fromIndex: number, toIndex: number) => void
   onRemove: (key: string) => void
   children?: ReactNode
 }) {
+  const [dropPosition, setDropPosition] = useState<'before' | 'after' | null>(null)
   const answer = isVqaItem(item) ? item.answer : null
   const incomplete = answer !== null && (answer.length === 0 || answer.length > 100)
+  const sweepItem = isKisItem(item) || isVqaItem(item) ? item : null
+  const answerAllowsSweep = !isVqaItem(item) || (item.answer.length > 0 && item.answer.length <= 100)
+  const sweepWarning = sweepItem
+    ? kisSweepReachWarning(
+        sweepItem.hit.frame_idx,
+        sweepItem.sweepDirection,
+        sweepItem.step,
+        sweepItem.targetFrameIdx,
+      )
+    : null
+  function handleDragStart(event: DragEvent<HTMLDivElement>): void {
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('text/plain', String(index))
+  }
+
+  function handleDrop(event: DragEvent<HTMLDivElement>): void {
+    event.preventDefault()
+    const fromIndex = Number(event.dataTransfer.getData('text/plain'))
+    if (!Number.isInteger(fromIndex)) return
+    const insertionIndex = dropPosition === 'after' ? index + 1 : index
+    setDropPosition(null)
+    onReorder(fromIndex, insertionIndex)
+  }
+
   return (
-    <div className={`${styles.item} ${incomplete ? styles.itemIncomplete : ''}`}>
-      <div className={styles.ordinal}>{index + 1}</div>
+    <div
+      className={[
+        styles.item,
+        incomplete ? styles.itemIncomplete : '',
+        dropPosition === 'before' ? styles.itemDropBefore : '',
+        dropPosition === 'after' ? styles.itemDropAfter : '',
+      ]
+        .filter(Boolean)
+        .join(' ')}
+      draggable={total > 1}
+      onDragStart={handleDragStart}
+      onDragOver={(event) => {
+        event.preventDefault()
+        event.dataTransfer.dropEffect = 'move'
+        const rect = event.currentTarget.getBoundingClientRect()
+        const nextPosition = event.clientY < rect.top + rect.height / 2 ? 'before' : 'after'
+        setDropPosition(nextPosition)
+      }}
+      onDragLeave={() => setDropPosition(null)}
+      onDragEnd={() => setDropPosition(null)}
+      onDrop={handleDrop}
+    >
+      <div className={styles.ordinal} title="Drag to reorder">
+        {index + 1}
+      </div>
       <div className={styles.itemBody}>
         <div className={styles.frameRow}>
           {item.hit.thumbnail_url ? (
@@ -439,9 +683,9 @@ function FrameItem({
           <div className={styles.meta}>
             <strong>{item.hit.video_id}</strong>
             <div className={styles.secondary}>frame {item.hit.frame_idx}</div>
-            {isKisItem(item) && (
+            {sweepItem && (
               <div className={styles.secondary}>
-                {formatSource(item.source)} · {formatSelectionMargin(item)}
+                {formatSource(sweepItem.source)} · {formatSelectionSweep(sweepItem)}
               </div>
             )}
             {item.originalRank >= 0 && (
@@ -449,26 +693,54 @@ function FrameItem({
             )}
           </div>
         </div>
+        {isKisItem(item) && onUpdateKisSelection && (
+          <SweepEditor
+            direction={item.sweepDirection}
+            targetFrameIdx={item.targetFrameIdx === null ? '' : String(item.targetFrameIdx)}
+            step={item.step}
+            compact
+            onDirectionChange={(direction) =>
+              onUpdateKisSelection(item.key, {
+                sweepDirection: direction,
+                targetFrameIdx: direction === 'none' ? null : item.targetFrameIdx,
+              })
+            }
+            onTargetFrameIdxChange={(value) =>
+              onUpdateKisSelection(item.key, {
+                targetFrameIdx: /^\d+$/.test(value.trim()) ? Number(value) : null,
+              })
+            }
+            onStepChange={(value) => onUpdateKisSelection(item.key, { step: value })}
+          />
+        )}
         {children}
+        {isVqaItem(item) && onUpdateVqaSelection && (
+          answerAllowsSweep ? (
+            <SweepEditor
+              direction={item.sweepDirection}
+              targetFrameIdx={item.targetFrameIdx === null ? '' : String(item.targetFrameIdx)}
+              step={item.step}
+              compact
+              onDirectionChange={(direction) =>
+                onUpdateVqaSelection(item.key, {
+                  sweepDirection: direction,
+                  targetFrameIdx: direction === 'none' ? null : item.targetFrameIdx,
+                })
+              }
+              onTargetFrameIdxChange={(value) =>
+                onUpdateVqaSelection(item.key, {
+                  targetFrameIdx: /^\d+$/.test(value.trim()) ? Number(value) : null,
+                })
+              }
+              onStepChange={(value) => onUpdateVqaSelection(item.key, { step: value })}
+            />
+          ) : (
+            <div className={styles.hint}>Fill answer before choosing a range.</div>
+          )
+        )}
+        {sweepWarning && <div className={styles.warning}>{sweepWarning}</div>}
         <div className={styles.actions}>
-          <button
-            type="button"
-            className={styles.compactButton}
-            disabled={index === 0}
-            onClick={() => onMove(index, -1)}
-            aria-label={`Move ${item.hit.video_id} frame ${item.hit.frame_idx} up`}
-          >
-            ↑
-          </button>
-          <button
-            type="button"
-            className={styles.compactButton}
-            disabled={index === total - 1}
-            onClick={() => onMove(index, 1)}
-            aria-label={`Move ${item.hit.video_id} frame ${item.hit.frame_idx} down`}
-          >
-            ↓
-          </button>
+          {total > 1 && <span className={styles.dragHint}>Drag to reorder</span>}
           <button
             type="button"
             className={styles.compactButton}
@@ -487,7 +759,67 @@ function isVqaItem(item: SelectedSearchItem): item is SelectedVqaItem {
 }
 
 function isKisItem(item: SelectedSearchItem): item is SelectedKisItem {
-  return 'source' in item && 'step' in item && 'margin' in item
+  return 'source' in item && 'step' in item && 'sweepDirection' in item
+}
+
+function SweepEditor({
+  direction,
+  targetFrameIdx,
+  step,
+  compact = false,
+  onDirectionChange,
+  onTargetFrameIdxChange,
+  onStepChange,
+}: {
+  direction: KisSweepDirection
+  targetFrameIdx: string
+  step: number
+  compact?: boolean
+  onDirectionChange: (direction: KisSweepDirection) => void
+  onTargetFrameIdxChange: (value: string) => void
+  onStepChange: (value: number) => void
+}) {
+  return (
+    <div className={compact ? styles.sweepEditorCompact : styles.sweepEditor}>
+      <div className={styles.directionToggle} role="radiogroup" aria-label="frame sweep direction">
+        {(['none', 'left', 'right'] as const).map((option) => (
+          <button
+            key={option}
+            type="button"
+            className={`${styles.taskButton} ${direction === option ? styles.taskButtonActive : ''}`}
+            aria-pressed={direction === option}
+            onClick={() => onDirectionChange(option)}
+          >
+            {option === 'none' ? 'None' : option === 'left' ? 'Left' : 'Right'}
+          </button>
+        ))}
+      </div>
+      {direction !== 'none' && (
+        <div className={styles.sweepGrid}>
+          <label className={styles.label}>
+            Target frame_idx
+            <input
+              className={styles.input}
+              type="number"
+              min={0}
+              value={targetFrameIdx}
+              onChange={(event) => onTargetFrameIdxChange(event.target.value)}
+            />
+          </label>
+          <label className={styles.label}>
+            Step
+            <input
+              className={styles.input}
+              type="number"
+              min={1}
+              value={step}
+              onChange={(event) => onStepChange(Number(event.currentTarget.value))}
+            />
+          </label>
+        </div>
+      )}
+    </div>
+  )
 }
 
 function SubmissionPreview({ plan }: { plan: KisSubmissionPlan }) {
@@ -506,9 +838,9 @@ function SubmissionPreview({ plan }: { plan: KisSubmissionPlan }) {
             <strong>{item.source.toUpperCase()}</strong>
             <span>
               {item.hit.video_id} · frame {item.hit.frame_idx}
-              {group.marginStart !== null &&
-                group.marginEnd !== null &&
-                ` · margin ${group.marginStart}-${group.marginEnd} · step ${item.step}`}
+              {group.sweepStart !== null &&
+                group.sweepEnd !== null &&
+                ` · sweep ${group.sweepStart}-${group.sweepEnd} · step ${item.step}`}
             </span>
             <em>{group.emittedCount}</em>
           </div>
@@ -522,13 +854,51 @@ function SubmissionPreview({ plan }: { plan: KisSubmissionPlan }) {
 function validateManualFrameInput(
   videoId: string,
   frameIdx: string,
+  direction: KisSweepDirection,
+  targetFrameIdx: string,
   step: number,
-  margin: number,
 ): string | null {
   if (videoId.trim().length === 0) return 'Enter a video ID.'
   if (!/^\d+$/.test(frameIdx.trim())) return 'Frame Index must be a non-negative integer.'
-  if (!Number.isFinite(margin) || margin < 0) return 'Margin must be zero or greater.'
-  if (margin > 0 && (!Number.isFinite(step) || step <= 0)) return 'Raw step must be greater than zero.'
+  if (direction === 'none') return null
+  if (!/^\d+$/.test(targetFrameIdx.trim())) {
+    return 'Target frame_idx must be a non-negative integer.'
+  }
+  if (!Number.isFinite(step) || step <= 0) return 'Step must be greater than zero.'
+  const warning = kisSweepReachWarning(
+    Number(frameIdx),
+    direction,
+    step,
+    Number(targetFrameIdx),
+  )
+  if (warning?.startsWith('Target frame')) return warning
+  return null
+}
+
+function validateManualVqaFrameInput(
+  videoId: string,
+  frameIdx: string,
+  answer: string,
+  direction: KisSweepDirection,
+  targetFrameIdx: string,
+  step: number,
+): string | null {
+  if (videoId.trim().length === 0) return 'Enter a video ID.'
+  if (!/^\d+$/.test(frameIdx.trim())) return 'Frame Index must be a non-negative integer.'
+  if (answer.length === 0) return 'Enter an answer before adding this VQA frame.'
+  if (answer.length > 100) return 'Answer must be 100 characters or fewer.'
+  if (direction === 'none') return null
+  if (!/^\d+$/.test(targetFrameIdx.trim())) {
+    return 'Target frame_idx must be a non-negative integer.'
+  }
+  if (!Number.isFinite(step) || step <= 0) return 'Step must be greater than zero.'
+  const warning = kisSweepReachWarning(
+    Number(frameIdx),
+    direction,
+    step,
+    Number(targetFrameIdx),
+  )
+  if (warning?.startsWith('Target frame')) return warning
   return null
 }
 
@@ -536,20 +906,23 @@ function formatSource(source: SelectedKisItem['source']): string {
   return source === 'manual' ? 'Manual' : 'Visual'
 }
 
-function formatSelectionMargin(item: SelectedKisItem): string {
-  if (item.margin <= 0) return `margin 0 · step ${item.step}`
-  const start = Math.max(0, Math.trunc(item.hit.frame_idx) - item.margin)
-  const end = Math.trunc(item.hit.frame_idx) + item.margin
-  return `margin ${start}-${end} · step ${item.step}`
+function formatSelectionSweep(
+  item: Pick<SelectedKisItem | SelectedVqaItem, 'sweepDirection' | 'targetFrameIdx' | 'step'>,
+): string {
+  if (item.sweepDirection === 'none') return 'sweep none'
+  const target = item.targetFrameIdx === null ? '?' : item.targetFrameIdx
+  return `sweep ${item.sweepDirection} to ${target} · step ${item.step}`
 }
 
 function kisDisableReason(
   isFilenameValid: boolean,
   selectedCount: number,
   finalRowCount: number,
+  invalidSweepCount: number,
 ): string | null {
   if (!isFilenameValid) return 'Fix the export filename before exporting.'
   if (selectedCount === 0) return 'Select a primary KIS frame before exporting.'
+  if (invalidSweepCount > 0) return `${invalidSweepCount} selected frame(s) need a valid sweep target.`
   if (finalRowCount === 0) return 'No KIS rows available to export.'
   return null
 }
@@ -560,11 +933,29 @@ function vqaDisableReason(
   answeredRows: number,
   missingAnswers: number,
   overLimitAnswers: number,
+  invalidSweepCount: number,
 ): string | null {
   if (!isFilenameValid) return 'Fix the export filename before exporting.'
   if (selectedCount === 0) return 'Select at least one VQA frame.'
   if (missingAnswers > 0) return `${missingAnswers} selected frame(s) need an answer.`
   if (overLimitAnswers > 0) return `${overLimitAnswers} answer(s) exceed 100 characters.`
+  if (invalidSweepCount > 0) return `${invalidSweepCount} selected frame(s) need a valid sweep target.`
   if (answeredRows === 0) return 'No answered VQA rows available to export.'
   return null
+}
+
+function countInvalidSweepConfigs(
+  items: Array<Pick<SelectedKisItem | SelectedVqaItem, 'hit' | 'sweepDirection' | 'step' | 'targetFrameIdx'>>,
+): number {
+  return items.filter((item) => {
+    if (item.sweepDirection === 'none') return false
+    if (item.targetFrameIdx === null) return true
+    const warning = kisSweepReachWarning(
+      item.hit.frame_idx,
+      item.sweepDirection,
+      item.step,
+      item.targetFrameIdx,
+    )
+    return warning?.startsWith('Target frame') ?? false
+  }).length
 }

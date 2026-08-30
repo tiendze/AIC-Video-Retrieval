@@ -8,20 +8,30 @@ export interface SelectedSearchItem {
   originalRank: number
 }
 
+export type KisSweepDirection = 'none' | 'left' | 'right'
+
 export interface SelectedKisItem extends SelectedSearchItem {
   source: 'manual' | 'visual'
+  sweepDirection: KisSweepDirection
   step: number
-  margin: number
+  targetFrameIdx: number | null
 }
 
 export interface SelectedVqaItem extends SelectedSearchItem {
+  source: 'manual' | 'visual'
+  sweepDirection: KisSweepDirection
+  step: number
+  targetFrameIdx: number | null
   answer: string
 }
 
 export interface SelectedTrakeSequence {
   key: string
+  source: 'manual' | 'visual'
   result: TrakeVideoResultItem
   originalRank: number
+  stepTargetFrames: Array<number | null>
+  stepCount: number
 }
 
 export interface FilenameValidation {
@@ -40,8 +50,8 @@ export interface RawFrameSweepOptions {
 
 export interface KisSubmissionPreviewGroup {
   item: SelectedKisItem
-  marginStart: number | null
-  marginEnd: number | null
+  sweepStart: number | null
+  sweepEnd: number | null
   emittedCount: number
 }
 
@@ -64,7 +74,61 @@ export function searchHitKey(hit: SearchHit): string {
 }
 
 export function trakeSequenceKey(result: TrakeVideoResultItem): string {
-  return `${result.video_id}:${result.keyframes.map((keyframe) => keyframe.frame_idx).join(':')}`
+  return `${result.video_id}::${result.keyframes.map((keyframe) => Math.trunc(keyframe.frame_idx)).join('|')}`
+}
+
+export function trakeVisualSelectionKey(
+  result: TrakeVideoResultItem,
+  originalRank: number,
+  instanceId = 'rank',
+): string {
+  return `visual-trake:${originalRank}:${instanceId}:${trakeSequenceKey(result)}`
+}
+
+function defaultTrakeStepTargetFrames(result: TrakeVideoResultItem): number[] {
+  return result.keyframes.map((keyframe) => Math.trunc(keyframe.frame_idx))
+}
+
+export function createVisualTrakeSelection(
+  result: TrakeVideoResultItem,
+  originalRank: number,
+  selectionKey = trakeVisualSelectionKey(result, originalRank),
+): SelectedTrakeSequence {
+  return {
+    key: selectionKey,
+    source: 'visual',
+    result,
+    originalRank,
+    stepTargetFrames: defaultTrakeStepTargetFrames(result),
+    stepCount: 5,
+  }
+}
+
+export function createManualTrakeSelection(
+  videoId: string,
+  frameIdxs: number[],
+): SelectedTrakeSequence {
+  const normalizedVideoId = videoId.trim()
+  const normalizedFrames = frameIdxs.map((frameIdx) => Math.trunc(frameIdx))
+  const result: TrakeVideoResultItem = {
+    video_id: normalizedVideoId,
+    score: 0,
+    keyframes: normalizedFrames.map((frameIdx, index) => ({
+      keyframe_id: `manual-trake:${normalizedVideoId}:${normalizedFrames.join(':')}:event:${index}`,
+      frame_idx: frameIdx,
+      timestamp: 0,
+      thumbnail_url: '',
+      image_url: '',
+    })),
+  }
+  return {
+    key: trakeSequenceKey(result),
+    source: 'manual',
+    originalRank: -1,
+    result,
+    stepTargetFrames: defaultTrakeStepTargetFrames(result),
+    stepCount: 5,
+  }
 }
 
 export function normalizeCsvFilename(input: string): string {
@@ -118,17 +182,20 @@ export function buildKisFinalRanking(
 export function createManualKisSelection(
   videoId: string,
   frameIdx: number,
-  step: number,
-  margin: number,
+  sweepDirection: KisSweepDirection = 'none',
+  step = 1,
+  targetFrameIdx: number | null = null,
 ): SelectedKisItem {
   const normalizedVideoId = videoId.trim()
   const normalizedFrameIdx = Math.trunc(frameIdx)
+  const normalizedTarget = targetFrameIdx === null ? null : Math.trunc(targetFrameIdx)
   const key = `manual:${normalizedVideoId}:${normalizedFrameIdx}`
   return {
     key,
     source: 'manual',
+    sweepDirection,
     step: normalizeSweepStep(step),
-    margin: normalizeSweepMargin(margin),
+    targetFrameIdx: normalizedTarget,
     originalRank: -1,
     hit: {
       keyframe_id: key,
@@ -146,16 +213,63 @@ export function createManualKisSelection(
 export function createVisualKisSelection(
   hit: SearchHit,
   originalRank: number,
-  step: number,
-  margin: number,
+  sweepDirection: KisSweepDirection = 'none',
+  step = 1,
+  targetFrameIdx: number | null = null,
 ): SelectedKisItem {
   return {
     key: searchHitKey(hit),
     source: 'visual',
     hit,
     originalRank,
+    sweepDirection,
     step: normalizeSweepStep(step),
-    margin: normalizeSweepMargin(margin),
+    targetFrameIdx: targetFrameIdx === null ? null : Math.trunc(targetFrameIdx),
+  }
+}
+
+export function createManualVqaSelection(
+  videoId: string,
+  frameIdx: number,
+  answer: string,
+  sweepDirection: KisSweepDirection = 'none',
+  step = 1,
+  targetFrameIdx: number | null = null,
+): SelectedVqaItem {
+  const normalizedVideoId = videoId.trim()
+  const normalizedFrameIdx = Math.trunc(frameIdx)
+  const key = `manual-vqa:${normalizedVideoId}:${normalizedFrameIdx}`
+  return {
+    key,
+    source: 'manual',
+    sweepDirection,
+    step: normalizeSweepStep(step),
+    targetFrameIdx: targetFrameIdx === null ? null : Math.trunc(targetFrameIdx),
+    answer,
+    originalRank: -1,
+    hit: {
+      keyframe_id: key,
+      video_id: normalizedVideoId,
+      score: 0,
+      frame_idx: normalizedFrameIdx,
+      timestamp: 0,
+      thumbnail_path: '',
+      thumbnail_url: '',
+      image_url: '',
+    },
+  }
+}
+
+export function createVisualVqaSelection(hit: SearchHit, originalRank: number): SelectedVqaItem {
+  return {
+    key: searchHitKey(hit),
+    source: 'visual',
+    hit,
+    originalRank,
+    sweepDirection: 'none',
+    step: 1,
+    targetFrameIdx: null,
+    answer: '',
   }
 }
 
@@ -171,7 +285,7 @@ export function buildKisSubmissionPlan(
 
   for (const item of selectionGroups) {
     if (rows.length >= rowLimit) {
-      groups.push({ item, marginStart: null, marginEnd: null, emittedCount: 0 })
+      groups.push({ item, sweepStart: null, sweepEnd: null, emittedCount: 0 })
       continue
     }
     const before = rows.length
@@ -187,7 +301,8 @@ export function buildKisSubmissionPlan(
 
     const marginFrames = buildRawFrameSweep(item.hit.frame_idx, {
       step: item.step,
-      margin: item.margin,
+      direction: item.sweepDirection,
+      targetFrameIdx: item.targetFrameIdx,
       maxRows: rowLimit,
     }).filter((frame) => frame !== Math.trunc(item.hit.frame_idx))
 
@@ -218,9 +333,26 @@ export function buildKisSubmissionPlan(
 }
 
 export function buildVqaFinalRows(selectedItems: SelectedVqaItem[]): SelectedVqaItem[] {
-  return selectedItems
-    .filter((item) => item.answer.length > 0 && item.answer.length <= 100)
-    .slice(0, MAX_SUBMISSION_ROWS)
+  const rows: SelectedVqaItem[] = []
+  const seen = new Set<string>()
+  for (const item of selectedItems) {
+    if (item.answer.length === 0 || item.answer.length > 100) continue
+    const frames = buildDirectionalFrameSweep(item.hit.frame_idx, {
+      direction: item.sweepDirection,
+      step: item.step,
+      targetFrameIdx: item.targetFrameIdx,
+      maxRows: MAX_SUBMISSION_ROWS,
+    })
+    for (const frame of frames) {
+      const next = frame === item.hit.frame_idx ? item : vqaFrameForSelection(item, frame)
+      const key = searchHitKey(next.hit)
+      if (seen.has(key)) continue
+      seen.add(key)
+      rows.push(next)
+      if (rows.length >= MAX_SUBMISSION_ROWS) return rows
+    }
+  }
+  return rows
 }
 
 export function buildTrakeFinalRanking(
@@ -230,7 +362,7 @@ export function buildTrakeFinalRanking(
   const resultByKey = new Map(results.map((result) => [trakeSequenceKey(result), result]))
   const selectedKeys = new Set<string>()
   const selected = selectedItems
-    .map((item) => resultByKey.get(item.key) ?? item.result)
+    .map((item) => resultByKey.get(trakeSequenceKey(item.result)) ?? item.result)
     .filter((result) => {
       const key = trakeSequenceKey(result)
       if (selectedKeys.has(key)) return false
@@ -243,9 +375,17 @@ export function buildTrakeFinalRanking(
 
 export interface TrakeSubmissionPlan {
   rows: TrakeVideoResultItem[]
+  entries: TrakeSubmissionPlanEntry[]
   centerCount: number
   variantCount: number
   rankingFallbackCount: number
+}
+
+export interface TrakeSubmissionPlanEntry {
+  row: TrakeVideoResultItem
+  label: string
+  selectedKey: string | null
+  stepIndex: number | null
 }
 
 // Strict temporal ordering (τ < t, CLAUDE.md §3/§4): a sequence's frame_idx must
@@ -304,6 +444,40 @@ export function buildTrakePerEventSweep(
   return variants
 }
 
+export function buildTrakeSynchronizedSteps(
+  result: TrakeVideoResultItem,
+  options: {
+    targetFrames: Array<number | null>
+    stepCount: number
+  },
+): TrakeVideoResultItem[] {
+  const stepCount = Math.max(1, Math.trunc(options.stepCount || 1))
+  const starts = result.keyframes.map((keyframe) => Math.trunc(keyframe.frame_idx))
+  const targets = result.keyframes.map((_, index) =>
+    Math.max(0, Math.trunc(options.targetFrames[index] ?? starts[index])),
+  )
+  if (targets.every((target, index) => target === starts[index])) return []
+
+  const variants: TrakeVideoResultItem[] = []
+  const seen = new Set<string>([trakeSequenceKey(result)])
+  for (let iteration = 1; iteration <= stepCount; iteration += 1) {
+    const keyframes = result.keyframes.map((keyframe, index) => {
+      const frameIdx = interpolateClampedFrame(starts[index], targets[index], iteration, stepCount)
+      return {
+        ...keyframe,
+        frame_idx: frameIdx,
+        keyframe_id: `${keyframe.keyframe_id}:sync:${iteration}:${frameIdx}`,
+      }
+    })
+    const variant = { ...result, keyframes }
+    const key = trakeSequenceKey(variant)
+    if (seen.has(key)) continue
+    seen.add(key)
+    variants.push(variant)
+  }
+  return variants
+}
+
 // Lay out the final TRAKE submission (≤100 rows): center sequences of every
 // selected sequence first (distinct-video coverage → R@1/R@5), then per-event
 // variants round-robin across those sequences (→ R@50/R@100), then the
@@ -312,64 +486,82 @@ export function buildTrakePerEventSweep(
 export function buildTrakeSubmissionPlan(
   selected: SelectedTrakeSequence[],
   ranking: TrakeVideoResultItem[],
-  options: { step: number; margin: number; maxRows?: number },
+  options: { maxRows?: number } = {},
 ): TrakeSubmissionPlan {
   const maxRows = Math.max(1, Math.trunc(options.maxRows ?? MAX_SUBMISSION_ROWS))
   const rows: TrakeVideoResultItem[] = []
+  const entries: TrakeSubmissionPlanEntry[] = []
   const seen = new Set<string>()
-  const add = (item: TrakeVideoResultItem): boolean => {
+  const add = (
+    item: TrakeVideoResultItem,
+    label: string,
+    selectedKey: string | null,
+    stepIndex: number | null,
+  ): boolean => {
     if (rows.length >= maxRows) return false
     const key = trakeSequenceKey(item)
     if (seen.has(key)) return false
     seen.add(key)
     rows.push(item)
+    entries.push({ row: item, label, selectedKey, stepIndex })
     return true
   }
 
   const resultByKey = new Map(ranking.map((result) => [trakeSequenceKey(result), result]))
-  const centers: TrakeVideoResultItem[] = []
   const centerSeen = new Set<string>()
+  let centerCount = 0
+  let variantCount = 0
   for (const item of selected) {
-    const resolved = resultByKey.get(item.key) ?? item.result
+    const resolved = resultByKey.get(trakeSequenceKey(item.result)) ?? item.result
     const key = trakeSequenceKey(resolved)
     if (centerSeen.has(key)) continue
     centerSeen.add(key)
-    centers.push(resolved)
-  }
-
-  let centerCount = 0
-  for (const center of centers) {
-    if (add(center)) centerCount += 1
+    if (add(resolved, 'Original', item.key, null)) centerCount += 1
     if (rows.length >= maxRows) break
-  }
-
-  const variantLists = centers.map((center) =>
-    buildTrakePerEventSweep(center, { step: options.step, margin: options.margin }),
-  )
-  let variantCount = 0
-  const maxDepth = variantLists.reduce((max, list) => Math.max(max, list.length), 0)
-  for (let depth = 0; depth < maxDepth && rows.length < maxRows; depth += 1) {
-    for (const list of variantLists) {
+    const synchronizedSteps = buildTrakeSynchronizedSteps(resolved, {
+      targetFrames: item.stepTargetFrames,
+      stepCount: item.stepCount,
+    })
+    for (const [variantIndex, variant] of synchronizedSteps.entries()) {
       if (rows.length >= maxRows) break
-      if (depth < list.length && add(list[depth])) variantCount += 1
+      const stepIndex = variantIndex + 1
+      if (add(variant, `Step #${stepIndex}`, item.key, stepIndex)) variantCount += 1
     }
   }
 
   const beforeFallback = rows.length
   for (const candidate of ranking) {
     if (rows.length >= maxRows) break
-    add(candidate)
+    add(candidate, 'Fallback', null, null)
   }
 
-  return { rows, centerCount, variantCount, rankingFallbackCount: rows.length - beforeFallback }
+  return {
+    rows,
+    entries,
+    centerCount,
+    variantCount,
+    rankingFallbackCount: rows.length - beforeFallback,
+  }
 }
 
 export function buildRawFrameSweep(
   centerFrameIdx: number,
-  options: RawFrameSweepOptions,
+  options: RawFrameSweepOptions & {
+    direction?: KisSweepDirection
+    targetFrameIdx?: number | null
+  },
 ): number[] {
   const center = Math.trunc(centerFrameIdx)
   const step = Math.max(1, Math.trunc(options.step))
+  const direction = options.direction ?? 'none'
+  if (direction !== 'none') {
+    return buildDirectionalFrameSweep(center, {
+      direction,
+      step,
+      targetFrameIdx: options.targetFrameIdx ?? null,
+      maxRows: options.maxRows,
+    })
+  }
   const margin = Math.max(0, Math.trunc(options.margin ?? (options.marginCount ?? 0) * step))
   const maxRows = Math.max(1, Math.trunc(options.maxRows ?? Number.MAX_SAFE_INTEGER))
   const frames: number[] = []
@@ -380,6 +572,71 @@ export function buildRawFrameSweep(
     pushFrame(frames, center + distance, options.maxFrameIdx)
   }
   return Array.from(new Set(frames)).slice(0, maxRows)
+}
+
+export function buildDirectionalFrameSweep(
+  centerFrameIdx: number,
+  options: {
+    direction: KisSweepDirection
+    step: number
+    targetFrameIdx: number | null
+    maxRows?: number
+  },
+): number[] {
+  const center = Math.trunc(centerFrameIdx)
+  const step = Math.max(1, Math.trunc(options.step))
+  const maxRows = Math.max(1, Math.trunc(options.maxRows ?? Number.MAX_SAFE_INTEGER))
+  const frames: number[] = []
+  pushFrame(frames, center)
+  if (options.direction === 'none' || options.targetFrameIdx === null) {
+    return frames.slice(0, maxRows)
+  }
+
+  const target = Math.trunc(options.targetFrameIdx)
+  if (options.direction === 'left' && target >= center) return frames.slice(0, maxRows)
+  if (options.direction === 'right' && target <= center) return frames.slice(0, maxRows)
+  const shouldAddOvershoot = Math.abs(center - target) % step !== 0
+  if (options.direction === 'left') {
+    let frame = center - step
+    for (; frame >= target && frames.length < maxRows; frame -= step) {
+      pushFrame(frames, frame)
+    }
+    if (shouldAddOvershoot && frame < target && frames.length < maxRows) {
+      pushFrame(frames, frame)
+    }
+  } else {
+    let frame = center + step
+    for (; frame <= target && frames.length < maxRows; frame += step) {
+      pushFrame(frames, frame)
+    }
+    if (shouldAddOvershoot && frame > target && frames.length < maxRows) {
+      pushFrame(frames, frame)
+    }
+  }
+  return Array.from(new Set(frames)).slice(0, maxRows)
+}
+
+export function kisSweepReachWarning(
+  centerFrameIdx: number,
+  direction: KisSweepDirection,
+  step: number,
+  targetFrameIdx: number | null,
+): string | null {
+  if (direction === 'none' || targetFrameIdx === null) return null
+  const center = Math.trunc(centerFrameIdx)
+  const target = Math.trunc(targetFrameIdx)
+  const normalizedStep = Math.max(1, Math.trunc(step))
+  if (direction === 'left' && target >= center) {
+    return 'Target frame must be smaller than the selected frame when sweeping left.'
+  }
+  if (direction === 'right' && target <= center) {
+    return 'Target frame must be larger than the selected frame when sweeping right.'
+  }
+  const frameCount = directionalSweepFrameCount(center, target, normalizedStep)
+  if (frameCount > MAX_SUBMISSION_ROWS) {
+    return `Sweep creates ${frameCount} frames; CSV export will keep the first ${MAX_SUBMISSION_ROWS}.`
+  }
+  return null
 }
 
 export function buildKisSubmissionRows(
@@ -442,6 +699,24 @@ function pushFrame(frames: number[], frame: number, maxFrameIdx?: number): void 
   frames.push(frame)
 }
 
+function directionalSweepFrameCount(center: number, target: number, step: number): number {
+  const distance = Math.abs(center - target)
+  return 1 + Math.ceil(distance / Math.max(1, step))
+}
+
+function interpolateClampedFrame(
+  startFrameIdx: number,
+  targetFrameIdx: number,
+  stepIndex: number,
+  stepCount: number,
+): number {
+  const start = Math.trunc(startFrameIdx)
+  const target = Math.trunc(targetFrameIdx)
+  const raw = Math.round(start + ((target - start) * stepIndex) / Math.max(1, stepCount))
+  if (target >= start) return Math.min(target, Math.max(start, raw))
+  return Math.max(target, Math.min(start, raw))
+}
+
 function addSubmissionRow(rows: SearchHit[], seen: Set<string>, hit: SearchHit): void {
   const key = searchHitKey(hit)
   if (seen.has(key)) return
@@ -460,24 +735,33 @@ function rawFrameForSelection(item: SelectedKisItem, frame: number): SearchHit {
 
 function marginBoundsForSelection(
   item: SelectedKisItem,
-): Pick<KisSubmissionPreviewGroup, 'marginStart' | 'marginEnd'> {
-  if (item.margin <= 0) return { marginStart: null, marginEnd: null }
+): Pick<KisSubmissionPreviewGroup, 'sweepStart' | 'sweepEnd'> {
   const frames = buildRawFrameSweep(item.hit.frame_idx, {
     step: item.step,
-    margin: item.margin,
+    direction: item.sweepDirection,
+    targetFrameIdx: item.targetFrameIdx,
   })
   const marginFrames = frames.filter((frame) => frame !== Math.trunc(item.hit.frame_idx))
-  if (marginFrames.length === 0) return { marginStart: null, marginEnd: null }
+  if (marginFrames.length === 0) return { sweepStart: null, sweepEnd: null }
   return {
-    marginStart: Math.min(...marginFrames),
-    marginEnd: Math.max(...marginFrames),
+    sweepStart: Math.min(...marginFrames),
+    sweepEnd: Math.max(...marginFrames),
+  }
+}
+
+function vqaFrameForSelection(item: SelectedVqaItem, frame: number): SelectedVqaItem {
+  return {
+    ...item,
+    key: `${item.key}:raw:${frame}`,
+    hit: {
+      ...item.hit,
+      frame_idx: frame,
+      keyframe_id:
+        frame === item.hit.frame_idx ? item.hit.keyframe_id : `${item.hit.keyframe_id}:raw:${frame}`,
+    },
   }
 }
 
 function normalizeSweepStep(step: number): number {
   return Math.max(1, Math.trunc(step))
-}
-
-function normalizeSweepMargin(margin: number): number {
-  return Math.max(0, Math.trunc(margin))
 }

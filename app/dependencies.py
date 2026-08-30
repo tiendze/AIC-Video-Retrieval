@@ -18,6 +18,7 @@ from app.services.search_service import SearchService
 from app.services.thumbnail_service import ThumbnailService
 from app.services.trake_embedding_cache import TrakeEmbeddingCache
 from app.services.trake_service import TrakeService
+from app.services.view_file_service import ViewFileService
 from app.services.vqa_service import QaService
 from app.stores.es_client import AsrEsStore, EsStore
 from app.stores.milvus_client import MilvusStore
@@ -69,6 +70,10 @@ def get_query_rewrite_service(request: Request) -> QueryRewriteService:
 
 def get_qa_service(request: Request) -> QaService:
     return request.app.state.qa_service
+
+
+def get_view_file_service(request: Request) -> ViewFileService:
+    return request.app.state.view_file_service
 
 
 def get_health_service(

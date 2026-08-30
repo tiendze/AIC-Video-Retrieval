@@ -43,6 +43,13 @@
   margin-top: 6px;
 }
 
+.directionToggle {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  margin-top: 6px;
+}
+
 .taskButton,
 .compactButton,
 .exportButton {
@@ -116,11 +123,47 @@
   margin-top: 8px;
 }
 
+.choiceGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.choiceBlock {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+  padding: 7px;
+  background: #1b1b21;
+  border: 1px solid #303038;
+  border-radius: 4px;
+  color: #9ca3af;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.choiceBlock strong {
+  color: #f8fafc;
+  font-size: 11px;
+}
+
 .sweepGrid {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 6px;
   margin-top: 8px;
+}
+
+.sweepEditor,
+.sweepEditorCompact {
+  margin-top: 8px;
+}
+
+.sweepEditorCompact {
+  padding-top: 6px;
+  border-top: 1px solid #303038;
 }
 
 .manualGrid {
@@ -131,6 +174,7 @@
 }
 
 .item {
+  position: relative;
   display: grid;
   grid-template-columns: 22px minmax(0, 1fr);
   gap: 6px;
@@ -140,12 +184,43 @@
   border-radius: 4px;
 }
 
+.itemDropBefore::before,
+.itemDropAfter::after {
+  position: absolute;
+  right: 6px;
+  left: 6px;
+  z-index: 2;
+  height: 3px;
+  background: #22d3ee;
+  border-radius: 999px;
+  box-shadow: 0 0 0 1px rgba(34, 211, 238, 0.35), 0 0 14px rgba(34, 211, 238, 0.85);
+  content: '';
+  pointer-events: none;
+}
+
+.itemDropBefore::before {
+  top: -6px;
+}
+
+.itemDropAfter::after {
+  bottom: -6px;
+}
+
+.item[draggable='true'] {
+  cursor: grab;
+}
+
+.item[draggable='true']:active {
+  cursor: grabbing;
+}
+
 .itemIncomplete {
   border-color: #f59e0b;
 }
 
 .ordinal {
   color: #a7f3d0;
+  cursor: grab;
   font-family: monospace;
   font-size: 12px;
   font-weight: 700;
@@ -207,8 +282,15 @@
 .actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 4px;
   margin-top: 6px;
+}
+
+.dragHint {
+  margin-right: auto;
+  color: #9ca3af;
+  font-size: 10px;
 }
 
 .compactButton {
@@ -244,6 +326,91 @@
   color: #d1d5db;
   font-family: monospace;
   font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.trakeMiniStrip {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px;
+  margin-top: 7px;
+}
+
+.trakeMiniFrame {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  gap: 5px;
+  align-items: center;
+  min-width: 0;
+  color: #d1d5db;
+  font-family: monospace;
+  font-size: 10px;
+}
+
+.trakeMiniFrame img {
+  width: 36px;
+  height: 27px;
+  object-fit: contain;
+  border: 1px solid #333;
+  border-radius: 4px;
+}
+
+.trakeMiniFrame span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trakeStepEditor {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #303038;
+}
+
+.trakeStepRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+  padding: 7px;
+  background: #17171d;
+  border: 1px solid #303038;
+  border-radius: 4px;
+  color: #cbd5e1;
+  font-size: 10px;
+}
+
+.trakeStepEvent,
+.trakeStepControls {
+  display: grid;
+  min-width: 0;
+}
+
+.trakeStepEvent {
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.trakeStepControls {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+}
+
+.trakeStepRow .label {
+  margin-bottom: 0;
+}
+
+.trakeStepRow .input {
+  padding: 5px 6px;
+  font-size: 11px;
+}
+
+.trakeStepEvent strong {
+  color: #f8fafc;
+  font-family: monospace;
+  font-size: 10px;
   overflow-wrap: anywhere;
 }
 

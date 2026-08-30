@@ -69,6 +69,19 @@ describe('ResultGrid', () => {
     expect(screen.getByText(/no results/i)).toBeInTheDocument()
   })
 
+  it('uses five cards per desktop row without fixed-width overflow', () => {
+    const restore = stubViewportSizeGlobally(1200)
+    const { container } = render(
+      <ResultGrid hits={makeHits(20)} onSelect={vi.fn()} onFindSimilar={vi.fn()} />,
+    )
+    restore()
+
+    const firstRow = screen.getAllByTestId('result-grid-row')[0]
+    expect(firstRow.children).toHaveLength(5)
+    expect((firstRow.children[0] as HTMLElement).style.width).toContain('100% - 16px')
+    expect(container.querySelectorAll('button[aria-label*="L21_V001"]').length).toBeGreaterThan(0)
+  })
+
   it('shows local and global rank badges when local reranking is present', () => {
     const restore = stubViewportSizeGlobally(600)
     render(

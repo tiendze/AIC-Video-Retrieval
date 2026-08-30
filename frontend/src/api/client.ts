@@ -12,6 +12,7 @@ import type {
   SearchResponse,
   TrakeResult,
   TrakeSearchPayload,
+  ViewFileFrameResolution,
   VideoInfo,
   VideoKeyframesResponse,
 } from './types'
@@ -185,6 +186,20 @@ export function getVideoKeyframes(videoId: string): Promise<VideoKeyframesRespon
   return request<VideoKeyframesResponse>(
     `/api/videos/${encodeURIComponent(videoId)}/keyframes`,
   )
+}
+
+// GET /api/view-file/frame-resolution (app/api/view_file.py) -- resolves one
+// CSV row into exactly one display state: exact local keyframe, YouTube
+// placeholder, or unavailable.
+export function getViewFileFrameResolution(
+  videoId: string,
+  frameIdx: number,
+  signal?: AbortSignal,
+): Promise<ViewFileFrameResolution> {
+  const params = new URLSearchParams({ video_id: videoId, frame_idx: String(frameIdx) })
+  return request<ViewFileFrameResolution>(`/api/view-file/frame-resolution?${params}`, {
+    signal,
+  })
 }
 
 // Backs "Find Similar Images": fetch a keyframe's own full-res image bytes

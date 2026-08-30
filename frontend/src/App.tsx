@@ -17,7 +17,7 @@ import { ImageUpload } from './components/ImageUpload'
 import { KeyframeDetail, type DetailFrame } from './components/KeyframeDetail'
 import { KisSidebar, type KisSidebarTab } from './components/KisSidebar'
 import type { KisSelectionMode } from './components/KisSelectionPanel'
-import { ModeSelector } from './components/ModeSelector'
+import { AppSidebar } from './components/AppSidebar'
 import { QueryRewritePanel } from './components/QueryRewritePanel'
 import { ResultBrowserControls } from './components/ResultBrowserControls'
 import { ResultGrid } from './components/ResultGrid'
@@ -26,6 +26,7 @@ import { StatusBar } from './components/StatusBar'
 import { TopKControl } from './components/TopKControl'
 import { TrakeResultList } from './components/TrakeResultList'
 import { TrakeSelectionPanel } from './components/TrakeSelectionPanel'
+import { ViewFileWorkspace } from './components/ViewFileWorkspace'
 import { WebImageSearch } from './components/WebImageSearch'
 import { useHealth } from './hooks/useHealth'
 import { useImageCandidates } from './hooks/useImageCandidates'
@@ -45,13 +46,16 @@ import {
   buildKisSubmissionRows,
   buildTrakeSubmissionPlan,
   buildVqaFinalRows,
+  createVisualTrakeSelection,
   createVisualKisSelection,
+  createVisualVqaSelection,
   downloadCsv,
   searchHitKey,
   serializeKisCsv,
   serializeTrakeCsv,
   serializeVqaCsv,
   trakeSequenceKey,
+  trakeVisualSelectionKey,
   validateCsvFilename,
   validateTrakeEventCount,
   type SelectedKisItem,
@@ -66,7 +70,7 @@ const ES_DOWN_MESSAGE = 'Elasticsearch không khả dụng — OCR trong KIS t�
 
 // Index maps 1/2 shortcut keys onto modes -- keeps useKeyboardShortcuts
 // mode-agnostic.
-const MODE_ORDER: AppMode[] = ['kis', 'dante']
+const MODE_ORDER: AppMode[] = ['kis', 'dante', 'view-file']
 
 function asrReadinessMessage(health: HealthStatus | null): string | null {
   if (!health || health.asr_status === 'ready') return null
@@ -117,6 +121,7 @@ function App() {
     error,
     latencyMs,
     setLatencyMs,
+    resetSearchWorkspace,
     runSearch,
     runImageSearch,
   } = useSearch({ asrReady: health?.asr_ready !== false })
@@ -132,9 +137,6 @@ function App() {
   const [videoFilter, setVideoFilter] = useState('')
   const [excludedVideoIds, setExcludedVideoIds] = useState<Set<string>>(() => new Set())
   const [kisFrameSweepStep, setKisFrameSweepStep] = useState(10)
-  const [kisFrameSweepMargin, setKisFrameSweepMargin] = useState(0)
-  const [trakeFrameSweepStep, setTrakeFrameSweepStep] = useState(2)
-  const [trakeFrameSweepMargin, setTrakeFrameSweepMargin] = useState(0)
   const hasLocalResultRanking = useMemo(() => hasLocalRanking(results), [results])
   const activeImageSortMode: ImageRankSortMode =
     hasLocalResultRanking && imageSortMode === 'local' ? 'local' : 'global'
@@ -164,17 +166,41 @@ function App() {
   // DANTE/TRAKE (plan §P2.2, PRD §F6/US-4) is a different request shape
   // (N ordered events, not KIS query rows) and a different endpoint.
   const [activeMode, setActiveMode] = useState<AppMode>('kis')
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const trake = useTrake(topK)
-  const [kisSidebarTab, setKisSidebarTab] = useState<KisSidebarTab>('score')
+  const [kisSidebarTab, setKisSidebarTab] = useState<KisSidebarTab>('selection')
   const [kisSelectionMode, setKisSelectionMode] = useState<KisSelectionMode>('kis')
-  const [kisExportName, setKisExportName] = useState('query-1-kis')
-  const [vqaExportName, setVqaExportName] = useState('query-3-qa')
+  const [kisExportName, setKisExportName] = useState('')
+  const [vqaExportName, setVqaExportName] = useState('')
   const [trakeExportName, setTrakeExportName] = useState('query-4-trake')
   const [kisSelection, setKisSelection] = useState<SelectedKisItem[]>([])
   const [vqaSelection, setVqaSelection] = useState<SelectedVqaItem[]>([])
   const [trakeSelection, setTrakeSelection] = useState<SelectedTrakeSequence[]>([])
   function handleModeChange(next: AppMode): void {
     setActiveMode(next)
+  }
+
+  const hasActiveKisExportName =
+    (kisSelectionMode === 'kis' ? kisExportName : vqaExportName).trim().length > 0
+
+  function resetKisWorkspace(): void {
+    resetSearchWorkspace()
+    setSelectedHit(null)
+    setDetailHit(null)
+    setDetailHighlightFrames([])
+    setExcludedVideoIds(new Set())
+    setKisSelection([])
+    setVqaSelection([])
+  }
+
+  function handleKisExportNameChange(value: string): void {
+    if (value !== kisExportName) resetKisWorkspace()
+    setKisExportName(value)
+  }
+
+  function handleVqaExportNameChange(value: string): void {
+    if (value !== vqaExportName) resetKisWorkspace()
+    setVqaExportName(value)
   }
 
   useEffect(() => {
@@ -202,32 +228,34 @@ function App() {
   )
 
   function toggleSearchManualSelection(hit: SearchHit): void {
+    if (!hasActiveKisExportName) return
     const key = searchHitKey(hit)
     const originalRank = Math.max(0, results.findIndex((result) => searchHitKey(result) === key))
     if (kisSelectionMode === 'kis') {
       setKisSelection((prev) =>
         prev.some((item) => searchHitKey(item.hit) === key)
           ? prev.filter((item) => searchHitKey(item.hit) !== key)
-          : [
-              ...prev,
-              createVisualKisSelection(hit, originalRank, kisFrameSweepStep, kisFrameSweepMargin),
-            ],
+          : [...prev, createVisualKisSelection(hit, originalRank, 'none', kisFrameSweepStep)],
       )
       return
     }
     setVqaSelection((prev) =>
       prev.some((item) => item.key === key)
         ? prev.filter((item) => item.key !== key)
-        : [...prev, { key, hit, originalRank, answer: '' }],
+        : [...prev, createVisualVqaSelection(hit, originalRank)],
     )
   }
 
-  function toggleTrakeSequence(result: TrakeVideoResultItem, originalRank: number): void {
-    const key = trakeSequenceKey(result)
+  function toggleTrakeSequence(
+    result: TrakeVideoResultItem,
+    originalRank: number,
+    selectionKey: string,
+  ): void {
+    const key = selectionKey
     setTrakeSelection((prev) =>
       prev.some((item) => item.key === key)
         ? prev.filter((item) => item.key !== key)
-        : [...prev, { key, result, originalRank }],
+        : [...prev, createVisualTrakeSelection(result, originalRank, key)],
     )
   }
 
@@ -261,11 +289,8 @@ function App() {
   function exportTrakeCsv(): void {
     const validation = validateCsvFilename(trakeExportName, 'trake')
     if (!validation.isValid) return
-    const rows = buildTrakeSubmissionPlan(trakeSelection, trake.results, {
-      step: trakeFrameSweepStep,
-      margin: trakeFrameSweepMargin,
-    }).rows
-    const eventCount = currentTrakeEventCount(trake.events, trake.results)
+    const rows = buildTrakeSubmissionPlan(trakeSelection, trake.results).rows
+    const eventCount = currentTrakeEventCount(trake.events, trake.results, trakeSelection)
     if (rows.length === 0 || validateTrakeEventCount(rows, eventCount)) return
     downloadCsv(validation.filename, serializeTrakeCsv(rows))
   }
@@ -323,7 +348,9 @@ function App() {
   }
 
   useKeyboardShortcuts({
-    onSubmit: runSearch,
+    onSubmit: () => {
+      if (activeMode === 'kis' && hasActiveKisExportName) runSearch()
+    },
     onFocusQuery: () => queryInputRef.current?.focus(),
     onSetMode: (index) => {
       const next = MODE_ORDER[index]
@@ -341,9 +368,28 @@ function App() {
     },
   })
 
+  const appClassName =
+    activeMode === 'view-file'
+      ? 'app app-view-file'
+      : `app ${activeMode === 'kis' ? 'app-kis' : 'app-trake'}`
+
   return (
-    <div className={`app ${activeMode === 'kis' ? 'app-kis' : 'app-trake'}`}>
-      <div className="app-left" ref={activeMode === 'kis' ? kisLeftScrollRef : undefined}>
+    <div className={`app-shell ${sidebarCollapsed ? 'app-shell-collapsed' : ''}`}>
+      <AppSidebar
+        mode={activeMode}
+        collapsed={sidebarCollapsed}
+        onChange={handleModeChange}
+        onToggleCollapsed={() => setSidebarCollapsed((prev) => !prev)}
+      />
+      <div className={appClassName}>
+        <div className="app-left app-left-view-file" hidden={activeMode !== 'view-file'}>
+          <main className="app-grid app-grid-view-file">
+            <ViewFileWorkspace />
+          </main>
+        </div>
+        {activeMode !== 'view-file' && (
+          <>
+            <div className="app-left" ref={activeMode === 'kis' ? kisLeftScrollRef : undefined}>
         <header className="app-header">
           {activeMode === 'dante' ? (
             <EventSequenceInput
@@ -387,6 +433,8 @@ function App() {
                 asrQuery={asrQuery}
                 asrVideoCandidateK={asrVideoCandidateK}
                 asrGate={candidatePool?.asrGate ?? null}
+                disabled={!hasActiveKisExportName}
+                disabledReason="Nhập Query export name trong Selection trước khi điền query."
                 asrDisabled={health?.asr_ready === false}
                 asrReadinessMessage={asrMessage}
                 candidatePoolSize={candidatePool?.candidatePoolSize ?? null}
@@ -421,17 +469,21 @@ function App() {
             </>
           )}
           <div className="app-toolbar">
-            <ModeSelector mode={activeMode} onChange={handleModeChange} />
             {activeMode === 'dante' && <TopKControl topK={topK} onChange={setTopK} />}
             <FilterPanel />
           </div>
           {activeMode !== 'dante' && (
             <>
-              <ImageUpload onUpload={runImageSearch} />
+              <ImageUpload onUpload={runImageSearch} disabled={!hasActiveKisExportName} />
+              {!hasActiveKisExportName && (
+                <span className="quest-error">
+                  Nhập Query export name trong Selection trước khi search.
+                </span>
+              )}
               <WebImageSearch
                 query={query}
                 onSearch={imageCandidates.findCandidates}
-                disabled={imageCandidates.isLoading}
+                disabled={imageCandidates.isLoading || !hasActiveKisExportName}
               />
               {imageCandidates.error && (
                 <span className="quest-error">{imageCandidates.error}</span>
@@ -509,79 +561,109 @@ function App() {
             </div>
           )}
         </main>
-      </div>
-      {activeMode === 'kis' && (
-        <KisSidebar
-          activeTab={kisSidebarTab}
-          onTabChange={setKisSidebarTab}
-          hit={selectedHit}
-          selectionMode={kisSelectionMode}
-          onSelectionModeChange={setKisSelectionMode}
-          results={visibleResults}
-          kisSelection={kisSelection}
-          vqaSelection={vqaSelection}
-          kisExportName={kisExportName}
-          vqaExportName={vqaExportName}
-          onKisExportNameChange={setKisExportName}
-          onVqaExportNameChange={setVqaExportName}
-          onMoveKisSelection={(index, direction) =>
-            setKisSelection((prev) => moveSelection(prev, index, direction))
-          }
-          onMoveVqaSelection={(index, direction) =>
-            setVqaSelection((prev) => moveSelection(prev, index, direction))
-          }
-          onRemoveKisSelection={(key) =>
-            setKisSelection((prev) => prev.filter((item) => item.key !== key))
-          }
-          onAddManualKisSelection={(item) =>
-            setKisSelection((prev) =>
-              prev.some((existing) => searchHitKey(existing.hit) === searchHitKey(item.hit))
-                ? prev
-                : [...prev, item],
-            )
-          }
-          onRemoveVqaSelection={(key) =>
-            setVqaSelection((prev) => prev.filter((item) => item.key !== key))
-          }
-          onClearKisSelection={() => setKisSelection([])}
-          onClearVqaSelection={() => setVqaSelection([])}
-          onClearVqaAnswers={() =>
-            setVqaSelection((prev) => prev.map((item) => ({ ...item, answer: '' })))
-          }
-          onVqaAnswerChange={(key, answer) =>
-            setVqaSelection((prev) =>
-              prev.map((item) => (item.key === key ? { ...item, answer } : item)),
-            )
-          }
-          kisFrameSweepStep={kisFrameSweepStep}
-          kisFrameSweepMargin={kisFrameSweepMargin}
-          onKisFrameSweepStepChange={setKisFrameSweepStep}
-          onKisFrameSweepMarginChange={setKisFrameSweepMargin}
-          onExportKis={exportKisCsv}
-          onExportVqa={exportVqaCsv}
-        />
-      )}
-      {activeMode === 'dante' && (
-        <TrakeSelectionPanel
-          results={trake.results}
-          selection={trakeSelection}
-          exportName={trakeExportName}
-          eventCount={currentTrakeEventCount(trake.events, trake.results)}
-          frameSweepStep={trakeFrameSweepStep}
-          frameSweepMargin={trakeFrameSweepMargin}
-          onFrameSweepStepChange={setTrakeFrameSweepStep}
-          onFrameSweepMarginChange={setTrakeFrameSweepMargin}
-          onExportNameChange={setTrakeExportName}
-          onMoveSelection={(index, direction) =>
-            setTrakeSelection((prev) => moveSelection(prev, index, direction))
-          }
-          onRemoveSelection={(key) =>
-            setTrakeSelection((prev) => prev.filter((item) => item.key !== key))
-          }
-          onClearSelection={() => setTrakeSelection([])}
-          onExport={exportTrakeCsv}
-        />
-      )}
+            </div>
+            {activeMode === 'kis' && (
+              <KisSidebar
+                activeTab={kisSidebarTab}
+                onTabChange={setKisSidebarTab}
+                hit={selectedHit}
+                selectionMode={kisSelectionMode}
+                onSelectionModeChange={setKisSelectionMode}
+                results={visibleResults}
+                kisSelection={kisSelection}
+                vqaSelection={vqaSelection}
+                kisExportName={kisExportName}
+                vqaExportName={vqaExportName}
+                onKisExportNameChange={handleKisExportNameChange}
+                onVqaExportNameChange={handleVqaExportNameChange}
+                onReorderKisSelection={(fromIndex, toIndex) =>
+                  setKisSelection((prev) => reorderSelection(prev, fromIndex, toIndex))
+                }
+                onReorderVqaSelection={(fromIndex, toIndex) =>
+                  setVqaSelection((prev) => reorderSelection(prev, fromIndex, toIndex))
+                }
+                onRemoveKisSelection={(key) =>
+                  setKisSelection((prev) => prev.filter((item) => item.key !== key))
+                }
+                onAddManualKisSelection={(item) =>
+                  setKisSelection((prev) =>
+                    prev.some((existing) => searchHitKey(existing.hit) === searchHitKey(item.hit))
+                      ? prev
+                      : [...prev, item],
+                  )
+                }
+                onUpdateKisSelection={(key, patch) =>
+                  setKisSelection((prev) =>
+                    prev.map((item) => (item.key === key ? { ...item, ...patch } : item)),
+                  )
+                }
+                onAddManualVqaSelection={(item) =>
+                  setVqaSelection((prev) =>
+                    prev.some((existing) => searchHitKey(existing.hit) === searchHitKey(item.hit))
+                      ? prev
+                      : [...prev, item],
+                  )
+                }
+                onUpdateVqaSelection={(key, patch) =>
+                  setVqaSelection((prev) =>
+                    prev.map((item) => (item.key === key ? { ...item, ...patch } : item)),
+                  )
+                }
+                onRemoveVqaSelection={(key) =>
+                  setVqaSelection((prev) => prev.filter((item) => item.key !== key))
+                }
+                onClearKisSelection={() => setKisSelection([])}
+                onClearVqaSelection={() => setVqaSelection([])}
+                onClearVqaAnswers={() =>
+                  setVqaSelection((prev) =>
+                    prev.map((item) => ({
+                      ...item,
+                      answer: '',
+                      sweepDirection: 'none',
+                      targetFrameIdx: null,
+                    })),
+                  )
+                }
+                onVqaAnswerChange={(key, answer) =>
+                  setVqaSelection((prev) =>
+                    prev.map((item) => (item.key === key ? { ...item, answer } : item)),
+                  )
+                }
+                kisFrameSweepStep={kisFrameSweepStep}
+                onKisFrameSweepStepChange={setKisFrameSweepStep}
+                onExportKis={exportKisCsv}
+                onExportVqa={exportVqaCsv}
+              />
+            )}
+            {activeMode === 'dante' && (
+              <TrakeSelectionPanel
+                results={trake.results}
+                selection={trakeSelection}
+                exportName={trakeExportName}
+                eventCount={currentTrakeEventCount(trake.events, trake.results, trakeSelection)}
+                onExportNameChange={setTrakeExportName}
+                onAddManualSelection={(item) =>
+                  setTrakeSelection((prev) =>
+                    prev.some((existing) => existing.key === item.key) ? prev : [...prev, item],
+                  )
+                }
+                onUpdateSelection={(key, patch) =>
+                  setTrakeSelection((prev) =>
+                    prev.map((item) => (item.key === key ? { ...item, ...patch } : item)),
+                  )
+                }
+                onReorderSelection={(fromIndex, toIndex) =>
+                  setTrakeSelection((prev) => reorderSelection(prev, fromIndex, toIndex))
+                }
+                onRemoveSelection={(key) =>
+                  setTrakeSelection((prev) => prev.filter((item) => item.key !== key))
+                }
+                onClearSelection={() => setTrakeSelection([])}
+                onExport={exportTrakeCsv}
+              />
+            )}
+          </>
+        )}
       {detailHit && (
         <KeyframeDetail
           hit={detailHit}
@@ -600,16 +682,19 @@ function App() {
           onDismiss={imageCandidates.dismiss}
         />
       )}
+      </div>
     </div>
   )
 }
 
-function moveSelection<T>(items: T[], index: number, direction: -1 | 1): T[] {
-  const nextIndex = index + direction
-  if (nextIndex < 0 || nextIndex >= items.length) return items
+function reorderSelection<T>(items: T[], fromIndex: number, insertionIndex: number): T[] {
+  if (fromIndex < 0 || fromIndex >= items.length) return items
+  if (insertionIndex < 0 || insertionIndex > items.length) return items
+  if (fromIndex === insertionIndex || fromIndex + 1 === insertionIndex) return items
   const next = [...items]
-  const [item] = next.splice(index, 1)
-  next.splice(nextIndex, 0, item)
+  const [item] = next.splice(fromIndex, 1)
+  const adjustedInsertionIndex = fromIndex < insertionIndex ? insertionIndex - 1 : insertionIndex
+  next.splice(adjustedInsertionIndex, 0, item)
   return next
 }
 
@@ -632,6 +717,7 @@ function syncVqaSelectionWithResults(
 ): SelectedVqaItem[] {
   const resultByKey = new Map(results.map((hit, index) => [searchHitKey(hit), { hit, index }]))
   return selection.flatMap((item) => {
+    if (item.source === 'manual') return [item]
     const current = resultByKey.get(item.key)
     if (!current) return []
     return [{ ...item, hit: current.hit, originalRank: current.index }]
@@ -642,24 +728,52 @@ function syncTrakeSelectionWithResults(
   selection: SelectedTrakeSequence[],
   results: TrakeVideoResultItem[],
 ): SelectedTrakeSequence[] {
-  const resultByKey = new Map(
+  const groupCounts = new Map<string, number>()
+  const resultByKey = new Map<string, { result: TrakeVideoResultItem; index: number }>()
+  results.forEach((result, index) => {
+    const groupIndex = groupCounts.get(result.video_id) ?? 0
+    groupCounts.set(result.video_id, groupIndex + 1)
+    resultByKey.set(trakeVisualSelectionKey(result, index, `${result.video_id}:${groupIndex}`), {
+      result,
+      index,
+    })
+  })
+  const fallbackBySequenceKey = new Map(
     results.map((result, index) => [trakeSequenceKey(result), { result, index }]),
   )
   return selection.flatMap((item) => {
-    const current = resultByKey.get(item.key)
+    if (item.source === 'manual') return [item]
+    const current = resultByKey.get(item.key) ?? fallbackBySequenceKey.get(trakeSequenceKey(item.result))
     if (!current) return []
-    return [{ ...item, result: current.result, originalRank: current.index }]
+    return [
+      {
+        ...item,
+        result: current.result,
+        originalRank: current.index,
+        stepTargetFrames:
+          item.stepTargetFrames.length === current.result.keyframes.length
+            ? item.stepTargetFrames
+            : current.result.keyframes.map((keyframe) => Math.trunc(keyframe.frame_idx)),
+        stepCount: Math.max(1, Math.trunc(item.stepCount || 1)),
+      },
+    ]
   })
 }
 
 function currentTrakeEventCount(
   events: TrakeEventDraft[],
   results: TrakeVideoResultItem[],
+  selection: SelectedTrakeSequence[] = [],
 ): number {
   // An event row counts when ANY of its four boxes is filled -- an OCR-only or
   // ASR-only row is a legitimate event, and the submitted sequence will have
   // one frame for it like any other.
-  return countFilledTrakeEvents(events) || results[0]?.keyframes.length || 0
+  return (
+    countFilledTrakeEvents(events) ||
+    results[0]?.keyframes.length ||
+    selection[0]?.result.keyframes.length ||
+    0
+  )
 }
 
 export default App

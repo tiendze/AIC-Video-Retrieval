@@ -58,7 +58,7 @@ export interface KisRerankPayload {
 
 // UI-only: KIS uses the two-stage /api/search/kis/* flow, while TRAKE/DANTE
 // uses POST /api/trake with ordered event rows.
-export type AppMode = 'kis' | 'dante'
+export type AppMode = 'kis' | 'dante' | 'view-file'
 
 export interface TextQueryScore {
   query_index: number
@@ -453,4 +453,18 @@ export interface VideoKeyframe {
 // app/schemas/response/video.py: VideoKeyframesResponse
 export interface VideoKeyframesResponse {
   keyframes: VideoKeyframe[]
+}
+
+// app/schemas/response/view_file.py: ViewFileFrameResolutionResponse
+export interface ViewFileFrameResolution {
+  video_id: string
+  frame_idx: number
+  timestamp_seconds: number | null
+  source: 'local' | 'youtube' | 'unavailable'
+  keyframe_id: string | null
+  thumbnail_url: string | null
+  image_url: string | null
+  youtube_url: string | null
+  fps: number | null
+  error_message: string | null
 }

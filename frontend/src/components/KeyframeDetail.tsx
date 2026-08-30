@@ -6,6 +6,11 @@ import styles from './KeyframeDetail.module.css'
 interface YouTubePlayer {
   getCurrentTime: () => number
   seekTo: (seconds: number, allowSeekAhead: boolean) => void
+  cueVideoById?: (options: { videoId: string; startSeconds: number }) => void
+  loadVideoById?: (options: { videoId: string; startSeconds: number }) => void
+  mute?: () => void
+  unMute?: () => void
+  pauseVideo?: () => void
   destroy: () => void
 }
 
@@ -28,6 +33,7 @@ declare global {
     YT?: {
       Player: new (element: HTMLElement | string, options: YouTubePlayerOptions) => YouTubePlayer
       PlayerState: {
+        PLAYING: number
         PAUSED: number
       }
     }
@@ -64,9 +70,21 @@ function loadYouTubeIframeApi(): Promise<void> {
 export interface KeyframeDetailProps {
   hit: SearchHit
   onClose: () => void
-  onFindSimilar: (imageUrl: string) => void
+  onFindSimilar?: (imageUrl: string) => void
   highlightedFrames?: DetailFrame[]
+  mediaOverride?: KeyframeDetailMedia
 }
+
+export type KeyframeDetailMedia =
+  | { kind: 'image' }
+  | {
+      kind: 'youtube'
+      youtubeUrl: string
+      timestampSeconds: number
+      fps: number | null
+      title?: string | null
+    }
+  | { kind: 'unavailable'; message: string }
 
 export interface DetailFrame {
   keyframe_id: string
@@ -110,6 +128,8 @@ export function youtubeVideoIdFromUrl(watchUrl: string): string | null {
       if (watchId) return watchId
       const embedMatch = url.pathname.match(/^\/embed\/([^/?]+)/)
       if (embedMatch) return embedMatch[1]
+      const shortsMatch = url.pathname.match(/^\/shorts\/([^/?]+)/)
+      if (shortsMatch) return shortsMatch[1]
     }
   } catch {
     return null
@@ -179,7 +199,9 @@ export function KeyframeDetail({
   highlightedFrames = [],
   onClose,
   onFindSimilar,
+  mediaOverride,
 }: KeyframeDetailProps) {
+  const media: KeyframeDetailMedia = mediaOverride ?? { kind: 'image' }
   const [video, setVideo] = useState<VideoInfo | null>(null)
   const [neighbors, setNeighbors] = useState<VideoKeyframe[]>([])
   const [currentFrame, setCurrentFrame] = useState<DetailFrame>(() => frameFromHit(hit))
@@ -199,6 +221,7 @@ export function KeyframeDetail({
     setVideo(null)
     setNeighbors([])
     setError(null)
+    if (media.kind !== 'image') return undefined
 
     Promise.all([getVideo(currentFrame.video_id), getVideoKeyframes(currentFrame.video_id)])
       .then(([videoInfo, keyframes]) => {
@@ -213,7 +236,7 @@ export function KeyframeDetail({
     return () => {
       cancelled = true
     }
-  }, [currentFrame.video_id])
+  }, [currentFrame.video_id, media.kind])
 
   const stripFrames = useMemo(() => {
     const videoFrames = neighbors.map((keyframe) =>
@@ -244,6 +267,8 @@ export function KeyframeDetail({
     video && video.video_id === currentFrame.video_id
       ? youtubeVideoIdFromUrl(video.watch_url)
       : null
+  const detailTimestamp =
+    media.kind === 'youtube' ? media.timestampSeconds : currentFrame.timestamp
 
   useEffect(() => {
     const active = stripRef.current?.querySelector('[data-active="true"]') as HTMLElement | null
@@ -268,21 +293,40 @@ export function KeyframeDetail({
           ✕
         </button>
         <div className={styles.imageStage}>
-          <img
-            className={styles.image}
-            src={currentFrame.image_url}
-            alt={`${currentFrame.video_id} @ ${currentFrame.timestamp}s`}
-          />
+          {media.kind === 'youtube' ? (
+            <InlineYouTubePreview
+              videoId={currentFrame.video_id}
+              frameIdx={currentFrame.frame_idx}
+              youtubeUrl={media.youtubeUrl}
+              timestampSeconds={media.timestampSeconds}
+              fps={media.fps}
+            />
+          ) : media.kind === 'unavailable' ? (
+            <div className={styles.unavailableStage}>{media.message}</div>
+          ) : (
+            <img
+              className={styles.image}
+              src={currentFrame.image_url}
+              alt={`${currentFrame.video_id} @ ${currentFrame.timestamp}s`}
+              decoding="async"
+            />
+          )}
         </div>
         <div className={styles.meta}>
           <div>
             <strong>{currentFrame.video_id}</strong> · <span>frame {currentFrame.frame_idx}</span> ·{' '}
-            {formatSeconds(currentFrame.timestamp)}s
+            {formatSeconds(detailTimestamp)}s
           </div>
+          {media.kind === 'youtube' && (
+            <div className={styles.title}>
+              Time: {formatSeconds(media.timestampSeconds)}s
+              {media.fps ? ` · FPS: ${formatSeconds(media.fps)}` : ''}
+            </div>
+          )}
           {video && <div className={styles.title}>{video.title}</div>}
           {error && <div className={styles.error}>{error}</div>}
           <div className={styles.actions}>
-            {youtubeVideoId && (
+            {media.kind === 'image' && youtubeVideoId && (
               <button
                 type="button"
                 className={styles.playButton}
@@ -291,28 +335,30 @@ export function KeyframeDetail({
                 ▶ Play Video
               </button>
             )}
-            {youtubeUrl && (
+            {media.kind === 'image' && youtubeUrl && (
               <a className={styles.playButton} href={youtubeUrl} target="_blank" rel="noreferrer">
                 Open YouTube
               </a>
             )}
-            <button
-              type="button"
-              className={styles.similarButton}
-              onClick={() => {
-                // This panel is a full-screen overlay (.overlay: position:
-                // fixed; inset: 0) -- without closing it, the grid it
-                // triggers an update on stays hidden underneath, making the
-                // click look like it did nothing.
-                onFindSimilar(currentFrame.image_url)
-                onClose()
-              }}
-            >
-              Find Similar Images
-            </button>
+            {media.kind === 'image' && onFindSimilar && (
+              <button
+                type="button"
+                className={styles.similarButton}
+                onClick={() => {
+                  // This panel is a full-screen overlay (.overlay: position:
+                  // fixed; inset: 0) -- without closing it, the grid it
+                  // triggers an update on stays hidden underneath, making the
+                  // click look like it did nothing.
+                  onFindSimilar(currentFrame.image_url)
+                  onClose()
+                }}
+              >
+                Find Similar Images
+              </button>
+            )}
           </div>
         </div>
-        {hit.asr_evidence && (
+        {media.kind === 'image' && hit.asr_evidence && (
           <section className={styles.asrEvidence} aria-label="ASR evidence">
             {hit.asr_evidence.segments.slice(0, 3).map((segment) => (
               <button
@@ -331,7 +377,7 @@ export function KeyframeDetail({
             ))}
           </section>
         )}
-        {stripFrames.length > 0 && (
+        {media.kind === 'image' && stripFrames.length > 0 && (
           <div className={styles.neighborStrip}>
             <button
               type="button"
@@ -382,7 +428,7 @@ export function KeyframeDetail({
             </button>
           </div>
         )}
-        {playerOpen && video && youtubeVideoId && (
+        {media.kind === 'image' && playerOpen && video && youtubeVideoId && (
           <YouTubeFrameIndexModal
             videoId={currentFrame.video_id}
             youtubeVideoId={youtubeVideoId}
@@ -393,6 +439,123 @@ export function KeyframeDetail({
           />
         )}
       </div>
+    </div>
+  )
+}
+
+interface InlineYouTubePreviewProps {
+  videoId: string
+  frameIdx: number
+  youtubeUrl: string
+  timestampSeconds: number
+  fps: number | null
+}
+
+function InlineYouTubePreview({
+  videoId,
+  frameIdx,
+  youtubeUrl,
+  timestampSeconds,
+  fps,
+}: InlineYouTubePreviewProps) {
+  const playerHostRef = useRef<HTMLDivElement>(null)
+  const playerRef = useRef<YouTubePlayer | null>(null)
+  const youtubeVideoId = youtubeVideoIdFromUrl(youtubeUrl)
+  const [playerError, setPlayerError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!youtubeVideoId) {
+      setPlayerError('Youtube Not Available')
+      return undefined
+    }
+
+    let cancelled = false
+    let createdPlayer: YouTubePlayer | null = null
+    let pauseTimer: number | null = null
+    setPlayerError(null)
+
+    function pauseAtRequestedFrame(player: YouTubePlayer): void {
+      player.seekTo(timestampSeconds, true)
+      player.pauseVideo?.()
+      player.unMute?.()
+    }
+
+    function schedulePause(player: YouTubePlayer, delayMs = 420): void {
+      if (pauseTimer !== null) window.clearTimeout(pauseTimer)
+      pauseTimer = window.setTimeout(() => {
+        if (!cancelled) pauseAtRequestedFrame(player)
+      }, delayMs)
+    }
+
+    loadYouTubeIframeApi()
+      .then(() => {
+        if (cancelled || !playerHostRef.current || !window.YT?.Player) return
+        createdPlayer = new window.YT.Player(playerHostRef.current, {
+          videoId: youtubeVideoId,
+          playerVars: {
+            autoplay: 1,
+            controls: 1,
+            mute: 1,
+            modestbranding: 1,
+            playsinline: 1,
+            rel: 0,
+            start: Math.max(0, Math.floor(timestampSeconds)),
+          },
+          events: {
+            onReady: (event) => {
+              playerRef.current = event.target
+              event.target.mute?.()
+              if (event.target.loadVideoById) {
+                event.target.loadVideoById({
+                  videoId: youtubeVideoId,
+                  startSeconds: timestampSeconds,
+                })
+                schedulePause(event.target)
+              } else {
+                event.target.cueVideoById?.({
+                  videoId: youtubeVideoId,
+                  startSeconds: timestampSeconds,
+                })
+                pauseAtRequestedFrame(event.target)
+              }
+            },
+            onStateChange: (event) => {
+              if (event.data === window.YT?.PlayerState.PLAYING) {
+                schedulePause(event.target, 260)
+              }
+            },
+          },
+        })
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setPlayerError(error instanceof Error ? error.message : 'Youtube Not Available')
+        }
+      })
+
+    return () => {
+      cancelled = true
+      if (pauseTimer !== null) window.clearTimeout(pauseTimer)
+      const player = playerRef.current ?? createdPlayer
+      player?.destroy()
+      playerRef.current = null
+    }
+  }, [timestampSeconds, youtubeVideoId])
+
+  if (!youtubeVideoId) {
+    return <div className={styles.unavailableStage}>Youtube Not Available</div>
+  }
+
+  return (
+    <div className={styles.youtubeStage}>
+      <div className={styles.youtubeMeta}>
+        <strong>Video: {videoId}</strong>
+        <span>Frame: {frameIdx}</span>
+        <span>Time: {formatSeconds(timestampSeconds)}s</span>
+        {fps && <span>FPS: {formatSeconds(fps)}</span>}
+      </div>
+      <div className={styles.inlinePlayerFrame} ref={playerHostRef} />
+      {playerError && <div className={styles.error}>{playerError}</div>}
     </div>
   )
 }

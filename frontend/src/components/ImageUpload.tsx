@@ -3,6 +3,7 @@ import styles from './ImageUpload.module.css'
 
 export interface ImageUploadProps {
   onUpload: (file: File) => void
+  disabled?: boolean
 }
 
 // Mirrors the backend's own guard (app/schemas/request/search.py's
@@ -12,12 +13,13 @@ export interface ImageUploadProps {
 const ALLOWED_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp'])
 const MAX_UPLOAD_SIZE_BYTES = 10 * 1024 * 1024
 
-export function ImageUpload({ onUpload }: ImageUploadProps) {
+export function ImageUpload({ onUpload, disabled = false }: ImageUploadProps) {
   const [error, setError] = useState<string | null>(null)
   const [isDragOver, setIsDragOver] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
   function validateAndUpload(file: File): void {
+    if (disabled) return
     if (!ALLOWED_MIME_TYPES.has(file.type)) {
       setError(`Unsupported image type: ${file.type}`)
       return
@@ -41,10 +43,14 @@ export function ImageUpload({ onUpload }: ImageUploadProps) {
       onDrop={(event) => {
         event.preventDefault()
         setIsDragOver(false)
+        if (disabled) return
         const file = event.dataTransfer.files[0]
         if (file) validateAndUpload(file)
       }}
-      onClick={() => inputRef.current?.click()}
+      onClick={() => {
+        if (!disabled) inputRef.current?.click()
+      }}
+      aria-disabled={disabled}
     >
       <input
         ref={inputRef}
@@ -52,6 +58,7 @@ export function ImageUpload({ onUpload }: ImageUploadProps) {
         aria-label="Upload query image"
         accept="image/jpeg,image/png,image/webp"
         className={styles.hiddenInput}
+        disabled={disabled}
         onChange={(event) => {
           const file = event.target.files?.[0]
           if (file) validateAndUpload(file)

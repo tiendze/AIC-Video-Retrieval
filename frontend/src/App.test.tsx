@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   findImageCandidates,
   getHealth,
+  getViewFileFrameResolution,
   getVideo,
   getVideoKeyframes,
   rewriteQuery,
@@ -21,6 +22,18 @@ vi.mock('./api/client', () => ({
   searchByImage: vi.fn().mockResolvedValue({ results: [] }),
   getVideo: vi.fn(),
   getVideoKeyframes: vi.fn(),
+  getViewFileFrameResolution: vi.fn().mockResolvedValue({
+    video_id: 'L21_V001',
+    frame_idx: 10,
+    timestamp_seconds: 0.4,
+    source: 'local',
+    keyframe_id: 'L21_V001_f10',
+    thumbnail_url: '/api/keyframes/L21_V001_f10/thumbnail',
+    image_url: '/api/keyframes/L21_V001_f10/image',
+    youtube_url: null,
+    fps: 25,
+    error_message: null,
+  }),
   fetchImageBlob: vi.fn(),
   // Never resolves -- these tests aren't about health/degraded-mode
   // (plan §P1.8 has its own coverage in ModeSelector.test.tsx/
@@ -69,9 +82,20 @@ function stubViewportSizeGlobally(size: number): () => void {
   }
 }
 
+async function unlockKisSearch(
+  user: ReturnType<typeof userEvent.setup>,
+  name = 'query-1-kis',
+): Promise<void> {
+  await user.type(screen.getByLabelText('Query export name'), name)
+}
+
 describe('App', () => {
-  it('leaves ASR controls enabled without an unavailable message before health loads', () => {
+  it('unlocks ASR controls after an export name is entered before health loads', async () => {
+    const user = userEvent.setup()
     render(<App />)
+
+    expect(screen.getByLabelText('stage 1 asr')).toBeDisabled()
+    await unlockKisSearch(user)
 
     expect(screen.getByLabelText('stage 1 asr')).toBeEnabled()
     expect(screen.getByLabelText('asr candidate videos')).toBeEnabled()
@@ -82,20 +106,21 @@ describe('App', () => {
     const user = userEvent.setup()
     render(<App />)
 
+    await unlockKisSearch(user)
     const input = screen.getByLabelText('text q0')
     await user.type(input, 'người đàn ông áo đỏ')
 
-    await user.click(screen.getByRole('radio', { name: /TRAKE/i }))
-    await user.click(screen.getByRole('radio', { name: /KIS/i }))
+    await user.click(screen.getByRole('button', { name: /Open TRAKE workspace/i }))
+    await user.click(screen.getByRole('button', { name: /Open KIS workspace/i }))
 
     expect(screen.getByLabelText('text q0')).toHaveValue('người đàn ông áo đỏ')
   })
 
-  it('renders the KIS mode selector and query editor on load', () => {
+  it('renders the KIS navigation item and query editor on load', () => {
     render(<App />)
 
     expect(screen.getByLabelText('text q0')).toBeInTheDocument()
-    expect(screen.getByRole('radio', { name: /KIS/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Open KIS workspace/i })).toBeInTheDocument()
     expect(screen.queryByRole('radio', { name: /OCR/i })).not.toBeInTheDocument()
   })
 
@@ -110,6 +135,7 @@ describe('App', () => {
     })
     render(<App />)
 
+    await unlockKisSearch(user)
     await user.type(screen.getByLabelText('text q0'), 'Labubu')
     await user.click(screen.getByRole('button', { name: /AI enhancer/i }))
 
@@ -131,6 +157,7 @@ describe('App', () => {
     })
     render(<App />)
 
+    await unlockKisSearch(user)
     await user.type(screen.getByLabelText('text q0'), 'Labubu')
     await user.click(screen.getByRole('button', { name: /tìm ảnh mẫu/i }))
 
@@ -149,6 +176,7 @@ describe('App', () => {
     vi.mocked(rewriteQuery).mockRejectedValue(new Error('network down'))
     render(<App />)
 
+    await unlockKisSearch(user)
     await user.type(screen.getByLabelText('text q0'), 'Labubu')
     await user.click(screen.getByRole('button', { name: /AI enhancer/i }))
 
@@ -160,6 +188,7 @@ describe('App', () => {
     vi.mocked(findImageCandidates).mockRejectedValue(new Error('network down'))
     render(<App />)
 
+    await unlockKisSearch(user)
     await user.type(screen.getByLabelText('text q0'), 'Labubu')
     await user.click(screen.getByRole('button', { name: /tìm ảnh mẫu/i }))
 
@@ -174,11 +203,68 @@ describe('App', () => {
     const user = userEvent.setup()
     render(<App />)
 
-    await user.click(screen.getByRole('radio', { name: /TRAKE/i }))
+    await user.click(screen.getByRole('button', { name: /Open TRAKE workspace/i }))
 
     expect(screen.getByLabelText('event 1 text')).toBeInTheDocument()
     expect(screen.getByLabelText('TRAKE selection export')).toBeInTheDocument()
     expect(screen.queryByLabelText('text q0')).not.toBeInTheDocument()
+  })
+
+  it('shows View File without the KIS/TRAKE right panel and renders an uploaded KIS csv', async () => {
+    const user = userEvent.setup()
+    vi.mocked(getViewFileFrameResolution).mockClear().mockResolvedValue({
+      video_id: 'L21_V001',
+      frame_idx: 10,
+      timestamp_seconds: 0.4,
+      source: 'local',
+      keyframe_id: 'L21_V001_f10',
+      thumbnail_url: '/api/keyframes/L21_V001_f10/thumbnail',
+      image_url: '/api/keyframes/L21_V001_f10/image',
+      youtube_url: null,
+      fps: 25,
+      error_message: null,
+    })
+    render(<App />)
+
+    await user.click(screen.getByRole('button', { name: /Open View File workspace/i }))
+    await user.upload(
+      screen.getByLabelText('CSV file upload'),
+      new File(['L21_V001,10\n'], 'query-1-kis.csv', { type: 'text/csv' }),
+    )
+
+    await waitFor(() => expect(screen.getAllByText('query-1-kis.csv').length).toBeGreaterThan(0))
+    expect(screen.queryByLabelText('KIS selection export')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('TRAKE selection export')).not.toBeInTheDocument()
+    expect(screen.getByText('KIS · 1 rows')).toBeInTheDocument()
+    await waitFor(() =>
+      expect(getViewFileFrameResolution).toHaveBeenCalledWith('L21_V001', 10, expect.any(AbortSignal)),
+    )
+    expect(screen.getByAltText('L21_V001 10')).toHaveAttribute(
+      'src',
+      '/api/keyframes/L21_V001_f10/thumbnail',
+    )
+  })
+
+  it('keeps uploaded View File csvs when navigating away and back', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+
+    await user.click(screen.getByRole('button', { name: /Open View File workspace/i }))
+    await user.upload(
+      screen.getByLabelText('CSV file upload'),
+      new File(['video_id,Frame Index,answer\nL21_V001,10,green bus\n'], 'qa.csv', {
+        type: 'text/csv',
+      }),
+    )
+    await waitFor(() => expect(screen.getAllByText('qa.csv').length).toBeGreaterThan(0))
+    expect(screen.getByText('VQA · 1 rows')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: /Open TRAKE workspace/i }))
+    expect(screen.getByLabelText('event 1 text')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: /Open View File workspace/i }))
+    expect(screen.getAllByText('qa.csv').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('green bus').length).toBeGreaterThan(0)
   })
 
   it('adds a selected KIS result to the sidebar selection tab', async () => {
@@ -207,6 +293,7 @@ describe('App', () => {
     try {
       render(<App />)
 
+      await unlockKisSearch(user)
       await user.type(screen.getByLabelText('text q0'), 'boat')
       await user.click(screen.getByRole('button', { name: 'Retrieve Candidates' }))
       await waitFor(() => expect(screen.getByText('Select KIS')).toBeInTheDocument())
@@ -256,7 +343,7 @@ describe('App', () => {
       ],
     })
     render(<App />)
-    await user.click(screen.getByRole('radio', { name: /TRAKE/i }))
+    await user.click(screen.getByRole('button', { name: /Open TRAKE workspace/i }))
     await user.type(screen.getByLabelText('event 1 text'), 'người đàn ông mở cửa')
     await user.type(screen.getByLabelText('event 2 text'), 'xe máy chạy qua')
 
@@ -312,10 +399,12 @@ describe('App', () => {
       ],
     })
     render(<App />)
+    await unlockKisSearch(user)
     await user.type(screen.getByLabelText('text q0'), 'boat')
     await user.click(screen.getAllByRole('button', { name: /\+ Add local phrase/i })[0])
     await user.type(screen.getByLabelText('local phrase 1.1'), 'red packet')
     await user.click(screen.getByRole('button', { name: 'Retrieve Candidates' }))
+    await user.click(screen.getByRole('tab', { name: 'Score' }))
 
     await waitFor(() => expect(screen.getByLabelText('KIS score details')).toBeInTheDocument())
     expect(retrieveKisCandidates).toHaveBeenCalledWith(
@@ -370,6 +459,7 @@ describe('App', () => {
     })
     try {
       render(<App />)
+      await unlockKisSearch(user)
       await user.type(screen.getByLabelText('text q0'), 'night scene')
       await user.click(screen.getByRole('button', { name: 'Retrieve Candidates' }))
       await waitFor(() =>
@@ -382,6 +472,7 @@ describe('App', () => {
       await user.keyboard('{Escape}')
 
       expect(screen.queryByRole('dialog', { name: /keyframe detail/i })).not.toBeInTheDocument()
+      await user.click(screen.getByRole('tab', { name: 'Score' }))
       expect(screen.getByLabelText('KIS score details')).toBeInTheDocument()
     } finally {
       restoreViewportSize()
@@ -405,6 +496,7 @@ describe('App', () => {
       message: 'The ASR transcript index is empty.',
     },
   ])('disables ASR controls for $asr_status health with the exact reason', async (state) => {
+    const user = userEvent.setup()
     vi.mocked(getHealth).mockResolvedValue({
       status: 'degraded',
       milvus_ok: true,
@@ -416,6 +508,7 @@ describe('App', () => {
     })
 
     render(<App />)
+    await unlockKisSearch(user)
 
     await waitFor(() => expect(screen.getByText(state.message)).toBeInTheDocument())
     expect(screen.getByLabelText('stage 1 asr')).toBeDisabled()
@@ -463,6 +556,7 @@ describe('App', () => {
       render(<App />)
       await vi.waitFor(() => expect(getHealth).toHaveBeenCalledTimes(1))
 
+      await unlockKisSearch(user)
       await user.type(screen.getByLabelText('text q0'), 'dam')
       await user.type(screen.getByLabelText('stage 1 ocr'), 'SAIGON')
       await user.type(screen.getByLabelText('stage 1 asr'), 'hydraulic works')

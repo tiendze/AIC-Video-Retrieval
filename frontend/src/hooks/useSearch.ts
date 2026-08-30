@@ -88,6 +88,7 @@ export interface UseSearchResult {
   error: string | null
   latencyMs: number | null
   setLatencyMs: (latencyMs: number | null) => void
+  resetSearchWorkspace: () => void
   // `overrideQuery` lets a caller search by exact text without first
   // waiting for `setQuery` to re-render -- needed by QueryRewritePanel's
   // "use q_r" action, which must search by the just-fetched rewritten text
@@ -199,6 +200,31 @@ export function useSearch({ asrReady = true }: UseSearchOptions = {}): UseSearch
       setResults([])
       resultsOwnerRef.current = null
     }
+  }, [])
+
+  const resetSearchWorkspace = useCallback(() => {
+    abortRef.current?.abort()
+    kisAbortRef.current?.abort()
+    abortRef.current = null
+    kisAbortRef.current = null
+    kisRequestGenerationRef.current += 1
+    resultsOwnerRef.current = null
+    setTextQueriesValue([''])
+    setLocalPhrasesByQueryValue([[]])
+    setTextCandidateKValue(DEFAULT_TEXT_CANDIDATE_K)
+    setOcrQueryValue('')
+    setOcrCandidateKValue(DEFAULT_OCR_CANDIDATE_K)
+    setTitleQueryValue('')
+    setTitleCandidateKValue(DEFAULT_TITLE_CANDIDATE_K)
+    setAsrQueryValue('')
+    setAsrVideoCandidateKValue(DEFAULT_ASR_VIDEO_CANDIDATE_K)
+    setCandidatePool(null)
+    setStage2Queries([])
+    setFinalTopK(DEFAULT_TOP_K)
+    setResults([])
+    setIsLoading(false)
+    setError(null)
+    setLatencyMs(null)
   }, [])
 
   useEffect(() => {
@@ -629,6 +655,7 @@ export function useSearch({ asrReady = true }: UseSearchOptions = {}): UseSearch
     error,
     latencyMs,
     setLatencyMs,
+    resetSearchWorkspace,
     runSearch: retrieveCandidates,
     retrieveCandidates,
     rerankCandidates,

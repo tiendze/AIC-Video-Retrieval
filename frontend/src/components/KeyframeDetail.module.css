@@ -48,6 +48,55 @@
   object-fit: contain;
 }
 
+.youtubeStage {
+  display: grid;
+  width: min(960px, 100%);
+  gap: 10px;
+}
+
+.youtubeMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  align-items: center;
+  color: #d1d5db;
+  font-size: 12px;
+}
+
+.youtubeMeta strong {
+  color: #f8fafc;
+}
+
+.inlinePlayerFrame {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  min-height: 240px;
+  overflow: hidden;
+  background: #050505;
+  border: 1px solid #333;
+}
+
+.inlinePlayerFrame iframe {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.unavailableStage {
+  display: grid;
+  width: min(640px, 100%);
+  min-height: min(360px, 50vh);
+  place-items: center;
+  padding: 18px;
+  box-sizing: border-box;
+  background: #0b101a;
+  color: #d1d5db;
+  border: 1px solid #333;
+  font-size: 18px;
+  font-weight: 800;
+  text-align: center;
+}
+
 .meta {
   color: #ddd;
   font-size: 13px;
@@ -293,6 +342,10 @@
   }
 
   .playerFrame {
+    min-height: 180px;
+  }
+
+  .inlinePlayerFrame {
     min-height: 180px;
   }
 
