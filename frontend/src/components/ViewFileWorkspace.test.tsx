@@ -232,7 +232,7 @@ describe('ViewFileWorkspace', () => {
     expect(screen.getByText('KIS · 100 rows')).toBeInTheDocument()
   })
 
-  it('keeps VQA answer groups while using the same one-card frame grid', async () => {
+  it('keeps VQA answers visible while using one continuous frame grid', async () => {
     const user = userEvent.setup()
     render(<ViewFileWorkspace />)
 
@@ -275,7 +275,7 @@ describe('ViewFileWorkspace', () => {
     )
   })
 
-  it('keeps frame range notes independent for each loaded CSV', async () => {
+  it('keeps frame ranges independent for each loaded CSV', async () => {
     const user = userEvent.setup()
     render(<ViewFileWorkspace />)
 
@@ -285,18 +285,24 @@ describe('ViewFileWorkspace', () => {
     ])
 
     await screen.findByRole('heading', { name: 'query-p2-1-kis.csv' })
-    await user.type(screen.getByLabelText('Frame range start'), '100')
-    await user.type(screen.getByLabelText('Frame range end'), '150')
+    await user.click(screen.getByRole('button', { name: 'Add Range' }))
+    await user.type(screen.getByLabelText('Range 1 start frame'), '100')
+    await user.type(screen.getByLabelText('Range 1 end frame'), '150')
+    await user.type(screen.getByLabelText('Range 1 description'), 'intro')
 
     await user.click(screen.getByRole('button', { name: 'Select query-p2-2-kis.csv' }))
-    expect((screen.getByLabelText('Frame range start') as HTMLInputElement).value).toBe('')
-    await user.type(screen.getByLabelText('Frame range start'), '220')
-    await user.type(screen.getByLabelText('Frame range end'), '200')
+    expect(screen.queryByLabelText('Range 1 start frame')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Add Range' }))
+    await user.type(screen.getByLabelText('Range 1 start frame'), '220')
+    await user.type(screen.getByLabelText('Range 1 end frame'), '200')
     expect(screen.getByRole('alert')).toHaveTextContent(/less than or equal/i)
 
     await user.click(screen.getByRole('button', { name: 'Select query-p2-1-kis.csv' }))
-    expect((screen.getByLabelText('Frame range start') as HTMLInputElement).value).toBe('100')
-    expect((screen.getByLabelText('Frame range end') as HTMLInputElement).value).toBe('150')
+    expect((screen.getByLabelText('Range 1 start frame') as HTMLInputElement).value).toBe('100')
+    expect((screen.getByLabelText('Range 1 end frame') as HTMLInputElement).value).toBe('150')
+    expect((screen.getByLabelText('Range 1 description') as HTMLInputElement).value).toBe(
+      'intro',
+    )
   })
 
   it('supports manual file reorder by drag handle while keeping the active CSV and range note', async () => {
@@ -310,7 +316,8 @@ describe('ViewFileWorkspace', () => {
     ])
 
     await user.click(screen.getByRole('button', { name: 'Select query-p2-4-kis.csv' }))
-    await user.type(screen.getByLabelText('Frame range start'), '400')
+    await user.click(screen.getByRole('button', { name: 'Add Range' }))
+    await user.type(screen.getByLabelText('Range 1 start frame'), '400')
 
     const source = screen.getByTestId('view-file-item-query-p2-4-kis.csv')
     const target = screen.getByTestId('view-file-item-query-p2-2-kis.csv')
@@ -332,7 +339,7 @@ describe('ViewFileWorkspace', () => {
       ]),
     )
     expect(screen.getByRole('heading', { name: 'query-p2-4-kis.csv' })).toBeInTheDocument()
-    expect((screen.getByLabelText('Frame range start') as HTMLInputElement).value).toBe('400')
+    expect((screen.getByLabelText('Range 1 start frame') as HTMLInputElement).value).toBe('400')
   })
 
   it('reorders frames inside the active CSV by dragging a frame handle', async () => {
@@ -397,8 +404,10 @@ describe('ViewFileWorkspace', () => {
       new File(['L21_VZIP,700\n'], 'query-p2-4-kis.csv', { type: 'text/csv' }),
     ])
     await screen.findByRole('heading', { name: 'query-p2-4-kis.csv' })
-    await user.type(screen.getByLabelText('Frame range start'), '650')
-    await user.type(screen.getByLabelText('Frame range end'), '900')
+    await user.click(screen.getByRole('button', { name: 'Add Range' }))
+    await user.type(screen.getByLabelText('Range 1 start frame'), '650')
+    await user.type(screen.getByLabelText('Range 1 end frame'), '900')
+    await user.type(screen.getByLabelText('Range 1 description'), 'final sweep')
 
     await user.click(screen.getByRole('button', { name: 'Export ZIP' }))
 
@@ -413,8 +422,246 @@ describe('ViewFileWorkspace', () => {
     expect(zipText).toContain('submissions/view_file_manifest.json')
     expect(zipText).toContain('"range_start": 650')
     expect(zipText).toContain('"range_end": 900')
+    expect(zipText).toContain('"description": "final sweep"')
     expect(zipText).toContain('L21_VZIP,650')
     expect(zipText).toContain('L21_VZIP,700')
+  })
+
+  it('always quotes VQA answers in the exported CSV content', async () => {
+    const user = userEvent.setup()
+    const createObjectURL = vi.fn((blob: Blob) => {
+      void blob
+      return 'blob:view-file-export'
+    })
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      value: createObjectURL,
+    })
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      value: vi.fn(),
+    })
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    render(<ViewFileWorkspace />)
+
+    await user.upload(
+      screen.getByLabelText('CSV file upload'),
+      new File(
+        ['video_id,frame_idx,answer\nL21_VQA,10,12 kg\nL21_VQA,20,"he said ""yes"""\n'],
+        'query-p2-qa.csv',
+        { type: 'text/csv' },
+      ),
+    )
+
+    await screen.findByRole('heading', { name: 'query-p2-qa.csv' })
+    await user.click(screen.getByRole('button', { name: 'Export ZIP' }))
+
+    const blob = createObjectURL.mock.calls[0]?.[0]
+    expect(blob).toBeInstanceOf(Blob)
+    if (!blob) throw new Error('Expected ZIP blob')
+    const zipText = await blob.text()
+    expect(zipText).toContain('L21_VQA,10,"12 kg"')
+    expect(zipText).toContain('L21_VQA,20,"he said ""yes"""')
+  })
+
+  it('marks range membership and video filter matches on frame cards', async () => {
+    const user = userEvent.setup()
+    render(<ViewFileWorkspace />)
+
+    await user.upload(
+      screen.getByLabelText('CSV file upload'),
+      new File(
+        ['L21_VMATCH,10\nL22_VOTHER,15\nL21_VMATCH,30\n'],
+        'query-p2-1-kis.csv',
+        {
+          type: 'text/csv',
+        },
+      ),
+    )
+
+    await waitFor(() =>
+      expect(screen.getAllByRole('button', { name: /^Open .* frame /i })).toHaveLength(3),
+    )
+    await user.click(screen.getByRole('button', { name: 'Add Range' }))
+    await user.type(screen.getByLabelText('Range 1 start frame'), '10')
+    await user.type(screen.getByLabelText('Range 1 end frame'), '20')
+    await user.type(screen.getByLabelText('Video filter'), 'L21_VMATCH')
+
+    expect(screen.getAllByText('R1')).toHaveLength(2)
+    expect(screen.getByText('2 matched')).toBeInTheDocument()
+    expect(screen.getAllByLabelText('Video filter match')).toHaveLength(2)
+  })
+
+  it('sorts selected ranges by chosen top positions', async () => {
+    const user = userEvent.setup()
+    render(<ViewFileWorkspace />)
+
+    await user.upload(
+      screen.getByLabelText('CSV file upload'),
+      new File(
+        [
+          [
+            'L21_VSORT,30',
+            'L21_VSORT,50',
+            'L21_VSORT,10',
+            'L21_VSORT,40',
+            'L21_VSORT,20',
+            'L21_VSORT,65',
+            'L21_VSORT,60',
+          ].join('\n'),
+        ],
+        'query-p2-1-kis.csv',
+        { type: 'text/csv' },
+      ),
+    )
+
+    await waitFor(() =>
+      expect(screen.getAllByRole('button', { name: /^Open L21_VSORT frame /i })).toHaveLength(7),
+    )
+    await user.click(screen.getByRole('button', { name: 'Add Range' }))
+    await user.type(screen.getByLabelText('Range 1 start frame'), '10')
+    await user.type(screen.getByLabelText('Range 1 end frame'), '30')
+    await user.click(screen.getByRole('button', { name: 'Add Range' }))
+    await user.type(screen.getByLabelText('Range 2 start frame'), '40')
+    await user.type(screen.getByLabelText('Range 2 end frame'), '50')
+    await user.click(screen.getByRole('button', { name: 'Add Range' }))
+    await user.type(screen.getByLabelText('Range 3 start frame'), '60')
+    await user.type(screen.getByLabelText('Range 3 end frame'), '65')
+
+    expect(
+      Array.from(
+        (screen.getByLabelText('Sort position for range 1') as HTMLSelectElement).options,
+      ).map((option) => option.textContent),
+    ).toEqual(['Top', 'Top 1', 'Top 2', 'Top 3'])
+
+    await user.selectOptions(screen.getByLabelText('Sort position for range 2'), '1')
+    await waitFor(() =>
+      expect(
+        screen
+          .getAllByRole('button', { name: /^Open L21_VSORT frame /i })
+          .map((button) => button.getAttribute('aria-label')),
+      ).toEqual([
+        'Open L21_VSORT frame 40',
+        'Open L21_VSORT frame 50',
+        'Open L21_VSORT frame 30',
+        'Open L21_VSORT frame 10',
+        'Open L21_VSORT frame 20',
+        'Open L21_VSORT frame 65',
+        'Open L21_VSORT frame 60',
+      ]),
+    )
+
+    await user.selectOptions(screen.getByLabelText('Sort position for range 1'), '2')
+    await waitFor(() =>
+      expect(
+        screen
+          .getAllByRole('button', { name: /^Open L21_VSORT frame /i })
+          .map((button) => button.getAttribute('aria-label')),
+      ).toEqual([
+        'Open L21_VSORT frame 40',
+        'Open L21_VSORT frame 50',
+        'Open L21_VSORT frame 10',
+        'Open L21_VSORT frame 20',
+        'Open L21_VSORT frame 30',
+        'Open L21_VSORT frame 65',
+        'Open L21_VSORT frame 60',
+      ]),
+    )
+
+    await user.selectOptions(screen.getByLabelText('Sort position for range 3'), '3')
+    await waitFor(() =>
+      expect(
+        screen
+          .getAllByRole('button', { name: /^Open L21_VSORT frame /i })
+          .map((button) => button.getAttribute('aria-label')),
+      ).toEqual([
+        'Open L21_VSORT frame 40',
+        'Open L21_VSORT frame 50',
+        'Open L21_VSORT frame 10',
+        'Open L21_VSORT frame 20',
+        'Open L21_VSORT frame 30',
+        'Open L21_VSORT frame 60',
+        'Open L21_VSORT frame 65',
+      ]),
+    )
+  })
+
+  it('reorders frame ranges by dragging the range handle', async () => {
+    const user = userEvent.setup()
+    render(<ViewFileWorkspace />)
+
+    await user.upload(
+      screen.getByLabelText('CSV file upload'),
+      new File(['L21_VRANGEDRAG,10\n'], 'query-p2-1-kis.csv', {
+        type: 'text/csv',
+      }),
+    )
+
+    await screen.findByRole('heading', { name: 'query-p2-1-kis.csv' })
+    await user.click(screen.getByRole('button', { name: 'Add Range' }))
+    await user.type(screen.getByLabelText('Range 1 start frame'), '100')
+    await user.type(screen.getByLabelText('Range 1 end frame'), '150')
+    await user.click(screen.getByRole('button', { name: 'Add Range' }))
+    await user.type(screen.getByLabelText('Range 2 start frame'), '200')
+    await user.type(screen.getByLabelText('Range 2 end frame'), '250')
+
+    const source = screen.getByTestId('view-range-item-2')
+    const target = screen.getByTestId('view-range-item-1')
+    const sourceId = source.getAttribute('data-range-id')
+    if (!sourceId) throw new Error('Expected source range id')
+    mockRect(target)
+    fireEvent.drop(target, {
+      clientY: 1,
+      dataTransfer: {
+        getData: vi.fn(() => sourceId),
+      },
+    })
+
+    await waitFor(() => {
+      expect((screen.getByLabelText('Range 1 start frame') as HTMLInputElement).value).toBe('200')
+      expect((screen.getByLabelText('Range 2 start frame') as HTMLInputElement).value).toBe('100')
+    })
+  })
+
+  it('adds and deletes frames before exporting the current CSV contents', async () => {
+    const user = userEvent.setup()
+    const createObjectURL = vi.fn((blob: Blob) => {
+      void blob
+      return 'blob:view-file-export'
+    })
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      value: createObjectURL,
+    })
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      value: vi.fn(),
+    })
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    render(<ViewFileWorkspace />)
+
+    await user.upload(
+      screen.getByLabelText('CSV file upload'),
+      new File(['L21_VEDIT,100\n'], 'query-p2-1-kis.csv', {
+        type: 'text/csv',
+      }),
+    )
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Open L21_VEDIT frame 100' })).toBeInTheDocument(),
+    )
+    await user.type(screen.getByLabelText('New frame video ID'), 'L21_VEDIT')
+    await user.type(screen.getByLabelText('New frame index'), '200')
+    await user.click(screen.getByRole('button', { name: 'Add Frame' }))
+    await user.click(screen.getByRole('button', { name: 'Delete L21_VEDIT frame 100' }))
+    await user.click(screen.getByRole('button', { name: 'Export ZIP' }))
+
+    const blob = createObjectURL.mock.calls[0]?.[0]
+    expect(blob).toBeInstanceOf(Blob)
+    if (!blob) throw new Error('Expected ZIP blob')
+    const zipText = await blob.text()
+    expect(zipText).toContain('L21_VEDIT,200')
+    expect(zipText).not.toContain('L21_VEDIT,100')
   })
 
   it('exports reordered frame order in the ZIP CSV content', async () => {

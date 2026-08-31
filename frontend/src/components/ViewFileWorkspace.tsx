@@ -1,7 +1,9 @@
 import {
   memo,
   type ChangeEvent,
+  type CSSProperties,
   type DragEvent,
+  type FormEvent,
   useCallback,
   useEffect,
   useMemo,
@@ -21,14 +23,23 @@ import styles from './ViewFileWorkspace.module.css'
 
 const YOUTUBE_NOT_AVAILABLE = 'Youtube Not Available'
 const TIMESTAMP_UNAVAILABLE = 'Unable to resolve video timestamp'
+const RANGE_COLORS = ['#22c55e', '#f59e0b', '#a78bfa', '#f472b6', '#2dd4bf', '#fb7185']
+
+interface ViewFileRange {
+  id: string
+  startFrame: string
+  endFrame: string
+  description: string
+}
 
 interface UploadedViewFile {
   id: string
   name: string
   uploadedAt: number
   rawText: string
-  rangeStart: string
-  rangeEnd: string
+  ranges: ViewFileRange[]
+  sortedRangeIds: string[]
+  videoFilter: string
   rowOrder: string[]
   parsed: ParsedViewFileCsv | null
   error: string | null
@@ -49,6 +60,8 @@ const resolutionCache = new Map<string, ViewFileFrameResolution>()
 export function ViewFileWorkspace() {
   const inputRef = useRef<HTMLInputElement>(null)
   const nextFileIdRef = useRef(1)
+  const nextRangeIdRef = useRef(1)
+  const nextManualRowIdRef = useRef(1)
   const draggedFileIdRef = useRef<string | null>(null)
   const [files, setFiles] = useState<UploadedViewFile[]>([])
   const [activeFileId, setActiveFileId] = useState<string | null>(null)
@@ -83,8 +96,9 @@ export function ViewFileWorkspace() {
           name: file.name,
           uploadedAt: Date.now(),
           rawText: text,
-          rangeStart: '',
-          rangeEnd: '',
+          ranges: [],
+          sortedRangeIds: [],
+          videoFilter: '',
           rowOrder: result.ok ? result.parsed.rows.map((row) => row.id) : [],
           parsed: result.ok ? result.parsed : null,
           error: result.ok ? null : result.error,
@@ -121,13 +135,178 @@ export function ViewFileWorkspace() {
     })
   }
 
+  function addFileRange(fileId: string): void {
+    setFiles((prev) =>
+      prev.map((file) =>
+        file.id === fileId
+          ? {
+              ...file,
+              ranges: [
+                ...file.ranges,
+                {
+                  id: `range-${Date.now()}-${nextRangeIdRef.current++}`,
+                  startFrame: '',
+                  endFrame: '',
+                  description: '',
+                },
+              ],
+            }
+          : file,
+      ),
+    )
+  }
+
   function updateFileRange(
     fileId: string,
-    field: 'rangeStart' | 'rangeEnd',
+    rangeId: string,
+    field: 'startFrame' | 'endFrame' | 'description',
     value: string,
   ): void {
     setFiles((prev) =>
-      prev.map((file) => (file.id === fileId ? { ...file, [field]: value } : file)),
+      prev.map((file) =>
+        file.id === fileId
+          ? {
+              ...file,
+              ranges: file.ranges.map((range) =>
+                range.id === rangeId ? { ...range, [field]: value } : range,
+              ),
+            }
+          : file,
+      ),
+    )
+  }
+
+  function removeFileRange(fileId: string, rangeId: string): void {
+    setFiles((prev) =>
+      prev.map((file) =>
+        file.id === fileId
+          ? {
+              ...file,
+              ranges: file.ranges.filter((range) => range.id !== rangeId),
+              sortedRangeIds: file.sortedRangeIds.filter(
+                (sortedRangeId) => sortedRangeId !== rangeId,
+              ),
+            }
+          : file,
+      ),
+    )
+  }
+
+  function reorderFileRange(
+    fileId: string,
+    fromRangeId: string,
+    targetRangeId: string,
+    position: 'before' | 'after',
+  ): void {
+    if (fromRangeId === targetRangeId) return
+    setFiles((prev) =>
+      prev.map((file) => {
+        if (file.id !== fileId) return file
+        const fromIndex = file.ranges.findIndex((range) => range.id === fromRangeId)
+        if (fromIndex < 0) return file
+        const moving = file.ranges[fromIndex]
+        const withoutMoving = file.ranges.filter((range) => range.id !== fromRangeId)
+        const targetIndex = withoutMoving.findIndex((range) => range.id === targetRangeId)
+        if (targetIndex < 0) return file
+        const insertionIndex = position === 'after' ? targetIndex + 1 : targetIndex
+        const ranges = [...withoutMoving]
+        ranges.splice(insertionIndex, 0, moving)
+        return { ...file, ranges }
+      }),
+    )
+  }
+
+  function updateVideoFilter(fileId: string, value: string): void {
+    setFiles((prev) =>
+      prev.map((file) => (file.id === fileId ? { ...file, videoFilter: value } : file)),
+    )
+  }
+
+  function addFileRow(
+    fileId: string,
+    videoId: string,
+    frameIdx: number,
+    answer: string | null,
+  ): void {
+    setFiles((prev) =>
+      prev.map((file) => {
+        if (file.id !== fileId || !file.parsed) return file
+        const row: ViewFileCsvRow = {
+          id: `${file.name}:manual:${nextManualRowIdRef.current++}:${videoId}:${frameIdx}`,
+          rowNumber:
+            file.parsed.rows.reduce((maxRow, current) => Math.max(maxRow, current.rowNumber), 0) +
+            1,
+          videoId,
+          frameIdx,
+          answer: file.parsed.kind === 'vqa' ? answer ?? '' : null,
+        }
+        return {
+          ...file,
+          parsed: {
+            ...file.parsed,
+            rows: [...file.parsed.rows, row],
+          },
+          rowOrder: [...file.rowOrder, row.id],
+        }
+      }),
+    )
+  }
+
+  function removeFileRow(fileId: string, rowId: string): void {
+    setFiles((prev) =>
+      prev.map((file) => {
+        if (file.id !== fileId || !file.parsed) return file
+        return {
+          ...file,
+          parsed: {
+            ...file.parsed,
+            rows: file.parsed.rows.filter((row) => row.id !== rowId),
+          },
+          rowOrder: file.rowOrder.filter((currentRowId) => currentRowId !== rowId),
+        }
+      }),
+    )
+  }
+
+  function sortFileRowsByRange(fileId: string, rangeId: string, sortPosition: number): void {
+    setFiles((prev) =>
+      prev.map((file) => {
+        if (file.id !== fileId || !file.parsed) return file
+        const selectedRange = file.ranges.find((range) => range.id === rangeId)
+        if (!selectedRange || !isViewFileRangeSortable(selectedRange)) return file
+        const liveRangeIds = new Set(file.ranges.map((range) => range.id))
+        const existingSortedRangeIds = file.sortedRangeIds.filter(
+          (sortedRangeId) => sortedRangeId !== rangeId && liveRangeIds.has(sortedRangeId),
+        )
+        const insertionIndex = Math.min(
+          Math.max(Math.trunc(sortPosition) - 1, 0),
+          existingSortedRangeIds.length,
+        )
+        const sortedRangeIds = [...existingSortedRangeIds]
+        sortedRangeIds.splice(insertionIndex, 0, rangeId)
+        const currentRows = orderRowsByIds(file.parsed.rows, file.rowOrder)
+        const claimedRowIds = new Set<string>()
+        const sortedRows: ViewFileCsvRow[] = []
+
+        for (const sortedRangeId of sortedRangeIds) {
+          const range = file.ranges.find((candidate) => candidate.id === sortedRangeId)
+          if (!range || !isViewFileRangeSortable(range)) continue
+          const rowsInRange = currentRows
+            .filter((row) => !claimedRowIds.has(row.id) && rangeContainsFrame(range, row.frameIdx))
+            .sort(compareRowsByFrame)
+          for (const row of rowsInRange) {
+            claimedRowIds.add(row.id)
+            sortedRows.push(row)
+          }
+        }
+
+        const remainingRows = currentRows.filter((row) => !claimedRowIds.has(row.id))
+        return {
+          ...file,
+          sortedRangeIds,
+          rowOrder: [...sortedRows, ...remainingRows].map((row) => row.id),
+        }
+      }),
     )
   }
 
@@ -192,9 +371,18 @@ export function ViewFileWorkspace() {
         rows: file.parsed?.rows.length ?? 0,
         valid: file.error === null && file.parsed !== null,
         error: file.error,
-        range_start: parseRangeBoundary(file.rangeStart),
-        range_end: parseRangeBoundary(file.rangeEnd),
+        range_start: parseRangeBoundary(file.ranges[0]?.startFrame ?? ''),
+        range_end: parseRangeBoundary(file.ranges[0]?.endFrame ?? ''),
         range_valid: !isRangeInvalid(file),
+        ranges: file.ranges.map((range, rangeIndex) => ({
+          index: rangeIndex + 1,
+          range_start: parseRangeBoundary(range.startFrame),
+          range_end: parseRangeBoundary(range.endFrame),
+          description: range.description.trim(),
+          valid: !isViewFileRangeInvalid(range),
+        })),
+        sorted_ranges: file.sortedRangeIds,
+        video_filter: file.videoFilter.trim(),
         frame_order: file.rowOrder,
       })),
     }
@@ -407,7 +595,14 @@ export function ViewFileWorkspace() {
           ) : (
             <CsvPreview
               file={activeFile}
+              onAddRange={addFileRange}
               onRangeChange={updateFileRange}
+              onRemoveRange={removeFileRange}
+              onReorderRange={reorderFileRange}
+              onSortRange={sortFileRowsByRange}
+              onVideoFilterChange={updateVideoFilter}
+              onAddFrame={addFileRow}
+              onRemoveFrame={removeFileRow}
               onReorderRow={reorderFileRow}
               onOpenFrame={openPreview}
             />
@@ -429,16 +624,36 @@ export function ViewFileWorkspace() {
 
 function CsvPreview({
   file,
+  onAddRange,
   onRangeChange,
+  onRemoveRange,
+  onReorderRange,
+  onSortRange,
+  onVideoFilterChange,
+  onAddFrame,
+  onRemoveFrame,
   onReorderRow,
   onOpenFrame,
 }: {
   file: UploadedViewFile
+  onAddRange: (fileId: string) => void
   onRangeChange: (
     fileId: string,
-    field: 'rangeStart' | 'rangeEnd',
+    rangeId: string,
+    field: 'startFrame' | 'endFrame' | 'description',
     value: string,
   ) => void
+  onRemoveRange: (fileId: string, rangeId: string) => void
+  onReorderRange: (
+    fileId: string,
+    fromRangeId: string,
+    targetRangeId: string,
+    position: 'before' | 'after',
+  ) => void
+  onSortRange: (fileId: string, rangeId: string, sortPosition: number) => void
+  onVideoFilterChange: (fileId: string, value: string) => void
+  onAddFrame: (fileId: string, videoId: string, frameIdx: number, answer: string | null) => void
+  onRemoveFrame: (fileId: string, rowId: string) => void
   onReorderRow: (
     fileId: string,
     fromRowId: string,
@@ -451,6 +666,11 @@ function CsvPreview({
     resolution: ViewFileFrameResolution | null,
   ) => void
 }) {
+  const draggedRangeIdRef = useRef<string | null>(null)
+  const [rangeDropTarget, setRangeDropTarget] = useState<{
+    id: string
+    position: 'before' | 'after'
+  } | null>(null)
   const parsed = file.parsed
   const orderedRows = useMemo(
     () => (parsed ? orderRowsByIds(parsed.rows, file.rowOrder) : []),
@@ -460,12 +680,49 @@ function CsvPreview({
     () => orderedRows.map((row, index) => ({ row, rank: index + 1 })),
     [orderedRows],
   )
-  const answerGroups = useMemo(
-    () => (parsed ? groupRowsByAnswer(rankedRows) : []),
-    [parsed, rankedRows],
-  )
+  const [newVideoId, setNewVideoId] = useState('')
+  const [newFrameIdx, setNewFrameIdx] = useState('')
+  const [newAnswer, setNewAnswer] = useState('')
+  const [addFrameError, setAddFrameError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setNewVideoId('')
+    setNewFrameIdx('')
+    setNewAnswer('')
+    setAddFrameError(null)
+  }, [file.id])
+
   if (!parsed) return null
+  const parsedKind = parsed.kind
   const rangeInvalid = isRangeInvalid(file)
+  const normalizedVideoFilter = normalizeVideoFilter(file.videoFilter)
+  const videoFilterMatchCount = normalizedVideoFilter
+    ? rankedRows.filter(({ row }) => videoMatchesFilter(row.videoId, normalizedVideoFilter)).length
+    : 0
+
+  function handleAddFrame(event: FormEvent<HTMLFormElement>): void {
+    event.preventDefault()
+    const videoId = newVideoId.trim()
+    const frameText = newFrameIdx.trim()
+    const answer = parsedKind === 'vqa' ? newAnswer.trim() : null
+    if (!videoId) {
+      setAddFrameError('Video ID is required.')
+      return
+    }
+    if (!/^\d+$/.test(frameText)) {
+      setAddFrameError('Frame must be a non-negative integer.')
+      return
+    }
+    if (parsedKind === 'vqa' && !answer) {
+      setAddFrameError('Answer is required for VQA rows.')
+      return
+    }
+    onAddFrame(file.id, videoId, Number(frameText), answer)
+    setNewVideoId('')
+    setNewFrameIdx('')
+    setNewAnswer('')
+    setAddFrameError(null)
+  }
 
   return (
     <section className={styles.preview} aria-label={`${file.name} preview`}>
@@ -480,57 +737,199 @@ function CsvPreview({
       </div>
       <div
         className={`${styles.rangeEditor} ${rangeInvalid ? styles.rangeEditorInvalid : ''}`}
-        aria-label="Frame range note"
+        aria-label="Frame ranges"
       >
-        <span>Frame range note</span>
-        <label>
-          Start
-          <input
-            type="number"
-            aria-label="Frame range start"
-            value={file.rangeStart}
-            onChange={(event) => onRangeChange(file.id, 'rangeStart', event.target.value)}
-          />
-        </label>
-        <label>
-          End
-          <input
-            type="number"
-            aria-label="Frame range end"
-            value={file.rangeEnd}
-            onChange={(event) => onRangeChange(file.id, 'rangeEnd', event.target.value)}
-          />
-        </label>
+        <div className={styles.rangeEditorHeader}>
+          <span>Frame ranges</span>
+          <button
+            type="button"
+            className={styles.secondaryButton}
+            onClick={() => onAddRange(file.id)}
+          >
+            Add Range
+          </button>
+        </div>
+        {file.ranges.map((range, rangeIndex) => {
+          const color = RANGE_COLORS[rangeIndex % RANGE_COLORS.length]
+          const currentSortPosition = file.sortedRangeIds.indexOf(range.id) + 1
+          return (
+            <div
+              key={range.id}
+              data-testid={`view-range-item-${rangeIndex + 1}`}
+              data-range-id={range.id}
+              className={`${styles.rangeRow} ${
+                rangeDropTarget?.id === range.id && rangeDropTarget.position === 'before'
+                  ? styles.rangeRowDropBefore
+                  : ''
+              } ${
+                rangeDropTarget?.id === range.id && rangeDropTarget.position === 'after'
+                  ? styles.rangeRowDropAfter
+                  : ''
+              }`}
+              style={{ '--range-color': color } as CSSProperties}
+              onDragOver={(event) => {
+                event.preventDefault()
+                event.dataTransfer.dropEffect = 'move'
+                const rect = event.currentTarget.getBoundingClientRect()
+                const position =
+                  event.clientY < rect.top + rect.height / 2 ? 'before' : 'after'
+                setRangeDropTarget({ id: range.id, position })
+              }}
+              onDragLeave={() => setRangeDropTarget(null)}
+              onDrop={(event) => {
+                event.preventDefault()
+                const fromRangeId =
+                  event.dataTransfer.getData('text/plain') || draggedRangeIdRef.current
+                const position = rangeDropTarget?.position ?? 'before'
+                draggedRangeIdRef.current = null
+                setRangeDropTarget(null)
+                if (fromRangeId) onReorderRange(file.id, fromRangeId, range.id, position)
+              }}
+            >
+              <span
+                className={styles.rangeDragHandle}
+                role="button"
+                tabIndex={file.ranges.length > 1 ? 0 : -1}
+                draggable={file.ranges.length > 1}
+                aria-label={`Drag range ${rangeIndex + 1}`}
+                title="Drag to reorder"
+                onDragStart={(event) => {
+                  draggedRangeIdRef.current = range.id
+                  event.dataTransfer.effectAllowed = 'move'
+                  event.dataTransfer.setData('text/plain', range.id)
+                }}
+                onDragEnd={() => {
+                  draggedRangeIdRef.current = null
+                  setRangeDropTarget(null)
+                }}
+              >
+                ||
+              </span>
+              <span className={styles.rangeIndex}>#{rangeIndex + 1}</span>
+              <label>
+                Start
+                <input
+                  type="number"
+                  aria-label={`Range ${rangeIndex + 1} start frame`}
+                  value={range.startFrame}
+                  onChange={(event) =>
+                    onRangeChange(file.id, range.id, 'startFrame', event.target.value)
+                  }
+                />
+              </label>
+              <label>
+                End
+                <input
+                  type="number"
+                  aria-label={`Range ${rangeIndex + 1} end frame`}
+                  value={range.endFrame}
+                  onChange={(event) =>
+                    onRangeChange(file.id, range.id, 'endFrame', event.target.value)
+                  }
+                />
+              </label>
+              <label className={styles.rangeDescriptionLabel}>
+                Description
+                <input
+                  type="text"
+                  aria-label={`Range ${rangeIndex + 1} description`}
+                  value={range.description}
+                  onChange={(event) =>
+                    onRangeChange(file.id, range.id, 'description', event.target.value)
+                  }
+                />
+              </label>
+              <label className={styles.rangeSortLabel}>
+                Sort
+                <select
+                  aria-label={`Sort position for range ${rangeIndex + 1}`}
+                  disabled={!isViewFileRangeSortable(range)}
+                  value={currentSortPosition || ''}
+                  onChange={(event) =>
+                    onSortRange(file.id, range.id, Number(event.currentTarget.value))
+                  }
+                >
+                  <option value="">Top</option>
+                  {file.ranges.map((_, optionIndex) => (
+                    <option key={optionIndex + 1} value={optionIndex + 1}>
+                      Top {optionIndex + 1}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button
+                type="button"
+                className={styles.iconButton}
+                aria-label={`Remove range ${rangeIndex + 1}`}
+                onClick={() => onRemoveRange(file.id, range.id)}
+              >
+                x
+              </button>
+            </div>
+          )
+        })}
         {rangeInvalid && (
           <strong role="alert">Start must be less than or equal to end.</strong>
         )}
       </div>
+      <div className={styles.frameTools}>
+        <label className={styles.videoFilterLabel}>
+          Video filter
+          <input
+            type="search"
+            aria-label="Video filter"
+            value={file.videoFilter}
+            onChange={(event) => onVideoFilterChange(file.id, event.target.value)}
+            placeholder="L21_V001"
+          />
+        </label>
+        {normalizedVideoFilter && (
+          <span className={styles.filterMatchCount}>{videoFilterMatchCount} matched</span>
+        )}
+        <form className={styles.addFrameForm} aria-label="Add frame" onSubmit={handleAddFrame}>
+          <input
+            type="text"
+            aria-label="New frame video ID"
+            value={newVideoId}
+            onChange={(event) => setNewVideoId(event.target.value)}
+            placeholder="video_id"
+          />
+          <input
+            type="number"
+            aria-label="New frame index"
+            value={newFrameIdx}
+            onChange={(event) => setNewFrameIdx(event.target.value)}
+            placeholder="frame"
+          />
+          {parsed.kind === 'vqa' && (
+            <input
+              type="text"
+              aria-label="New frame answer"
+              value={newAnswer}
+              onChange={(event) => setNewAnswer(event.target.value)}
+              placeholder="answer"
+            />
+          )}
+          <button type="submit" className={styles.secondaryButton}>
+            Add Frame
+          </button>
+        </form>
+        {addFrameError && (
+          <strong className={styles.inlineError} role="alert">
+            {addFrameError}
+          </strong>
+        )}
+      </div>
 
-      {parsed.kind === 'kis' ? (
-        <FrameGrid
-          fileId={file.id}
-          rows={rankedRows}
-          onOpenFrame={onOpenFrame}
-          onReorderRow={onReorderRow}
-        />
-      ) : (
-        <div className={styles.answerStack}>
-          {answerGroups.map((group) => (
-            <section key={group.answer} className={styles.answerGroup}>
-              <header className={styles.answerHeader}>
-                <h3>{group.answer}</h3>
-                <span>{group.rows.length} rows</span>
-              </header>
-              <FrameGrid
-                fileId={file.id}
-                rows={group.rows}
-                onOpenFrame={onOpenFrame}
-                onReorderRow={onReorderRow}
-              />
-            </section>
-          ))}
-        </div>
-      )}
+      <FrameGrid
+        fileId={file.id}
+        rows={rankedRows}
+        ranges={file.ranges}
+        videoFilter={file.videoFilter}
+        onRemoveFrame={onRemoveFrame}
+        onOpenFrame={onOpenFrame}
+        onReorderRow={onReorderRow}
+      />
     </section>
   )
 }
@@ -538,11 +937,17 @@ function CsvPreview({
 const FrameGrid = memo(function FrameGrid({
   fileId,
   rows,
+  ranges,
+  videoFilter,
+  onRemoveFrame,
   onOpenFrame,
   onReorderRow,
 }: {
   fileId: string
   rows: RankedViewFileRow[]
+  ranges: ViewFileRange[]
+  videoFilter: string
+  onRemoveFrame: (fileId: string, rowId: string) => void
   onOpenFrame: (
     row: ViewFileCsvRow,
     rank: number,
@@ -560,12 +965,19 @@ const FrameGrid = memo(function FrameGrid({
     id: string
     position: 'before' | 'after'
   } | null>(null)
+  const normalizedVideoFilter = normalizeVideoFilter(videoFilter)
 
   return (
     <div className={styles.frameGrid}>
+      {rows.length === 0 && <p className={styles.emptyGrid}>No frames in this file.</p>}
       {rows.map(({ row, rank }) => {
+        const matchingRanges = getMatchingRanges(row, ranges)
+        const videoFilterMatched = normalizedVideoFilter
+          ? videoMatchesFilter(row.videoId, normalizedVideoFilter)
+          : false
         const className = [
           styles.frameItem,
+          normalizedVideoFilter && !videoFilterMatched ? styles.frameItemDimmed : '',
           rowDropTarget?.id === row.id && rowDropTarget.position === 'before'
             ? styles.frameItemDropBefore
             : '',
@@ -619,7 +1031,21 @@ const FrameGrid = memo(function FrameGrid({
             >
               ||
             </span>
-            <ViewFileFrameCard row={row} rank={rank} onOpenFrame={onOpenFrame} />
+            <button
+              type="button"
+              className={styles.deleteFrameButton}
+              aria-label={`Delete ${row.videoId} frame ${row.frameIdx}`}
+              onClick={() => onRemoveFrame(fileId, row.id)}
+            >
+              x
+            </button>
+            <ViewFileFrameCard
+              row={row}
+              rank={rank}
+              matchingRanges={matchingRanges}
+              videoFilterMatched={videoFilterMatched}
+              onOpenFrame={onOpenFrame}
+            />
           </div>
         )
       })}
@@ -630,10 +1056,14 @@ const FrameGrid = memo(function FrameGrid({
 const ViewFileFrameCard = memo(function ViewFileFrameCard({
   row,
   rank,
+  matchingRanges,
+  videoFilterMatched,
   onOpenFrame,
 }: {
   row: ViewFileCsvRow
   rank: number
+  matchingRanges: { range: ViewFileRange; index: number }[]
+  videoFilterMatched: boolean
   onOpenFrame: (
     row: ViewFileCsvRow,
     rank: number,
@@ -671,11 +1101,14 @@ const ViewFileFrameCard = memo(function ViewFileFrameCard({
 
   const state = cardStateFromResolution(resolution, error)
   const isLoading = state.kind === 'loading'
+  const firstRange = matchingRanges[0]
+  const rangeColor = firstRange ? RANGE_COLORS[(firstRange.index - 1) % RANGE_COLORS.length] : null
   const className = [
     styles.frameCard,
     state.kind === 'local' ? styles.frameCardLocal : '',
     state.kind === 'youtube' ? styles.frameCardYoutube : '',
     state.kind === 'unavailable' || state.kind === 'error' ? styles.frameCardUnavailable : '',
+    matchingRanges.length > 0 ? styles.frameCardInRange : '',
   ]
     .filter(Boolean)
     .join(' ')
@@ -684,11 +1117,43 @@ const ViewFileFrameCard = memo(function ViewFileFrameCard({
     <button
       type="button"
       className={className}
+      style={
+        rangeColor
+          ? ({ '--range-color': rangeColor } as CSSProperties)
+          : undefined
+      }
       aria-label={`Open ${row.videoId} frame ${row.frameIdx}`}
       disabled={isLoading}
       onClick={() => onOpenFrame(row, rank, resolution)}
     >
       <span className={styles.rankBadge}>#{rank}</span>
+      {videoFilterMatched && (
+        <span className={styles.videoMatchBadge} aria-label="Video filter match">
+          ✓
+        </span>
+      )}
+      {matchingRanges.length > 0 && (
+        <span className={styles.rangeBadges}>
+          {matchingRanges.map(({ range, index }) => {
+            const color = RANGE_COLORS[(index - 1) % RANGE_COLORS.length]
+            return (
+              <span
+                key={range.id}
+                className={styles.rangeBadge}
+                style={{ '--range-color': color } as CSSProperties}
+                title={range.description || `Range ${index}`}
+              >
+                R{index}
+              </span>
+            )
+          })}
+        </span>
+      )}
+      {row.answer && (
+        <span className={styles.answerBadge} title={row.answer}>
+          {row.answer}
+        </span>
+      )}
       <span className={styles.frameMedia}>
         {state.kind === 'local' ? (
           <img
@@ -777,22 +1242,6 @@ function createPreview(
   }
 }
 
-function groupRowsByAnswer(
-  rows: RankedViewFileRow[],
-): { answer: string; rows: RankedViewFileRow[] }[] {
-  const groups = new Map<string, RankedViewFileRow[]>()
-  for (const row of rows) {
-    const answer = row.row.answer ?? ''
-    const group = groups.get(answer)
-    if (group) {
-      group.push(row)
-    } else {
-      groups.set(answer, [row])
-    }
-  }
-  return Array.from(groups, ([answer, groupedRows]) => ({ answer, rows: groupedRows }))
-}
-
 function formatTime(value: number): string {
   return new Intl.DateTimeFormat(undefined, {
     hour: '2-digit',
@@ -818,14 +1267,14 @@ function currentCsvContentForFile(file: UploadedViewFile): string {
   return rows
     .map((row) => {
       const cells = [row.videoId, String(Math.trunc(row.frameIdx))]
-      if (file.parsed?.kind === 'vqa') cells.push(quoteCsvCell(row.answer ?? ''))
+      if (file.parsed?.kind === 'vqa') cells.push(quoteCsvCell(row.answer ?? '', true))
       return cells.join(',')
     })
     .join('\n')
 }
 
-function quoteCsvCell(value: string): string {
-  if (!/[",\r\n]/.test(value)) return value
+function quoteCsvCell(value: string, always = false): string {
+  if (!always && !/[",\r\n]/.test(value)) return value
   return `"${value.replace(/"/g, '""')}"`
 }
 
@@ -858,14 +1307,60 @@ function parseRangeBoundary(value: string): number | null {
 }
 
 function isRangeInvalid(file: UploadedViewFile): boolean {
-  const start = parseRangeBoundary(file.rangeStart)
-  const end = parseRangeBoundary(file.rangeEnd)
+  return file.ranges.some(isViewFileRangeInvalid)
+}
+
+function isViewFileRangeInvalid(range: ViewFileRange): boolean {
+  const start = parseRangeBoundary(range.startFrame)
+  const end = parseRangeBoundary(range.endFrame)
   return start !== null && end !== null && start > end
 }
 
+function isViewFileRangeSortable(range: ViewFileRange): boolean {
+  const start = parseRangeBoundary(range.startFrame)
+  const end = parseRangeBoundary(range.endFrame)
+  return start !== null && end !== null && start <= end
+}
+
 function formatRangeSummary(file: UploadedViewFile): string | null {
-  if (file.rangeStart.trim().length === 0 && file.rangeEnd.trim().length === 0) return null
-  const start = file.rangeStart.trim() || '--'
-  const end = file.rangeEnd.trim() || '--'
+  if (file.ranges.length === 0) return null
+  if (file.ranges.length > 1) return `${file.ranges.length} ranges`
+  const range = file.ranges[0]
+  const start = range.startFrame.trim() || '--'
+  const end = range.endFrame.trim() || '--'
   return `Range ${start} -> ${end}`
+}
+
+function getMatchingRanges(
+  row: ViewFileCsvRow,
+  ranges: ViewFileRange[],
+): { range: ViewFileRange; index: number }[] {
+  return ranges.flatMap((range, index) => {
+    return rangeContainsFrame(range, row.frameIdx) ? [{ range, index: index + 1 }] : []
+  })
+}
+
+function rangeContainsFrame(range: ViewFileRange, frameIdx: number): boolean {
+  const start = parseRangeBoundary(range.startFrame)
+  const end = parseRangeBoundary(range.endFrame)
+  if (start === null || end === null || start > end) return false
+  return frameIdx >= start && frameIdx <= end
+}
+
+function compareRowsByFrame(a: ViewFileCsvRow, b: ViewFileCsvRow): number {
+  if (a.frameIdx !== b.frameIdx) return a.frameIdx - b.frameIdx
+  const videoOrder = a.videoId.localeCompare(b.videoId, undefined, {
+    numeric: true,
+    sensitivity: 'base',
+  })
+  if (videoOrder !== 0) return videoOrder
+  return a.rowNumber - b.rowNumber
+}
+
+function normalizeVideoFilter(value: string): string {
+  return value.trim().toLowerCase()
+}
+
+function videoMatchesFilter(videoId: string, normalizedFilter: string): boolean {
+  return videoId.toLowerCase().includes(normalizedFilter)
 }
