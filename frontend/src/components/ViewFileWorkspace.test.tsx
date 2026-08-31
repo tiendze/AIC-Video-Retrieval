@@ -405,6 +405,7 @@ describe('ViewFileWorkspace', () => {
     ])
     await screen.findByRole('heading', { name: 'query-p2-4-kis.csv' })
     await user.click(screen.getByRole('button', { name: 'Add Range' }))
+    await user.type(screen.getByLabelText('Range video ID'), 'L21_VZIP')
     await user.type(screen.getByLabelText('Range 1 start frame'), '650')
     await user.type(screen.getByLabelText('Range 1 end frame'), '900')
     await user.type(screen.getByLabelText('Range 1 description'), 'final sweep')
@@ -420,6 +421,8 @@ describe('ViewFileWorkspace', () => {
     expect(zipText).toContain('submissions/query-p2-4-kis.csv')
     expect(zipText).toContain('submissions/query-p2-4-kis-2.csv')
     expect(zipText).toContain('submissions/view_file_manifest.json')
+    expect(zipText).toContain('"range_video_id": "L21_VZIP"')
+    expect(zipText).toContain('"video_id": "L21_VZIP"')
     expect(zipText).toContain('"range_start": 650')
     expect(zipText).toContain('"range_end": 900')
     expect(zipText).toContain('"description": "final sweep"')
@@ -490,6 +493,46 @@ describe('ViewFileWorkspace', () => {
     expect(screen.getAllByText('R1')).toHaveLength(2)
     expect(screen.getByText('2 matched')).toBeInTheDocument()
     expect(screen.getAllByLabelText('Video filter match')).toHaveLength(2)
+  })
+
+  it('scopes frame ranges to one video id when provided', async () => {
+    const user = userEvent.setup()
+    render(<ViewFileWorkspace />)
+
+    await user.upload(
+      screen.getByLabelText('CSV file upload'),
+      new File(
+        ['L21_VSCOPE,30\nL22_VSCOPE,10\nL21_VSCOPE,10\nL22_VSCOPE,30\n'],
+        'query-p2-1-kis.csv',
+        {
+          type: 'text/csv',
+        },
+      ),
+    )
+
+    await waitFor(() =>
+      expect(screen.getAllByRole('button', { name: /^Open .* frame /i })).toHaveLength(4),
+    )
+    await user.click(screen.getByRole('button', { name: 'Add Range' }))
+    await user.type(screen.getByLabelText('Range video ID'), 'L21_VSCOPE')
+    await user.type(screen.getByLabelText('Range 1 start frame'), '10')
+    await user.type(screen.getByLabelText('Range 1 end frame'), '30')
+
+    expect(screen.getAllByText('R1')).toHaveLength(2)
+
+    await user.selectOptions(screen.getByLabelText('Sort position for range 1'), '1')
+    await waitFor(() =>
+      expect(
+        screen
+          .getAllByRole('button', { name: /^Open .* frame /i })
+          .map((button) => button.getAttribute('aria-label')),
+      ).toEqual([
+        'Open L21_VSCOPE frame 10',
+        'Open L21_VSCOPE frame 30',
+        'Open L22_VSCOPE frame 10',
+        'Open L22_VSCOPE frame 30',
+      ]),
+    )
   })
 
   it('sorts selected ranges by chosen top positions', async () => {

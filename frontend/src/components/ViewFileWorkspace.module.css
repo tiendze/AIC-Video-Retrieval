@@ -454,6 +454,14 @@
   font-weight: 800;
 }
 
+.rangeVideoLabel {
+  width: 100%;
+}
+
+.rangeVideoLabel input {
+  width: 180px;
+}
+
 .rangeRow {
   position: relative;
   display: grid;
