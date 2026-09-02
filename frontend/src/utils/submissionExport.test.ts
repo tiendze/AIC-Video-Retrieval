@@ -7,7 +7,7 @@ import {
   buildRawFrameSweep,
   buildTrakeFinalRanking,
   buildTrakeSubmissionPlan,
-  buildTrakeSynchronizedSteps,
+  buildTrakeUniformShiftDeltas,
   buildVqaFinalRows,
   createManualKisSelection,
   createManualTrakeSelection,
@@ -20,6 +20,7 @@ import {
   serializeKisCsv,
   serializeTrakeCsv,
   serializeVqaCsv,
+  shiftTrakeSequence,
   trakeSequenceKey,
   validateCsvFilename,
   validateTrakeEventCount,
@@ -305,88 +306,81 @@ describe('submissionExport', () => {
     expect(trakeSequenceKey(sequence('B', [100, 200, 300]))).toBe('B::100|200|300')
   })
 
-  it('builds synchronized TRAKE target-step variants without Cartesian combinations', () => {
-    const variants = buildTrakeSynchronizedSteps(sequence('A', [100, 200, 300]), {
-      targetFrames: [150, 280, 260],
-      stepCount: 5,
-    })
+  it('builds uniform-shift deltas: one backward step then a growing forward sweep', () => {
+    expect(buildTrakeUniformShiftDeltas({ step: 5, maxRows: 6 })).toEqual([0, -5, 5, 10, 15, 20])
+  })
 
-    expect(variants.map((variant) => variant.keyframes.map((keyframe) => keyframe.frame_idx))).toEqual([
-      [110, 216, 292],
-      [120, 232, 284],
-      [130, 248, 276],
-      [140, 264, 268],
-      [150, 280, 260],
+  it('stops the uniform-shift sweep at the margin, not just maxRows', () => {
+    expect(buildTrakeUniformShiftDeltas({ step: 5, margin: 12 })).toEqual([0, -5, 5, 10])
+  })
+
+  it('fills to maxRows when margin is null', () => {
+    expect(buildTrakeUniformShiftDeltas({ step: 10, margin: null, maxRows: 4 })).toEqual([
+      0, -10, 10, 20,
     ])
   })
 
-  it('does not create synchronized TRAKE variants when every target equals its start', () => {
-    expect(
-      buildTrakeSynchronizedSteps(sequence('A', [100, 200]), {
-        targetFrames: [100, 200],
-        stepCount: 5,
-      }),
-    ).toEqual([])
+  it('shifts every event by the same delta and preserves strictly increasing order', () => {
+    const shifted = shiftTrakeSequence(sequence('A', [100, 200, 300]), 15)
+    expect(shifted?.keyframes.map((keyframe) => keyframe.frame_idx)).toEqual([115, 215, 315])
   })
 
-  it('drops duplicate synchronized TRAKE sequences created by rounding', () => {
-    const variants = buildTrakeSynchronizedSteps(sequence('A', [100, 200]), {
-      targetFrames: [101, 201],
-      stepCount: 5,
-    })
-
-    expect(variants.map((variant) => variant.keyframes.map((keyframe) => keyframe.frame_idx))).toEqual([
-      [101, 201],
-    ])
+  it('drops a uniform-shift variant that would push any frame negative', () => {
+    expect(shiftTrakeSequence(sequence('A', [10, 20]), -15)).toBeNull()
   })
 
-  it('builds TRAKE submission: original and synchronized steps stay grouped', () => {
+  it('builds a TRAKE submission from only the first selected sequence, no ranking rows mixed in', () => {
     const results = [sequence('A', [100, 200]), sequence('B', [10, 20])]
-    const selected: SelectedTrakeSequence[] = results.map((result, index) => ({
-      ...createVisualTrakeSelection(result, index),
-      stepTargetFrames:
-        result.video_id === 'A'
-          ? [105, 205]
-          : [15, 25],
-      stepCount: 1,
-    }))
-    const plan = buildTrakeSubmissionPlan(selected, results)
+    const selected: SelectedTrakeSequence[] = [
+      { ...createVisualTrakeSelection(results[0], 0), step: 5, margin: null },
+      { ...createVisualTrakeSelection(results[1], 1), step: 5, margin: null },
+    ]
+    const plan = buildTrakeSubmissionPlan(selected, results, { maxRows: 4 })
 
-    expect(plan.rows.slice(0, 4).map((row) => trakeSequenceKey(row))).toEqual([
-      trakeSequenceKey(results[0]),
+    expect(plan.rows.map((row) => trakeSequenceKey(row))).toEqual([
+      trakeSequenceKey(sequence('A', [100, 200])),
+      trakeSequenceKey(sequence('A', [95, 195])),
       trakeSequenceKey(sequence('A', [105, 205])),
-      trakeSequenceKey(results[1]),
-      trakeSequenceKey(sequence('B', [15, 25])),
+      trakeSequenceKey(sequence('A', [110, 210])),
     ])
-    expect(plan.centerCount).toBe(2)
-    expect(plan.variantCount).toBe(2)
+    expect(plan.centerCount).toBe(1)
+    expect(plan.variantCount).toBe(3)
+    expect(plan.rankingFallbackCount).toBe(0)
+    // Only sequence A (the first selection) ever appears -- B and the raw
+    // ranking rows are never mixed in once something is selected.
+    expect(plan.rows.every((row) => row.video_id === 'A')).toBe(true)
     const keys = plan.rows.map((row) => trakeSequenceKey(row))
     expect(new Set(keys).size).toBe(keys.length)
-    // Every emitted row is still a full N-frame sequence.
     expect(plan.rows.every((row) => row.keyframes.length === 2)).toBe(true)
+  })
+
+  it('falls back to the ranking when nothing is selected yet', () => {
+    const results = [sequence('A', [100, 200]), sequence('B', [10, 20])]
+    const plan = buildTrakeSubmissionPlan([], results)
+
+    expect(plan.rows.map((row) => row.video_id)).toEqual(['A', 'B'])
+    expect(plan.rankingFallbackCount).toBe(2)
+    expect(plan.centerCount).toBe(0)
+    expect(plan.variantCount).toBe(0)
   })
 
   it('TRAKE submission plan respects maxRows', () => {
     const results = [sequence('A', [100, 200])]
     const selected: SelectedTrakeSequence[] = [
-      {
-        ...createVisualTrakeSelection(results[0], 0),
-        stepTargetFrames: [120, 220],
-        stepCount: 20,
-      },
+      { ...createVisualTrakeSelection(results[0], 0), step: 5, margin: null },
     ]
     const plan = buildTrakeSubmissionPlan(selected, results, { maxRows: 5 })
     expect(plan.rows.length).toBe(5)
   })
 
-  it('creates manual TRAKE rows and exports selected rows before ranking fallback', () => {
+  it('creates manual TRAKE rows and expands them into their own margin sweep, no ranking mixed in', () => {
     const manual = createManualTrakeSelection('L30_V046', [894, 969])
     const ranking = [sequence('L30_V001', [10, 20])]
 
-    const plan = buildTrakeSubmissionPlan([manual], ranking)
+    const plan = buildTrakeSubmissionPlan([manual], ranking, { maxRows: 2 })
 
     expect(manual.source).toBe('manual')
-    expect(serializeTrakeCsv(plan.rows)).toBe('L30_V046,894,969\nL30_V001,10,20')
+    expect(serializeTrakeCsv(plan.rows)).toBe('L30_V046,894,969\nL30_V046,889,964')
   })
 
   it('normalizes filenames without appending csv twice and validates task suffixes', () => {

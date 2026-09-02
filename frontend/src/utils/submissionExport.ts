@@ -30,8 +30,8 @@ export interface SelectedTrakeSequence {
   source: 'manual' | 'visual'
   result: TrakeVideoResultItem
   originalRank: number
-  stepTargetFrames: Array<number | null>
-  stepCount: number
+  step: number
+  margin: number | null
 }
 
 export interface FilenameValidation {
@@ -69,6 +69,12 @@ const TASK_SUFFIX: Record<ExportTask, string> = {
 
 const MAX_SUBMISSION_ROWS = 100
 
+// Uniform-shift TRAKE margin defaults (see CLAUDE.md §1.2: judged window is
+// usually <10 frames; keyframe spacing on disk has a ~40-frame median, so a
+// step of 5 is the largest grid guaranteed to land inside a 5+-frame window).
+const TRAKE_DEFAULT_MARGIN_STEP = 5
+const TRAKE_BACKWARD_STEPS = 1
+
 export function searchHitKey(hit: SearchHit): string {
   return `${hit.video_id}:${hit.frame_idx}`
 }
@@ -85,10 +91,6 @@ export function trakeVisualSelectionKey(
   return `visual-trake:${originalRank}:${instanceId}:${trakeSequenceKey(result)}`
 }
 
-function defaultTrakeStepTargetFrames(result: TrakeVideoResultItem): number[] {
-  return result.keyframes.map((keyframe) => Math.trunc(keyframe.frame_idx))
-}
-
 export function createVisualTrakeSelection(
   result: TrakeVideoResultItem,
   originalRank: number,
@@ -99,8 +101,8 @@ export function createVisualTrakeSelection(
     source: 'visual',
     result,
     originalRank,
-    stepTargetFrames: defaultTrakeStepTargetFrames(result),
-    stepCount: 5,
+    step: TRAKE_DEFAULT_MARGIN_STEP,
+    margin: null,
   }
 }
 
@@ -126,8 +128,8 @@ export function createManualTrakeSelection(
     source: 'manual',
     originalRank: -1,
     result,
-    stepTargetFrames: defaultTrakeStepTargetFrames(result),
-    stepCount: 5,
+    step: TRAKE_DEFAULT_MARGIN_STEP,
+    margin: null,
   }
 }
 
@@ -444,45 +446,64 @@ export function buildTrakePerEventSweep(
   return variants
 }
 
-export function buildTrakeSynchronizedSteps(
-  result: TrakeVideoResultItem,
-  options: {
-    targetFrames: Array<number | null>
-    stepCount: number
-  },
-): TrakeVideoResultItem[] {
-  const stepCount = Math.max(1, Math.trunc(options.stepCount || 1))
-  const starts = result.keyframes.map((keyframe) => Math.trunc(keyframe.frame_idx))
-  const targets = result.keyframes.map((_, index) =>
-    Math.max(0, Math.trunc(options.targetFrames[index] ?? starts[index])),
-  )
-  if (targets.every((target, index) => target === starts[index])) return []
+// Uniform-shift deltas for the TRAKE margin sweep: the chosen sequence's own
+// frame (0), then one backward step (-step), then forward steps growing by
+// `step` until `margin` or `maxRows` is exhausted. Every event in a row moves
+// by the same delta -- see submission-export plan §2 for why (operator-chosen
+// direction: judged window is usually <10 frames, keyframe spacing is much
+// wider, and the project owner asked for one backward probe then a forward
+// sweep rather than a symmetric one).
+export function buildTrakeUniformShiftDeltas(options: {
+  step: number
+  margin?: number | null
+  maxRows?: number
+}): number[] {
+  const step = Math.max(1, Math.trunc(options.step))
+  const maxRows = Math.max(1, Math.trunc(options.maxRows ?? MAX_SUBMISSION_ROWS))
+  const margin = options.margin ?? null
+  const withinMargin = (distance: number): boolean =>
+    margin === null || margin <= 0 ? true : distance <= margin
 
-  const variants: TrakeVideoResultItem[] = []
-  const seen = new Set<string>([trakeSequenceKey(result)])
-  for (let iteration = 1; iteration <= stepCount; iteration += 1) {
-    const keyframes = result.keyframes.map((keyframe, index) => {
-      const frameIdx = interpolateClampedFrame(starts[index], targets[index], iteration, stepCount)
-      return {
-        ...keyframe,
-        frame_idx: frameIdx,
-        keyframe_id: `${keyframe.keyframe_id}:sync:${iteration}:${frameIdx}`,
-      }
-    })
-    const variant = { ...result, keyframes }
-    const key = trakeSequenceKey(variant)
-    if (seen.has(key)) continue
-    seen.add(key)
-    variants.push(variant)
+  const deltas: number[] = [0]
+  for (let backward = 1; backward <= TRAKE_BACKWARD_STEPS && deltas.length < maxRows; backward += 1) {
+    const distance = backward * step
+    if (!withinMargin(distance)) break
+    deltas.push(-distance)
   }
-  return variants
+  for (let forward = 1; deltas.length < maxRows; forward += 1) {
+    const distance = forward * step
+    if (!withinMargin(distance)) break
+    deltas.push(distance)
+  }
+  return deltas
 }
 
-// Lay out the final TRAKE submission (≤100 rows): center sequences of every
-// selected sequence first (distinct-video coverage → R@1/R@5), then per-event
-// variants round-robin across those sequences (→ R@50/R@100), then the
-// remaining ranked sequences as fallback. Everything deduped by
-// `trakeSequenceKey`, capped at `maxRows`.
+// Shift every event's frame_idx by the same delta. Returns null if any frame
+// would go negative -- the caller drops that variant and moves on.
+export function shiftTrakeSequence(
+  result: TrakeVideoResultItem,
+  delta: number,
+): TrakeVideoResultItem | null {
+  if (delta === 0) return result
+  const keyframes = result.keyframes.map((keyframe) => {
+    const frameIdx = Math.trunc(keyframe.frame_idx) + delta
+    if (frameIdx < 0) return null
+    return { ...keyframe, frame_idx: frameIdx, keyframe_id: `${keyframe.keyframe_id}:shift:${delta}` }
+  })
+  if (keyframes.some((keyframe) => keyframe === null)) return null
+  return { ...result, keyframes: keyframes as TrakeVideoResultItem['keyframes'] }
+}
+
+function trakeMarginLabel(delta: number): string {
+  if (delta === 0) return 'Original'
+  return delta < 0 ? `Margin ${delta}` : `Margin +${delta}`
+}
+
+// Lay out the final TRAKE submission (≤100 rows): the FIRST selected sequence
+// only (project owner's choice -- see plan), expanded into its own uniform
+// margin sweep (buildTrakeUniformShiftDeltas). No ranking rows are mixed in
+// once a sequence is selected; the ranking is only used as a fallback when
+// nothing has been selected yet.
 export function buildTrakeSubmissionPlan(
   selected: SelectedTrakeSequence[],
   ranking: TrakeVideoResultItem[],
@@ -507,41 +528,43 @@ export function buildTrakeSubmissionPlan(
     return true
   }
 
-  const resultByKey = new Map(ranking.map((result) => [trakeSequenceKey(result), result]))
-  const centerSeen = new Set<string>()
-  let centerCount = 0
-  let variantCount = 0
-  for (const item of selected) {
-    const resolved = resultByKey.get(trakeSequenceKey(item.result)) ?? item.result
-    const key = trakeSequenceKey(resolved)
-    if (centerSeen.has(key)) continue
-    centerSeen.add(key)
-    if (add(resolved, 'Original', item.key, null)) centerCount += 1
-    if (rows.length >= maxRows) break
-    const synchronizedSteps = buildTrakeSynchronizedSteps(resolved, {
-      targetFrames: item.stepTargetFrames,
-      stepCount: item.stepCount,
-    })
-    for (const [variantIndex, variant] of synchronizedSteps.entries()) {
+  const primary = selected[0]
+  if (!primary) {
+    const beforeFallback = rows.length
+    for (const candidate of ranking) {
       if (rows.length >= maxRows) break
-      const stepIndex = variantIndex + 1
-      if (add(variant, `Step #${stepIndex}`, item.key, stepIndex)) variantCount += 1
+      add(candidate, 'Fallback', null, null)
+    }
+    return {
+      rows,
+      entries,
+      centerCount: 0,
+      variantCount: 0,
+      rankingFallbackCount: rows.length - beforeFallback,
     }
   }
 
-  const beforeFallback = rows.length
-  for (const candidate of ranking) {
+  const resultByKey = new Map(ranking.map((result) => [trakeSequenceKey(result), result]))
+  const resolved = resultByKey.get(trakeSequenceKey(primary.result)) ?? primary.result
+  const deltas = buildTrakeUniformShiftDeltas({
+    step: primary.step,
+    margin: primary.margin,
+    maxRows,
+  })
+
+  let centerCount = 0
+  let variantCount = 0
+  for (const delta of deltas) {
     if (rows.length >= maxRows) break
-    add(candidate, 'Fallback', null, null)
+    const variant = shiftTrakeSequence(resolved, delta)
+    if (!variant) continue
+    const added = add(variant, trakeMarginLabel(delta), primary.key, delta === 0 ? null : delta)
+    if (!added) continue
+    if (delta === 0) centerCount += 1
+    else variantCount += 1
   }
 
-  return {
-    rows,
-    entries,
-    centerCount,
-    variantCount,
-    rankingFallbackCount: rows.length - beforeFallback,
-  }
+  return { rows, entries, centerCount, variantCount, rankingFallbackCount: 0 }
 }
 
 export function buildRawFrameSweep(
@@ -702,19 +725,6 @@ function pushFrame(frames: number[], frame: number, maxFrameIdx?: number): void 
 function directionalSweepFrameCount(center: number, target: number, step: number): number {
   const distance = Math.abs(center - target)
   return 1 + Math.ceil(distance / Math.max(1, step))
-}
-
-function interpolateClampedFrame(
-  startFrameIdx: number,
-  targetFrameIdx: number,
-  stepIndex: number,
-  stepCount: number,
-): number {
-  const start = Math.trunc(startFrameIdx)
-  const target = Math.trunc(targetFrameIdx)
-  const raw = Math.round(start + ((target - start) * stepIndex) / Math.max(1, stepCount))
-  if (target >= start) return Math.min(target, Math.max(start, raw))
-  return Math.max(target, Math.min(start, raw))
 }
 
 function addSubmissionRow(rows: SearchHit[], seen: Set<string>, hit: SearchHit): void {
