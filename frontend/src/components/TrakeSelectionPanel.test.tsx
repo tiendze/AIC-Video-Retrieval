@@ -85,7 +85,7 @@ describe('TrakeSelectionPanel', () => {
     expect(onAddManualSelection).not.toHaveBeenCalled()
   })
 
-  it('shows synchronized target controls and updates only the edited event target', () => {
+  it('shows margin sweep controls for the primary selection and updates step/margin', () => {
     const result = sequence('L30_V031', [2099, 2190])
     const selection = [createVisualTrakeSelection(result, 0)]
     const onUpdateSelection = vi.fn()
@@ -105,15 +105,42 @@ describe('TrakeSelectionPanel', () => {
       />,
     )
 
-    expect(screen.getByText('Event 1 start')).toBeInTheDocument()
-    expect(screen.getByText('Event 2 start')).toBeInTheDocument()
-    expect(screen.getByLabelText('Number of Steps')).toHaveValue(5)
+    expect(screen.getByLabelText('Margin step (frames)')).toHaveValue(5)
+    expect(screen.getByLabelText('Max margin (frames)')).toHaveValue(null)
 
-    const targetInputs = screen.getAllByLabelText('Target frame')
-    fireEvent.change(targetInputs[1], { target: { value: '2280' } })
+    fireEvent.change(screen.getByLabelText('Margin step (frames)'), { target: { value: '10' } })
+    expect(onUpdateSelection).toHaveBeenLastCalledWith(selection[0].key, { step: 10 })
 
-    expect(onUpdateSelection).toHaveBeenLastCalledWith(selection[0].key, {
-      stepTargetFrames: [2099, 2280],
-    })
+    fireEvent.change(screen.getByLabelText('Max margin (frames)'), { target: { value: '40' } })
+    expect(onUpdateSelection).toHaveBeenLastCalledWith(selection[0].key, { margin: 40 })
+  })
+
+  it('hides margin controls for selections after the first -- only sequence #1 is submitted', () => {
+    const first = sequence('L30_V031', [2099, 2190])
+    const second = sequence('L30_V032', [10, 20])
+    const selection = [
+      createVisualTrakeSelection(first, 0),
+      createVisualTrakeSelection(second, 1),
+    ]
+    render(
+      <TrakeSelectionPanel
+        results={[first, second]}
+        selection={selection}
+        exportName="query-4-trake"
+        eventCount={2}
+        onExportNameChange={vi.fn()}
+        onAddManualSelection={vi.fn()}
+        onUpdateSelection={vi.fn()}
+        onReorderSelection={vi.fn()}
+        onRemoveSelection={vi.fn()}
+        onClearSelection={vi.fn()}
+        onExport={vi.fn()}
+      />,
+    )
+
+    expect(screen.getAllByLabelText('Margin step (frames)')).toHaveLength(1)
+    expect(
+      screen.getByText('Not used for CSV export - only sequence #1 is submitted.'),
+    ).toBeInTheDocument()
   })
 })

@@ -750,11 +750,8 @@ function syncTrakeSelectionWithResults(
         ...item,
         result: current.result,
         originalRank: current.index,
-        stepTargetFrames:
-          item.stepTargetFrames.length === current.result.keyframes.length
-            ? item.stepTargetFrames
-            : current.result.keyframes.map((keyframe) => Math.trunc(keyframe.frame_idx)),
-        stepCount: Math.max(1, Math.trunc(item.stepCount || 1)),
+        step: Math.max(1, Math.trunc(item.step || 1)),
+        margin: item.margin === null ? null : Math.max(0, Math.trunc(item.margin)),
       },
     ]
   })

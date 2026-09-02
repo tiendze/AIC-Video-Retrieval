@@ -2,6 +2,7 @@ import { useState, type DragEvent } from 'react'
 import type { TrakeVideoResultItem } from '../api/types'
 import {
   buildTrakeSubmissionPlan,
+  buildTrakeUniformShiftDeltas,
   createManualTrakeSelection,
   serializeTrakeCsv,
   suggestedFilename,
@@ -101,8 +102,8 @@ export function TrakeSelectionPanel({
           onAddManualSelection={onAddManualSelection}
         />
         <div className={styles.hint}>
-          Final TRAKE export: {finalRows.length} row(s) - {plan.centerCount} selected,{' '}
-          {plan.variantCount} step, {plan.rankingFallbackCount} fallback.
+          Final TRAKE export: {finalRows.length} row(s) - {plan.centerCount} original,{' '}
+          {plan.variantCount} margin, {plan.rankingFallbackCount} fallback.
         </div>
         {selection.length === 0 ? (
           <div className={styles.empty}>Selected sequences appear here.</div>
@@ -120,6 +121,7 @@ export function TrakeSelectionPanel({
                   item={item}
                   index={index}
                   total={selection.length}
+                  isPrimary={index === 0}
                   eventCount={eventCount}
                   onReorder={onReorderSelection}
                   onUpdate={onUpdateSelection}
@@ -224,6 +226,7 @@ function TrakeSequenceItem({
   item,
   index,
   total,
+  isPrimary,
   eventCount,
   onReorder,
   onUpdate,
@@ -232,6 +235,7 @@ function TrakeSequenceItem({
   item: SelectedTrakeSequence
   index: number
   total: number
+  isPrimary: boolean
   eventCount: number
   onReorder: (fromIndex: number, toIndex: number) => void
   onUpdate: (key: string, patch: Partial<SelectedTrakeSequence>) => void
@@ -310,7 +314,11 @@ function TrakeSequenceItem({
             </div>
           ))}
         </div>
-        <TrakeStepEditor item={item} onUpdate={onUpdate} />
+        {isPrimary ? (
+          <TrakeMarginEditor item={item} onUpdate={onUpdate} />
+        ) : (
+          <div className={styles.hint}>Not used for CSV export - only sequence #1 is submitted.</div>
+        )}
         <div className={styles.actions}>
           {total > 1 && <span className={styles.dragHint}>Drag to reorder</span>}
           <button
@@ -326,74 +334,63 @@ function TrakeSequenceItem({
   )
 }
 
-function TrakeStepEditor({
+function TrakeMarginEditor({
   item,
   onUpdate,
 }: {
   item: SelectedTrakeSequence
   onUpdate: (key: string, patch: Partial<SelectedTrakeSequence>) => void
 }) {
-  const targetFrames = item.stepTargetFrames
-  const stepCount = Math.max(1, Math.trunc(item.stepCount || 1))
-  const hasActiveStep = item.result.keyframes.some(
-    (keyframe, index) => (targetFrames[index] ?? keyframe.frame_idx) !== keyframe.frame_idx,
-  )
+  const step = Math.max(1, Math.trunc(item.step || 1))
+  const margin = item.margin
+  const deltas = buildTrakeUniformShiftDeltas({ step, margin })
+  const forwardReach = Math.max(0, ...deltas.filter((delta) => delta > 0))
+  const backwardReach = Math.min(0, ...deltas.filter((delta) => delta < 0))
 
-  function setStepCount(value: string): void {
-    onUpdate(item.key, { stepCount: Math.max(1, Math.trunc(Number(value) || 1)) })
+  function setStep(value: string): void {
+    onUpdate(item.key, { step: Math.max(1, Math.trunc(Number(value) || 1)) })
   }
 
-  function setTargetFrame(index: number, value: string): void {
+  function setMargin(value: string): void {
     const parsed = Number(value)
-    const nextTarget =
-      value.trim() === '' || !Number.isFinite(parsed) ? null : Math.max(0, Math.trunc(parsed))
-    const next = item.result.keyframes.map((_keyframe, keyframeIndex) =>
-      keyframeIndex === index
-        ? nextTarget
-        : (targetFrames[keyframeIndex] ?? null),
-    )
-    onUpdate(item.key, { stepTargetFrames: next })
+    const nextMargin = value.trim() === '' || !Number.isFinite(parsed) ? null : Math.max(0, Math.trunc(parsed))
+    onUpdate(item.key, { margin: nextMargin })
   }
 
   return (
     <div className={styles.trakeStepEditor}>
       <div className={styles.sectionHeader}>
-        <span>Synchronized target steps</span>
-        <span>{hasActiveStep ? 'enabled' : 'none'}</span>
+        <span>Margin</span>
+        <span>{deltas.length} row(s)</span>
       </div>
-      <label className={styles.label}>
-        Number of Steps
-        <input
-          className={styles.input}
-          type="number"
-          min={1}
-          step={1}
-          value={stepCount}
-          onChange={(event) => setStepCount(event.target.value)}
-        />
-      </label>
-      {item.result.keyframes.map((keyframe, index) => (
-        <div className={styles.trakeStepRow} key={`${keyframe.keyframe_id}:${index}:step`}>
-          <div className={styles.trakeStepEvent}>
-            <span>Event {index + 1} start</span>
-            <strong>{keyframe.frame_idx}</strong>
-          </div>
-          <div className={styles.trakeStepControls}>
-            <label className={styles.label}>
-              Target frame
-              <input
-                className={styles.input}
-                type="number"
-                min={0}
-                step={1}
-                value={targetFrames[index] ?? ''}
-                placeholder={String(keyframe.frame_idx)}
-                onChange={(event) => setTargetFrame(index, event.target.value)}
-              />
-            </label>
-          </div>
-        </div>
-      ))}
+      <div className={styles.trakeStepControls}>
+        <label className={styles.label}>
+          Margin step (frames)
+          <input
+            className={styles.input}
+            type="number"
+            min={1}
+            step={1}
+            value={step}
+            onChange={(event) => setStep(event.target.value)}
+          />
+        </label>
+        <label className={styles.label}>
+          Max margin (frames)
+          <input
+            className={styles.input}
+            type="number"
+            min={0}
+            step={1}
+            value={margin ?? ''}
+            placeholder="fill to 100 rows"
+            onChange={(event) => setMargin(event.target.value)}
+          />
+        </label>
+      </div>
+      <div className={styles.hint}>
+        {deltas.length} row(s) - backward to {backwardReach}, forward to +{forwardReach}.
+      </div>
     </div>
   )
 }
